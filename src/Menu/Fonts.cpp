@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <format>
 #include <imgui.h>
@@ -292,24 +293,46 @@ namespace MenuFonts
 
 namespace Util
 {
+	namespace
+	{
+		/// Windows compares paths case-insensitively, and components can be non-ASCII.
+		bool PathComponentsEqual(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+		{
+			const auto& left = lhs.native();
+			const auto& right = rhs.native();
+			return left.size() == right.size() &&
+			       std::equal(left.begin(), left.end(), right.begin(), [](wchar_t a, wchar_t b) {
+					   return std::towlower(a) == std::towlower(b);
+				   });
+		}
+	}
+
 	// Security: Validate that a path stays within an allowed directory
 	bool IsPathWithinDirectory(const std::filesystem::path& basePath, const std::filesystem::path& testPath)
 	{
-		try {
-			// Canonicalize both paths to resolve all symlinks and .. sequences
-			auto canonicalBase = std::filesystem::canonical(basePath);
-			auto canonicalTest = std::filesystem::weakly_canonical(testPath);
-
-			// Check if test path is a subpath of base path
-			auto [baseIt, testIt] = std::mismatch(
-				canonicalBase.begin(), canonicalBase.end(),
-				canonicalTest.begin(), canonicalTest.end());
-
-			return baseIt == canonicalBase.end();
-		} catch (const std::filesystem::filesystem_error&) {
-			// If canonicalization fails, reject the path
+		if (basePath.empty() || testPath.empty())
 			return false;
+
+		std::error_code ec;
+		// Lexical only: resolving symlinks rejects legitimate files behind MO2/Vortex virtual trees
+		// and directory junctions, while lexically_normal still collapses the ".." this guards against.
+		const auto base = std::filesystem::absolute(basePath, ec).lexically_normal();
+		if (ec)
+			return false;
+		const auto test = std::filesystem::absolute(testPath, ec).lexically_normal();
+		if (ec)
+			return false;
+
+		auto baseIt = base.begin();
+		auto testIt = test.begin();
+		for (; baseIt != base.end(); ++baseIt, ++testIt) {
+			// lexically_normal leaves a trailing empty component on a directory path.
+			if (baseIt->empty())
+				break;
+			if (testIt == test.end() || !PathComponentsEqual(*baseIt, *testIt))
+				return false;
 		}
+		return true;
 	}
 
 	namespace
