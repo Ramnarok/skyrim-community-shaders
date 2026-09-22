@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cwctype>
 #include <filesystem>
 #include <format>
 #include <imgui.h>
@@ -301,9 +300,7 @@ namespace Util
 			const auto& left = lhs.native();
 			const auto& right = rhs.native();
 			return left.size() == right.size() &&
-			       std::equal(left.begin(), left.end(), right.begin(), [](wchar_t a, wchar_t b) {
-					   return std::towlower(a) == std::towlower(b);
-				   });
+			       CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
 		}
 	}
 
