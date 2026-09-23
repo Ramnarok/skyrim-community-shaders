@@ -25,7 +25,9 @@ We do not trace primary visibility for final output.
 - **Skyrim SE/AE renders with D3D11. DXR needs D3D12.** All ray tracing runs on a separate D3D12 device created on the same adapter (match the adapter LUID). The two devices share resources and fences. See ARCHITECTURE §2.
 - **Skyrim has no lightmaps or baked lighting pass.** Lighting is computed per frame from three sources: the sun, a limited set of point lights, and a directional ambient term. We replace those terms.
 - **Acceleration structures:** one BLAS per unique mesh, and one TLAS of instances rebuilt every frame. Never one BVH per cell.
-- **Game-owned D3D11 buffers and textures are not shareable.** They must be copied into resources we create as shared (created in D3D12, opened in D3D11).
+- **Game-owned D3D11 buffers and textures are not shareable.** They must be copied into resources we create as shared.
+  - Measured in M2 (2026-09-23, RTX 4080 SUPER): shared **textures must be created in D3D11** (`MISC_SHARED | MISC_SHARED_NTHANDLE`) and opened in D3D12. The reverse (D3D12 shared heap → `OpenSharedResource1`) fails with `E_INVALIDARG`.
+  - **Buffers cannot be shared in either direction** (D3D11 rejects shared buffers with `E_INVALIDARG`; a D3D12 shared-heap buffer won't open in D3D11). Geometry reaches D3D12 via CPU upload instead (ARCHITECTURE §2).
 - **World coordinates are large.** Build the TLAS camera-relative to avoid float precision loss.
 
 ## Rules for working in this codebase

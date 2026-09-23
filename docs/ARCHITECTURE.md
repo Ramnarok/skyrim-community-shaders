@@ -53,9 +53,17 @@ v1 serializes the GPU at both sync points. Once it works, consider running the R
 - Open them in D3D11 with `ID3D11Device1::OpenSharedResource1`.
 - Depth can't be shared as a depth-stencil. Copy it to an `R32_FLOAT` texture first, with a small D3D11 pass or `CopyResource` from a typeless view.
 
-**Shared buffers (geometry):**
-- ⚠ Spike: confirm that a D3D12 buffer created with a shared heap opens in D3D11 via `OpenSharedResource1`.
-- Fallback: copy through a shared texture, or upload from CPU readback of a staging buffer, done once per mesh.
+**Shared textures, measured (M2).** Creating in D3D12 with `D3D12_HEAP_FLAG_SHARED` and opening in D3D11 with `OpenSharedResource1` **fails with `E_INVALIDARG`** on Jake's RTX 4080 SUPER. Creating in D3D11 with `MISC_SHARED | MISC_SHARED_NTHANDLE`, then `IDXGIResource1::CreateSharedHandle` → `ID3D12Device::OpenSharedHandle`, works (as in CS's `WrappedResource`). **All shared textures are created on the D3D11 side.** The cause of the D3D12→D3D11 failure wasn't investigated (maybe resource flags); it's not needed.
+
+**Shared buffers (geometry), measured (M2 spike, resolved):**
+- D3D12 shared-heap buffer → `ID3D11Device1::OpenSharedResource1` as `ID3D11Buffer`: **`E_INVALIDARG`**.
+- D3D11 buffer with `MISC_SHARED | MISC_SHARED_NTHANDLE`: **`CreateBuffer` itself fails with `E_INVALIDARG`**.
+- ⇒ **Buffers can't be shared in either direction.** Geometry must reach D3D12 through a CPU upload, done once per mesh:
+  1. Preferred: `BSGraphics::TriShape::rawVertexData` / `rawIndexData` (CPU copies) → D3D12 upload heap → default buffer. M3 must count how often these are non-null.
+  2. Otherwise: D3D11 `CopyResource` into a staging buffer, polled with a D3D11 query (no CPU wait on the frame path), then `Map` → D3D12 upload.
+  3. (Not planned) A compute pass copying buffer → shared texture → D3D12 copy back to a buffer.
+
+M2 measurements (RTX 4080 SUPER, ~57 fps, 13,207 frames): the D3D11→D3D12→D3D11 fence round trip costs **0.30 ms average / 0.75 ms max** on the D3D11 GPU timeline. The D3D12 dispatch itself is 0.005 ms, so the cost is almost entirely the queue handoff; that argues for batching all RT work into as few sync points as possible (§1). CPU submit is 0.2–0.27 ms, likely dominated by the `ID3D11DeviceContext::Flush()` after the signal. That's a candidate to remove later.
 
 **Precedent:** CS itself already does D3D11/D3D12 interop in `src/Features/Upscaling/DX12SwapChain.{h,cpp}` (frame generation). It uses a same-adapter D3D12 device, a shared fence opened via `ID3D11Device5::OpenSharedFence`, and `WrappedResource` textures. Note that CS **creates shared textures in D3D11** (`MISC_SHARED | SHARED_NTHANDLE`) and opens them in D3D12, which is the reverse of the direction above; that direction is proven in this codebase. When frame generation is active a D3D12 device already exists, so decide whether to share it. Skyrim Upscaler and PIXL's sidecar are further references.
 

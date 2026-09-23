@@ -161,3 +161,12 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 - D3D12 code: `src/RT/RT.{h,cpp}`. `RT::Init(globals::d3d::device)` runs from `SkyrimRT::SetupResources()`: IDXGIDevice → adapter → name + LUID → probe `D3D12CreateDevice(FL 12_0)` → `D3D12_FEATURE_D3D12_OPTIONS5.RaytracingTier`. The probe device is released; no D3D12 object stays resident until M2.
 - Below DXR 1.1 (or probe failure) the feature sets `loaded = false` + `failedLoadedMessage`, following the HorizonFix pattern.
 - Jake's machine (2026-09-23): RTX 4080 SUPER, LUID `00000000:0000D324`, driver reports a raytracing tier **above 1.1** (enum value > 11, most likely 1.2). The Windows SDK 10.0.26100 headers name only up to `TIER_1_1`, so `RT::GetTierName` derives `major.minor` from the enum value.
+
+## SkyrimRT sidecar (M2)
+
+- `src/RT/Sidecar.{h,cpp}`: persistent D3D12 device (our own, not Upscaling's), DIRECT queue, one shared fence used both ways, 3 frame slots (a busy slot is skipped, never CPU-waited). `src/RT/DebugDump.{h,cpp}`: F10 → `frame_<n>.json` + `debug_testpattern_<n>.png` on a worker thread (WIC via DirectXTex, COM initialised on that thread).
+- Per-frame hook: `SkyrimRT::Reset()`, which `State::Reset()` calls first thing in the Present hook (`src/Hooks.cpp:385`), before `HDRDisplay::HandleSwapChainPresent` draws the ImGui overlay. So D3D11 `Wait` precedes the overlay's read in queue order, and next frame's `Signal` follows it.
+- `SkyrimRT` is an `OverlayFeature`: `OverlayRenderer::RenderFeatureOverlays` calls `DrawOverlay()` on every loaded overlay feature each frame; the feature decides visibility itself.
+- Debug layer/DRED (debug builds) are enabled in `SkyrimRT::Load()` because enabling them after any D3D12 device exists removes that device (CS's frame-gen device included).
+- D3D12 shaders: `D3DCompileFromFile(... "cs_5_1")` on `Data\\Shaders\\SkyrimRT\\*.hlsl`. RayQuery (M4) will need DXC / SM 6.5.
+- Sharing results and timings: ARCHITECTURE §2.
