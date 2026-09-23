@@ -19,6 +19,8 @@ RWTexture2D<float4> OutRadianceHitDist : register(u3);
 RWByteAddressBuffer Counters : register(u4);
 
 static const float kSunRayLength = 50000.0;  // as the sun-shadow trace (SunShadows::kMaxRayDistance)
+static const float kSelfHitMin = 2.0;         // game units
+static const float kSelfHitRelative = 0.01;   // of view distance: Raytracer::kMismatchThreshold
 
 void Count(uint a_slot, bool a_condition)
 {
@@ -67,9 +69,9 @@ bool Occluded(float3 a_origin, float3 a_direction, float a_length)
 	ray.Direction = a_direction;
 	ray.TMin = 0.0;
 	ray.TMax = a_length;
-	RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+	RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
 	query.TraceRayInline(Scene, RAY_FLAG_NONE, C.CasterMask, ray);
-	query.Proceed();
+	PROCEED_ALPHA_TESTED(query);
 	return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
@@ -122,11 +124,13 @@ float3 HitRadiance(float3 a_albedo, float3 a_normal, float a_sunVisibility)
 	RayDesc ray;
 	ray.Origin = position + geometricNormal * (C.NormalBias + distance * C.DistanceBias);
 	ray.Direction = direction;
-	ray.TMin = 0.0;
+	// Skip surfaces within the depth-metric tolerance of the start: where the traced mesh sits slightly in front of
+	// the drawn one (tree sway between draws, leaf flutter), rays would start inside it and darken it with full AO.
+	ray.TMin = max(kSelfHitMin, distance * kSelfHitRelative);
 	ray.TMax = C.HitDistParams.w;
-	RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+	RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
 	query.TraceRayInline(Scene, RAY_FLAG_NONE, C.CasterMask, ray);
-	query.Proceed();
+	PROCEED_ALPHA_TESTED(query);
 	const bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 
 	float3 radiance = 0.0;
@@ -139,8 +143,10 @@ float3 HitRadiance(float3 a_albedo, float3 a_normal, float a_sunVisibility)
 		if (all(hitNormal == 0.0))
 			hitNormal = -direction;
 		const float3 hitPosition = ray.Origin + direction * hitDistance;
+		// Lighting.hlsl shadows the directional light only through the sun's shadow mask (exteriors); indoors it is
+		// unshadowed, and a visibility ray would always hit the ceiling.
 		if (dot(hitNormal, C.ToSun.xyz) > 0.0 && any(C.SunColor.rgb > 0.0))
-			sunLit = !Occluded(hitPosition + hitNormal * (C.NormalBias + hitDistance * C.DistanceBias), C.ToSun.xyz, kSunRayLength);
+			sunLit = C.Interior || !Occluded(hitPosition + hitNormal * (C.NormalBias + hitDistance * C.DistanceBias), C.ToSun.xyz, kSunRayLength);
 		radiance = HitRadiance(UnpackRGBA8(instance.Albedo).rgb, hitNormal, sunLit ? 1.0 : 0.0);
 	}
 

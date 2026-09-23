@@ -1,5 +1,7 @@
 #include "Raytracer.h"
 
+#include "AlphaAtlas.h"
+
 #include <dxgi1_2.h>
 #include <fstream>
 
@@ -9,11 +11,12 @@ namespace RT
 	{
 		// Per-slot upload buffer layout.
 		constexpr uint64_t kInstanceDescOffset = 0;                         // kMaxInstances * 64 B
-		constexpr uint64_t kInstanceDataOffset = 4ull << 20;                // kMaxInstances * 32 B
-		constexpr uint64_t kAabbOffset = 6ull << 20;                        // kMaxExclusions * 24 B
-		constexpr uint64_t kConstantsOffset = 7ull << 20;                   // TraceConstants
+		constexpr uint64_t kInstanceDataOffset = 4ull << 20;                // kMaxInstances * 48 B
+		constexpr uint64_t kAabbOffset = 7ull << 20;                        // kMaxExclusions * 24 B
+		constexpr uint64_t kConstantsOffset = 8ull << 20;                   // TraceConstants
 		constexpr uint64_t kZeroOffset = kConstantsOffset + 256;            // zeros for the counter clear
-		constexpr uint64_t kCounterBytes = 64;                              // 16 uints, 9 used
+		constexpr uint64_t kCounterBytes = 64;                              // 16 uints, kCounterCount used
+		static_assert(kCounterCount * sizeof(uint32_t) <= kCounterBytes);
 		constexpr uint32_t kTimestampsPerSlot = 4;
 
 		constexpr uint32_t kMaskStatic = 0x01;
@@ -27,7 +30,11 @@ namespace RT
 		constexpr uint32_t kDepthDescriptor = 0;
 		constexpr uint32_t kFirstPageDescriptor = 1;
 		constexpr uint32_t kFirstViewDescriptor = kFirstPageDescriptor + Raytracer::kMeshPageSlots;
-		constexpr uint32_t kDescriptorCount = kFirstViewDescriptor + static_cast<uint32_t>(DebugView::kCount);
+		constexpr uint32_t kAlphaAtlasDescriptor = kFirstViewDescriptor + static_cast<uint32_t>(DebugView::kCount);
+		constexpr uint32_t kDescriptorCount = kAlphaAtlasDescriptor + 1;
+
+		// M7c: alpha-tested instances with an atlas tile are traced as non-opaque; the passes alpha-test candidate hits.
+		constexpr uint32_t kInstanceFlagForceNonOpaque = D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE;
 
 		// Must match TraceConstants in RayQueryDebugCS.hlsl (cbuffer packing).
 		struct alignas(16) TraceConstants
@@ -49,9 +56,13 @@ namespace RT
 		struct InstanceGpu
 		{
 			uint32_t vertexPage, vertexOffset, indexPage, indexOffset;
-			uint32_t stride, flags, albedo, pad;  // albedo: RGBA8 average diffuse (M6 material table)
+			uint32_t stride, flags, albedo, alpha;  // albedo: RGBA8 average diffuse (M6 material table); alpha: M7c alpha test
+			uint32_t uvPage, uvOffset, uvStride, pad;  // M7c: texture-coordinate source (bind pose for skinned)
 		};
-		static_assert(sizeof(InstanceGpu) == 32);
+		static_assert(sizeof(InstanceGpu) == 48);
+		static_assert(kInstanceDataOffset + Raytracer::kMaxInstances * sizeof(InstanceGpu) <= kAabbOffset);
+		static_assert(kAabbOffset + Raytracer::kMaxExclusions * sizeof(D3D12_RAYTRACING_AABB) <= kConstantsOffset);
+		static_assert(kZeroOffset + kCounterBytes <= Raytracer::kUploadSlotBytes);
 
 		void Transition(ID3D12GraphicsCommandList* a_list, ID3D12Resource* a_resource, D3D12_RESOURCE_STATES a_before, D3D12_RESOURCE_STATES a_after)
 		{
@@ -99,10 +110,11 @@ namespace RT
 			return Fail(std::format("cannot open {}", path.string()));
 		const std::vector<char> bytecode((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 
-		D3D12_DESCRIPTOR_RANGE ranges[3]{};
+		D3D12_DESCRIPTOR_RANGE ranges[4]{};
 		ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, kDepthDescriptor };                  // t1: raster depth
 		ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kMeshPageSlots, 0, 1, kFirstPageDescriptor };  // t0, space1: mesh pages
 		ranges[2] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, static_cast<UINT>(DebugView::kCount), 0, 0, kFirstViewDescriptor };  // u0-u3
+		ranges[3] = GetAlphaAtlasRange(kAlphaAtlasDescriptor);                                        // t0, space2: alpha atlas
 
 		D3D12_ROOT_PARAMETER params[6]{};
 		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;  // b0
@@ -116,11 +128,12 @@ namespace RT
 		params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;  // u4: counters
 		params[4].Descriptor = { 4, 0 };
 		params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-		params[5].DescriptorTable = { 3, ranges };
+		params[5].DescriptorTable = { 4, ranges };
 		for (auto& param : params)
 			param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 6, .pParameters = params };
+		const D3D12_STATIC_SAMPLER_DESC sampler = GetAlphaAtlasSampler();
+		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 6, .pParameters = params, .NumStaticSamplers = 1, .pStaticSamplers = &sampler };
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put());
 		if (FAILED(hr))
@@ -137,13 +150,15 @@ namespace RT
 		return true;
 	}
 
-	bool Raytracer::Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context, uint32_t a_screenWidth, uint32_t a_screenHeight)
+	bool Raytracer::Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context, uint32_t a_screenWidth, uint32_t a_screenHeight,
+		ID3D12Resource* a_alphaAtlas)
 	{
 		device = a_device;
 		d3d11Device = a_d3d11Device;
 		d3d11Context = a_d3d11Context;
 		width = a_screenWidth;
 		height = a_screenHeight;
+		alphaAtlas = a_alphaAtlas;
 
 		std::string error;
 		if (!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R32_FLOAT, "RasterDepth", rasterDepth, error))
@@ -195,6 +210,7 @@ namespace RT
 			uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 			device->CreateUnorderedAccessView(views[i].resource12.get(), nullptr, &uav, cpuHandle(kFirstViewDescriptor + i));
 		}
+		WriteAlphaAtlasDescriptor(device, alphaAtlas, cpuHandle(kAlphaAtlasDescriptor));
 
 		// Acceleration structure memory sized for the maximum counts, so nothing is reallocated while in flight.
 		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs{};
@@ -266,7 +282,7 @@ namespace RT
 			width, height, tlasInfo.ResultDataMaxSizeInBytes / (1024.0 * 1024.0), kMaxInstances, kScratchBytes >> 20);
 
 		// M5. A failure here only disables sun shadows; the debug trace keeps working.
-		sunShadowsReady = sunShadows.Init(device, d3d11Device, d3d11Context, width, height, rasterDepth.resource12.get(), copyDepthCS.get());
+		sunShadowsReady = sunShadows.Init(device, d3d11Device, d3d11Context, width, height, rasterDepth.resource12.get(), copyDepthCS.get(), alphaAtlas);
 		// M7. A failure only keeps actors out of the TLAS.
 		skinnedReady = skinned.Init(device);
 		return true;
@@ -357,10 +373,12 @@ namespace RT
 			}
 			desc.InstanceID = i;
 			desc.InstanceMask = record.actor ? kMaskActor : record.alphaBlended ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
+			desc.Flags = record.alpha ? kInstanceFlagForceNonOpaque : 0u;
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;
 			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride,
-				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u), record.albedo, 0 };
+				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u), record.albedo, record.alpha,
+				record.uvPage, record.uvOffset, record.uvStride, 0 };
 		}
 
 		// 3. Exclusion AABBs (camera-relative) as one procedural BLAS, instanced with an identity transform.
@@ -416,14 +434,22 @@ namespace RT
 
 		const uint32_t renderWidth = std::min(a_camera.renderWidth, width);
 		const uint32_t renderHeight = std::min(a_camera.renderHeight, height);
+		const bool shadows = a_shadows && sunShadowsReady;
+		// M7c: D3D11 filled new atlas tiles before the fence signal; readable by the traces until back to COMMON below.
+		const bool readsAtlas = alphaAtlas && (a_debugTrace || shadows);
+		if (readsAtlas)
+			Transition(a_list, alphaAtlas, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 		if (a_debugTrace)
 			RecordDebugTrace(a_list, a_slot, a_cache, instanceCount, exclusionCount, a_area, a_camera, renderWidth, renderHeight, a_captureDump);
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot + 3);
 		a_list->ResolveQueryData(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot, kTimestampsPerSlot, timestampReadback.get(), sizeof(uint64_t) * kTimestampsPerSlot * a_slot);
 
-		// 7. M5 sun shadows, reusing this frame's TLAS.
-		if (a_shadows && sunShadowsReady)
-			sunShadows.Record(a_list, a_slot, tlas->GetGPUVirtualAddress(), a_camera, renderWidth, renderHeight, *a_shadows, a_compareShadowMap, a_captureDump);
+		// 7. M5 sun shadows, reusing this frame's TLAS (and, M7c, its instance data and mesh pages for the alpha test).
+		if (shadows)
+			sunShadows.Record(a_list, a_slot, tlas->GetGPUVirtualAddress(), uploadVA + kInstanceDataOffset, a_cache.GetMeshPool(), a_camera,
+				renderWidth, renderHeight, *a_shadows, a_compareShadowMap, a_captureDump);
+		if (readsAtlas)
+			Transition(a_list, alphaAtlas, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
 
 		slotPending[a_slot] = true;
 		slotInfo[a_slot] = { a_debugTrace, instanceCount, exclusionCount, static_cast<uint32_t>(instances.size() - instanceCount),

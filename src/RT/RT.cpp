@@ -157,6 +157,23 @@ namespace RT
 		return sidecar ? sidecar->GetGIStats() : nullptr;
 	}
 
+	void SetAlphaTest(bool a_enabled)
+	{
+		if (sidecar)
+			sidecar->SetAlphaTest(a_enabled);
+	}
+
+	void SetSkinPoseFromCache(bool a_enabled)
+	{
+		if (sidecar)
+			sidecar->SetSkinPoseFromCache(a_enabled);
+	}
+
+	const AlphaAtlasStats* GetAlphaAtlasStats()
+	{
+		return sidecar ? &sidecar->GetAlphaAtlasStats() : nullptr;
+	}
+
 	ID3D11ShaderResourceView* GetGIViewSRV()
 	{
 		const auto* stats = GetGIStats();

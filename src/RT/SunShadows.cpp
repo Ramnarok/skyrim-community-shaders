@@ -1,6 +1,8 @@
 #include "SunShadows.h"
 
+#include "AlphaAtlas.h"
 #include "BufferPool.h"
+#include "SkinnedMeshes.h"
 
 #include <fstream>
 
@@ -57,6 +59,11 @@ namespace RT
 		constexpr uint32_t kTemporalTable = 1;  // + parity
 		constexpr uint32_t kSpatialTable = 3;   // + parity
 		constexpr uint32_t kTableCount = 5;
+		// M7c, after the tables: the static mesh-pool pages (t0, space1) and the alpha atlas (t0, space2).
+		constexpr uint32_t kMeshPageSlots = 64;  // MeshPages[] in MeshData.hlsli
+		constexpr uint32_t kFirstPageDescriptor = kTableCount * kTableSize;
+		constexpr uint32_t kAlphaAtlasDescriptor = kFirstPageDescriptor + kMeshPageSlots;
+		constexpr uint32_t kDescriptorCount = kAlphaAtlasDescriptor + 1;
 
 		constexpr auto kSRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 		constexpr auto kUAV = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -119,7 +126,12 @@ namespace RT
 		ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kTableSrvs, 1, 0, 0 };           // t1..t4
 		ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kTableUavs, 0, 0, kTableSrvs };  // u0..u1
 
-		D3D12_ROOT_PARAMETER params[4]{};
+		// M7c alpha test (trace only): mesh pages then the atlas, one table.
+		D3D12_DESCRIPTOR_RANGE alphaRanges[2]{};
+		alphaRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kMeshPageSlots, 0, 1, 0 };  // t0, space1: mesh pages
+		alphaRanges[1] = GetAlphaAtlasRange(kMeshPageSlots);                          // t0, space2: alpha atlas
+
+		D3D12_ROOT_PARAMETER params[6]{};
 		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;  // b0
 		params[0].Descriptor = { 0, 0 };
 		params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  // t0: TLAS
@@ -128,10 +140,15 @@ namespace RT
 		params[2].Descriptor = { 4, 0 };
 		params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		params[3].DescriptorTable = { 2, ranges };
+		params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  // t5: instance data
+		params[4].Descriptor = { 5, 0 };
+		params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		params[5].DescriptorTable = { 2, alphaRanges };
 		for (auto& param : params)
 			param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 4, .pParameters = params };
+		const D3D12_STATIC_SAMPLER_DESC sampler = GetAlphaAtlasSampler();
+		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 6, .pParameters = params, .NumStaticSamplers = 1, .pStaticSamplers = &sampler };
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put());
 		if (FAILED(hr))
@@ -161,7 +178,7 @@ namespace RT
 
 	bool SunShadows::CreateDescriptors()
 	{
-		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{ .Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, .NumDescriptors = kTableCount * kTableSize, .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{ .Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, .NumDescriptors = kDescriptorCount, .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
 		if (HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(heap.put())); FAILED(hr))
 			return Fail(std::format("CreateDescriptorHeap(shadows) failed ({})", FormatHResult(hr)));
 		descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -221,12 +238,26 @@ namespace RT
 			uav(kSpatialTable + p, 0, mask.resource12.get(), kR8);
 			uav(kSpatialTable + p, 1, view.resource12.get(), kRGBA8);
 		}
+
+		// M7c: mesh pages start null (filled per frame by UpdatePageDescriptors), then the atlas.
+		D3D12_SHADER_RESOURCE_VIEW_DESC nullPage{ .Format = DXGI_FORMAT_R32_TYPELESS, .ViewDimension = D3D12_SRV_DIMENSION_BUFFER, .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING };
+		nullPage.Buffer.NumElements = 1;
+		nullPage.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+		auto flat = [&](uint32_t a_index) {
+			auto h = heap->GetCPUDescriptorHandleForHeapStart();
+			h.ptr += static_cast<SIZE_T>(a_index) * descriptorSize;
+			return h;
+		};
+		for (uint32_t i = 0; i < kMeshPageSlots; i++)
+			device->CreateShaderResourceView(nullptr, &nullPage, flat(kFirstPageDescriptor + i));
+		WriteAlphaAtlasDescriptor(device, alphaAtlas, flat(kAlphaAtlasDescriptor));
 		return true;
 	}
 
 	bool SunShadows::Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
-		uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D11ComputeShader* a_copyCS)
+		uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D11ComputeShader* a_copyCS, ID3D12Resource* a_alphaAtlas)
 	{
+		alphaAtlas = a_alphaAtlas;
 		device = a_device;
 		d3d11Device = a_d3d11Device;
 		d3d11Context = a_d3d11Context;
@@ -316,8 +347,8 @@ namespace RT
 		ctx->CSSetShader(nullptr, nullptr, 0);
 	}
 
-	void SunShadows::Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas,
-		const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const SunShadowParams& a_params,
+	void SunShadows::Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
+		const BufferPool& a_meshPool, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const SunShadowParams& a_params,
 		bool a_compareShadowMap, bool a_captureDump)
 	{
 		const bool historyValid = haveHistory && a_camera.gameFrame == historyGameFrame + 1;
@@ -375,6 +406,17 @@ namespace RT
 		a_list->SetComputeRootConstantBufferView(0, uploadVA + kConstantsOffset);
 		a_list->SetComputeRootShaderResourceView(1, a_tlas);
 		a_list->SetComputeRootUnorderedAccessView(2, counters->GetGPUVirtualAddress());
+		// M7c: the alpha test reads indices and UVs from the static pool only (skinned meshes' bind-pose sources live
+		// there too), so the skinned output pages stay null.
+		{
+			auto first = heap->GetCPUDescriptorHandleForHeapStart();
+			first.ptr += static_cast<SIZE_T>(kFirstPageDescriptor) * descriptorSize;
+			UpdatePageDescriptors(device, a_meshPool, first, descriptorSize, describedPageSerials.data(), SkinnedMeshes::kFirstPageSlot);
+			auto pageTable = heap->GetGPUDescriptorHandleForHeapStart();
+			pageTable.ptr += static_cast<UINT64>(kFirstPageDescriptor) * descriptorSize;
+			a_list->SetComputeRootShaderResourceView(4, a_instances);
+			a_list->SetComputeRootDescriptorTable(5, pageTable);
+		}
 
 		// Counters: zero, then UAV.
 		Barriers(a_list, { TransitionBarrier(counters.get(), kCommon, D3D12_RESOURCE_STATE_COPY_DEST) });

@@ -112,8 +112,12 @@ namespace RT
 		if (!meshCache.Init(device5.get(), d3d11Device.get(), d3d11Context.get()))
 			return fail("mesh cache upload ring could not be created");
 
+		// M7c. A failure only leaves alpha-tested meshes traced as solid cards.
+		alphaAtlasReady = alphaAtlas.Init(d3d11Device.get(), d3d11Context.get(), device5.get());
+		ID3D12Resource* atlas12 = alphaAtlasReady ? alphaAtlas.GetResource() : nullptr;
+
 		// M4 ray tracing. A failure here only disables tracing; the M2/M3 interop keeps running.
-		raytracerReady = raytracer.Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight);
+		raytracerReady = raytracer.Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight, atlas12);
 		raytracer.SetTimestampFrequency(d3d12TimestampFrequency);
 
 		// M6. Failures only disable GI.
@@ -121,7 +125,7 @@ namespace RT
 #if defined(SKYRIMRT_NRD)
 		if (raytracerReady) {
 			gi = std::make_unique<GlobalIllumination>();
-			if (gi->Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight, raytracer.GetRasterDepth()))
+			if (gi->Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight, raytracer.GetRasterDepth(), atlas12))
 				gi->SetTimestampFrequency(d3d12TimestampFrequency);
 			else
 				gi.reset();
@@ -549,6 +553,10 @@ namespace RT
 		}
 		data.giCompiledIn = IsGICompiledIn();
 		data.materials = materialTable.GetStats();
+		data.alphaAtlas = alphaAtlas.GetStats();
+		data.poseSamples = std::move(dumpPoseSamples);
+		dumpPoseSamples.clear();
+		alphaAtlas.ReadDumpImage(data.images);
 #if defined(SKYRIMRT_NRD)
 		if (gi) {
 			data.giAvailable = true;
@@ -601,6 +609,11 @@ namespace RT
 
 		auto* ctx = d3d11Context.get();
 		if (dumpStage == DumpStage::kCaptureOn) {
+			// Same frame as the walk that took the samples: has the pose moved since the Prepass?
+			if (dumpGameFrame == a_gameFrame) {
+				for (auto& sample : dumpPoseSamples)
+					ReadSkinPoseAtPresent(sample);
+			}
 			const bool anyRT = dumpShadowsTraced || dumpGITraced;
 			captureOn.Begin(d3d11Device.get(), ctx, anyRT ? "final_rt_on" : "final");
 			if (anyRT) {
@@ -648,12 +661,15 @@ namespace RT
 #endif
 
 		// Scene first: the TLAS is built from this frame's instances.
-		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats);
+		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats, skinPoseFromCache);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);
 		// Albedos for the instance data; the candidates' texture pointers are only valid this frame.
 		if (inWorld && materialTableReady)
 			materialTable.Update(candidates, a_gameFrame);
+		// M7c: new alpha-atlas tiles are filled here, on D3D11 before the signal below, so this frame's traces see them.
+		if (inWorld && alphaAtlasReady)
+			alphaAtlas.Update(candidates, a_gameFrame, alphaTestEnabled);
 
 		// Trace only when the camera was captured for this very frame (SkyrimRT::Prepass), so matrices, depth and
 		// transforms all describe the same frame.
@@ -760,6 +776,9 @@ namespace RT
 		}
 
 		if (dumpThisFrame) {
+			if (alphaAtlasReady)
+				alphaAtlas.CaptureForDump();
+			dumpPoseSamples = skinnedScene.poseSamples;  // re-read at this frame's Present (M7 tree-pose diagnostic)
 			dumpHasTrace = debugTrace;
 			dumpShadowsTraced = shadows != nullptr;
 			dumpGITraced = false;  // set by SubmitGI later this frame

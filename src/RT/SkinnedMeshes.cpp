@@ -411,9 +411,15 @@ namespace RT
 			record.indexOffset = entry.source.indexOffset;
 			record.stride = 12;
 			record.albedo = candidate.albedo;
+			// M7c: trees are skinned (their branches sway on bones), and so is hair; UVs come from the bind-pose source.
+			record.alpha = candidate.alphaWord;
+			record.uvPage = entry.source.vertexPage;
+			record.uvOffset = entry.source.vertexOffset;
+			record.uvStride = entry.source.stride;
 			record.alphaTested = candidate.alphaTested;
 			record.alphaBlended = candidate.alphaBlended;
 			record.actor = true;
+			record.windAnimated = candidate.windAnimated;
 			a_out.push_back(record);
 			count++;
 		}

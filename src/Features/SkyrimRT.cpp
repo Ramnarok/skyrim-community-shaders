@@ -4,6 +4,7 @@
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "I18n/I18n.h"
+#include "RT/AlphaAtlas.h"
 #include "RT/GlobalIllumination.h"
 #include "RT/MaterialTable.h"
 #include "Utils/SphericalHarmonics.h"
@@ -23,6 +24,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ShowTestPattern,
 	TraceDebugView,
 	DebugView,
+	AlphaTest,
+	SkinPoseFromCache,
 	SunShadows,
 	SunAngularRadius,
 	AlphaTestedShadows,
@@ -36,6 +39,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIAOStrength,
 	GIRayLength,
 	GIAlphaTested,
+	GIInteriors,
 	GIHistory,
 	GIView)
 
@@ -193,6 +197,8 @@ void SkyrimRT::Prepass()
 	params.maxHistory = settings.ShadowHistory;
 	params.spatialRadius = settings.ShadowSpatialRadius;
 	params.viewMode = settings.ShadowView;
+	RT::SetAlphaTest(settings.AlphaTest);
+	RT::SetSkinPoseFromCache(settings.SkinPoseFromCache);
 	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr, gi);
 
 	// Screen-Space Shadows skipped its pass for this frame, so the slot is ours. A mask that couldn't be traced
@@ -206,8 +212,10 @@ void SkyrimRT::Prepass()
 bool SkyrimRT::WantsGlobalIllumination()
 {
 	// DeferredCompositeCS reads t10-t12 only when compiled with SSGI, i.e. when Screen-Space GI is loaded.
+	// Interiors are lit mostly by point lights, which the bounce doesn't sample yet, so they stay with Screen-Space GI
+	// unless GIInteriors asks otherwise.
 	return loaded && settings.Enabled && settings.GlobalIllumination && globals::features::screenSpaceGI.loaded &&
-	       RT::IsGIAvailable() && !RT::IsSunShadowSuppressed();
+	       RT::IsGIAvailable() && !RT::IsSunShadowSuppressed() && (settings.GIInteriors || !Util::IsInterior());
 }
 
 bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
@@ -223,6 +231,7 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.alphaTestedCasters = settings.GIAlphaTested;
 	params.maxAccumulatedFrames = settings.GIHistory;
 	params.viewMode = settings.GIView;
+	params.interior = Util::IsInterior();
 	a_outputs = RT::SubmitGI(params);
 	return a_outputs.ao && a_outputs.y && a_outputs.coCg;
 }
@@ -344,7 +353,11 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 
 	ImGui::Checkbox(T(TKEY("gi_alpha_tested"), "Alpha-tested meshes bounce and occlude"), &settings.GIAlphaTested);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("%s", T(TKEY("gi_alpha_tested_tooltip"), "Include foliage and other alpha-tested meshes. Their transparency isn't supported yet, so leaves act as solid cards."));
+		ImGui::Text("%s", T(TKEY("gi_alpha_tested_tooltip"), "Include foliage and other alpha-tested meshes. With Alpha-test foliage off, leaves act as solid cards."));
+
+	ImGui::Checkbox(T(TKEY("gi_interiors"), "Ray-traced GI in interiors"), &settings.GIInteriors);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_interiors_tooltip"), "Interiors are lit mostly by torches, candles and fires, which ray-traced GI doesn't bounce yet. When off, interiors use Screen-Space GI."));
 
 	ImGui::SliderInt(T(TKEY("gi_history"), "Denoiser history (frames)"), reinterpret_cast<int*>(&settings.GIHistory), 1, 63);
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -370,7 +383,7 @@ void SkyrimRT::DrawSunShadowSettings()
 {
 	ImGui::Checkbox(T(TKEY("sun_shadows"), "Ray-traced sun shadows"), &settings.SunShadows);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("%s", T(TKEY("sun_shadows_tooltip"), "Trace sun and moon shadows from the static scene and terrain in exteriors. They take the place of Screen-Space Shadows and combine with the game's shadow maps, which still provide shadows from characters, foliage and distant land."));
+		ImGui::Text("%s", T(TKEY("sun_shadows_tooltip"), "Trace sun and moon shadows from the scene, characters and foliage in exteriors. They take the place of Screen-Space Shadows and combine with the game's shadow maps, which still provide shadows from grass and distant land."));
 
 	if (!globals::features::screenSpaceShadows.loaded)
 		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("sun_shadows_needs_sss"), "Requires the Screen-Space Shadows feature to be installed: the lighting shaders read the shadow mask through it."));
@@ -383,7 +396,7 @@ void SkyrimRT::DrawSunShadowSettings()
 
 	ImGui::Checkbox(T(TKEY("alpha_tested_shadows"), "Alpha-tested meshes cast shadows"), &settings.AlphaTestedShadows);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("%s", T(TKEY("alpha_tested_shadows_tooltip"), "Let foliage and other alpha-tested meshes cast ray-traced shadows. Their transparency isn't supported yet, so leaves cast solid shadows."));
+		ImGui::Text("%s", T(TKEY("alpha_tested_shadows_tooltip"), "Let foliage and other alpha-tested meshes cast ray-traced shadows. With Alpha-test foliage off, leaves cast solid shadows."));
 
 	ImGui::SliderInt(T(TKEY("shadow_history"), "Temporal history (frames)"), reinterpret_cast<int*>(&settings.ShadowHistory), 1, 64);
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -437,7 +450,17 @@ void SkyrimRT::DrawSettings()
 		if (ImGui::Combo(T(TKEY("debug_view"), "Debug view"), &view, viewNames, IM_ARRAYSIZE(viewNames)))
 			settings.DebugView = static_cast<uint32_t>(view);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("debug_view_tooltip"), "Mismatch colours: green match, red traced nearer, blue traced farther, yellow traced miss, grey excluded (actors, foliage, dynamic), dark grey outside the loaded cells."));
+			ImGui::Text("%s", T(TKEY("debug_view_tooltip"), "Mismatch colours: green match, red traced nearer, blue traced farther, yellow traced miss, grey excluded (geometry the ray tracing scene doesn't contain), pink excluded (foliage not alpha-tested yet), ochre excluded (wind-animated foliage), teal excluded (grass and ground clutter), dark grey outside the loaded cells."));
+
+		ImGui::Checkbox(T(TKEY("alpha_test"), "Alpha-test foliage"), &settings.AlphaTest);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("alpha_test_tooltip"), "Trace foliage and other alpha-tested meshes with their transparency, from a low-resolution copy of each texture's alpha. When off, their leaves act as solid cards."));
+		if (const auto* atlas = RT::GetAlphaAtlasStats(); atlas && atlas->available && settings.AlphaTest)
+			ImGui::Text("%s: %u / %u (%u / %u)", T(TKEY("alpha_atlas_status"), "Alpha atlas tiles (alpha-tested meshes)"), atlas->tilesUsed, atlas->capacity, atlas->candidatesTested, atlas->candidates);
+
+		ImGui::Checkbox(T(TKEY("skin_pose_from_cache"), "Skinned pose from renderer matrices"), &settings.SkinPoseFromCache);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("skin_pose_from_cache_tooltip"), "Pose characters and trees that the game drew this frame from the exact bone matrices it drew them with, instead of their bones' current transforms. Trees need this: culling re-poses their swaying branches after some of their draws."));
 
 		ImGui::BeginDisabled(!settings.Enabled || !RT::IsRunning());
 		if (ImGui::Button(T(TKEY("write_dump"), "Write debug dump (F10)")))

@@ -6,6 +6,7 @@
 
 #include "FrameCapture.h"
 #include "GlobalIllumination.h"
+#include "AlphaAtlas.h"
 #include "MaterialTable.h"
 #include "MeshCache.h"
 #include "RT.h"
@@ -55,6 +56,11 @@ namespace RT
 		const GIStats* GetGIStats() const;
 		ID3D11ShaderResourceView* GetGIViewSRV() const;
 		const MaterialTableStats& GetMaterialStats() const { return materialTable.GetStats(); }
+		const AlphaAtlasStats& GetAlphaAtlasStats() const { return alphaAtlas.GetStats(); }
+		/** @brief M7c: alpha-test foliage against the atlas (else alpha-tested meshes are traced as solid cards). */
+		void SetAlphaTest(bool a_enabled) { alphaTestEnabled = a_enabled; }
+		/** @brief M7: build skinned palettes from the renderer's NiSkinInstance::boneMatrices (tree-pose investigation). */
+		void SetSkinPoseFromCache(bool a_enabled) { skinPoseFromCache = a_enabled; }
 
 		/** @brief Present time: an untraced round trip if none ran this frame (menus, loading), and the dump sequence. */
 		void OnPresent(uint32_t a_gameFrame);
@@ -141,6 +147,7 @@ namespace RT
 		uint64_t dumpFenceValue = 0;
 		uint32_t dumpPatternFrame = 0;
 		uint32_t dumpGameFrame = 0;
+		std::vector<SkinPoseSample> dumpPoseSamples;  // M7 tree-pose diagnostic, walk-time then Present-time
 		uint32_t suppressUntilFrame = 0;
 		bool dumpShadowsTraced = false;
 		FrameCapture captureOn;
@@ -163,6 +170,11 @@ namespace RT
 		// M6.
 		MaterialTable materialTable;
 		bool materialTableReady = false;
+		// M7c.
+		AlphaAtlas alphaAtlas;
+		bool alphaAtlasReady = false;
+		bool alphaTestEnabled = true;
+		bool skinPoseFromCache = true;
 #if defined(SKYRIMRT_NRD)
 		std::unique_ptr<GlobalIllumination> gi;
 #endif

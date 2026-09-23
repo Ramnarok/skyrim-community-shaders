@@ -97,10 +97,15 @@ namespace RT
 		uint32_t indexOffset = 0;
 		uint32_t stride = 0;
 		uint32_t albedo = 0;  // RGBA8, see GeometryCandidate::albedo
+		uint32_t alpha = 0;   // M7c InstanceData::Alpha, see GeometryCandidate::alphaWord; non-zero = alpha-tested (non-opaque)
+		uint32_t uvPage = 0;  // M7c: vertex data holding the texture coordinates (skinned: the bind-pose source)
+		uint32_t uvOffset = 0;
+		uint32_t uvStride = 0;
 		bool terrain = false;
 		bool alphaTested = false;
 		bool alphaBlended = false;
 		bool actor = false;  // M7: skinned, positions already camera-relative world space
+		bool windAnimated = false;  // M7c: see GeometryCandidate::windAnimated
 	};
 
 	/**

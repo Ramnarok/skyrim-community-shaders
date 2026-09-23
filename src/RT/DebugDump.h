@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AlphaAtlas.h"
 #include "GlobalIllumination.h"
 #include "MaterialTable.h"
 #include "MeshCache.h"
@@ -36,6 +37,8 @@ namespace RT
 		bool haveSkinned = false;
 		SkinnedStats skinned;
 		MaterialTableStats materials;
+		AlphaAtlasStats alphaAtlas;
+		std::vector<SkinPoseSample> poseSamples;  ///< M7 tree-pose diagnostic
 		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
 	};
 

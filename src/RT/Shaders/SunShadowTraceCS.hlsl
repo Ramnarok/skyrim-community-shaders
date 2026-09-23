@@ -2,11 +2,13 @@
 // inline RayQuery, DXC cs_6_5). No G-buffer exists yet at this point of the frame, so the surface normal used for
 // the ray-origin offset is reconstructed from depth.
 
+#include "MeshData.hlsli"
 #include "SunShadowCommon.hlsli"
 
 RaytracingAccelerationStructure Scene : register(t0);
 Texture2D<float> RasterDepth : register(t1);
 Texture2D<float> GameShadowMask : register(t2);  // copy of the game's kSHADOW_MASK (dump frames only)
+StructuredBuffer<InstanceData> Instances : register(t5);  // root SRV, M7c alpha test
 RWTexture2D<unorm float> RawVisibility : register(u0);
 RWTexture2D<float4> Geometry : register(u1);  // xyz: reconstructed normal (camera-relative world space)
 RWByteAddressBuffer Counters : register(u4);
@@ -93,9 +95,10 @@ float2 ConcentricDisk(float2 a_u)
 		ray.TMax = C.MaxDistance;
 
 		// Single-sided culling would let light through Skyrim's many open-backed meshes, so no cull flags.
-		RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+		// Alpha-tested casters are non-opaque instances (M7c): light passes through their holes.
+		RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
 		query.TraceRayInline(Scene, RAY_FLAG_NONE, C.CasterMask, ray);
-		query.Proceed();
+		PROCEED_ALPHA_TESTED(query);
 		shadowed = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 	}
 

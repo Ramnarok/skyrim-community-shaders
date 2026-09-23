@@ -64,8 +64,9 @@ namespace RT
 		static constexpr float kDenoisingRange = 400000.0f;     ///< game units; farther pixels (and sky) are ignored
 		static constexpr float kSkyViewZ = 10000000.0f;
 
+		/** @param a_alphaAtlas M7c alpha atlas, or nullptr (then nothing is alpha-tested). */
 		bool Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
-			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth);
+			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D12Resource* a_alphaAtlas);
 		const std::string& GetFailureReason() const { return failureReason; }
 		void SetTimestampFrequency(uint64_t a_frequency) { timestampFrequency = a_frequency; }
 
@@ -100,6 +101,7 @@ namespace RT
 		ID3D11Device5* d3d11Device = nullptr;
 		ID3D11DeviceContext4* d3d11Context = nullptr;
 		ID3D12Resource* rasterDepth = nullptr;
+		ID3D12Resource* alphaAtlas = nullptr;
 		uint32_t width = 0;
 		uint32_t height = 0;
 

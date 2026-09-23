@@ -27,7 +27,7 @@ struct GIConstants
 	float AmbientGamma;
 	float AmbientMult;
 	uint ViewMode;  // debug view: 0 off, 1 noisy radiance, 2 denoised radiance, 3 ambient occlusion
-	uint Pad;
+	uint Interior;  // the game doesn't shadow an interior's directional light, so neither does the bounce
 };
 
 // Counter slots, mirrored in GlobalIllumination.h

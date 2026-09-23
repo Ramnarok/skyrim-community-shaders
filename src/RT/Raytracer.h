@@ -29,6 +29,9 @@ namespace RT
 		kTracedMiss,
 		kExcludedAlpha,
 		kExcludedClutter,
+		kAlphaTestedCounted,  ///< M7c: counted pixels whose traced hit passed the alpha test
+		kAlphaTestedMatched,
+		kExcludedWind,  ///< M7c: mismatches on wind-animated foliage (TREE_ANIM sway isn't in the TLAS)
 		kCounterCount
 	};
 
@@ -82,7 +85,9 @@ namespace RT
 		static constexpr float kMismatchThreshold = 0.01f;
 		static constexpr float kClutterHeight = 150.0f;  ///< grass / ground clutter height above terrain (game units)
 
-		bool Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context, uint32_t a_screenWidth, uint32_t a_screenHeight);
+		/** @param a_alphaAtlas M7c alpha atlas (shared, resting in COMMON), or nullptr: then nothing is alpha-tested. */
+		bool Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context, uint32_t a_screenWidth, uint32_t a_screenHeight,
+			ID3D12Resource* a_alphaAtlas);
 		const std::string& GetFailureReason() const { return failureReason; }
 		void SetTimestampFrequency(uint64_t a_frequency);
 
@@ -142,7 +147,8 @@ namespace RT
 
 		winrt::com_ptr<ID3D12RootSignature> rootSignature;
 		winrt::com_ptr<ID3D12PipelineState> pipeline;
-		winrt::com_ptr<ID3D12DescriptorHeap> heap;  // [0] raster depth SRV, [1..64] mesh pages, [65..68] view UAVs
+		winrt::com_ptr<ID3D12DescriptorHeap> heap;  // [0] raster depth SRV, [1..64] mesh pages, [65..68] view UAVs, [69] alpha atlas
+		ID3D12Resource* alphaAtlas = nullptr;
 		uint32_t descriptorSize = 0;
 		std::array<uint64_t, kMeshPageSlots> describedPageSerials{};  // BufferPool page serial each descriptor describes
 

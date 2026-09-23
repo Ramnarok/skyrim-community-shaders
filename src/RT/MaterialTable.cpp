@@ -55,30 +55,33 @@ namespace RT
 		return true;
 	}
 
-	bool MaterialTable::Validate(ID3D11ShaderResourceView* a_srv, Entry& a_entry)
+	TextureIdentity GetTextureIdentity(ID3D11ShaderResourceView* a_srv)
 	{
 		winrt::com_ptr<ID3D11Resource> resource;
 		a_srv->GetResource(resource.put());
 		D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc{};
 		a_srv->GetDesc(&viewDesc);
 
-		uint32_t width = 0;
-		uint32_t height = 0;
-		bool supported = false;
+		TextureIdentity identity{ .resource = resource.get() };
 		if (viewDesc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D) {
 			if (auto texture = resource.try_as<ID3D11Texture2D>()) {
 				D3D11_TEXTURE2D_DESC desc{};
 				texture->GetDesc(&desc);
-				width = desc.Width;
-				height = desc.Height;
-				supported = desc.SampleDesc.Count == 1;
+				identity.width = desc.Width;
+				identity.height = desc.Height;
+				identity.supported = desc.SampleDesc.Count == 1;
 			}
 		}
+		return identity;
+	}
 
+	bool MaterialTable::Validate(ID3D11ShaderResourceView* a_srv, Entry& a_entry)
+	{
+		const TextureIdentity identity = GetTextureIdentity(a_srv);
 		// A different resource (or size) behind the same SRV address means the old texture unloaded and the
 		// address was reused: start over.
-		if (a_entry.resource != resource.get() || a_entry.width != width || a_entry.height != height) {
-			a_entry = Entry{ .resource = resource.get(), .width = width, .height = height, .supported = supported };
+		if (a_entry.resource != identity.resource || a_entry.width != identity.width || a_entry.height != identity.height) {
+			a_entry = Entry{ .resource = identity.resource, .width = identity.width, .height = identity.height, .supported = identity.supported };
 		}
 		return a_entry.supported;
 	}

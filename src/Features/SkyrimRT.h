@@ -27,9 +27,9 @@ struct SkyrimRT : OverlayFeature
 	{
 		return { T("feature.skyrim_rt.description", "Experimental hybrid ray-traced lighting using a DirectX 12 raytracing device alongside the game's renderer."),
 			{ T("feature.skyrim_rt.key_feature_1", "Requires a GPU with DirectX Raytracing tier 1.1"),
-				T("feature.skyrim_rt.key_feature_2", "Ray-traced sun and moon shadows from the static scene and terrain"),
+				T("feature.skyrim_rt.key_feature_2", "Ray-traced sun and moon shadows from the scene, characters and foliage"),
 				T("feature.skyrim_rt.key_feature_3", "Ray-traced one-bounce global illumination and ambient occlusion (private builds with NVIDIA NRD)"),
-				T("feature.skyrim_rt.key_feature_4", "Work in progress: actors and foliage transparency come later") } };
+				T("feature.skyrim_rt.key_feature_4", "Work in progress: many lights, reflections and distant land come later") } };
 	}
 
 	/** @brief Debug dump hotkey (ROADMAP verification loop). */
@@ -41,9 +41,11 @@ struct SkyrimRT : OverlayFeature
 		bool ShowTestPattern = false;
 		bool TraceDebugView = false;  ///< M4: trace the depth / instance / normal / mismatch debug views every frame
 		uint32_t DebugView = 3;       ///< 0 depth, 1 instance, 2 normal, 3 depth-mismatch diff
+		bool AlphaTest = true;        ///< M7c: alpha-test foliage in every trace (else solid cards)
+		bool SkinPoseFromCache = true;   ///< M7: pose skins drawn this frame from the renderer's NiSkinInstance::boneMatrices
 		bool SunShadows = true;       ///< M5: ray-traced sun shadows in place of Screen-Space Shadows
 		float SunAngularRadius = 0.5f;  ///< degrees; penumbra width
-		bool AlphaTestedShadows = false;
+		bool AlphaTestedShadows = true;
 		float ShadowNormalBias = 1.0f;
 		float ShadowDistanceBias = 0.002f;
 		uint32_t ShadowHistory = 24;
@@ -53,7 +55,8 @@ struct SkyrimRT : OverlayFeature
 		float GIIntensity = 1.0f;
 		float GIAOStrength = 1.0f;
 		float GIRayLength = 3000.0f;  ///< game units
-		bool GIAlphaTested = false;
+		bool GIAlphaTested = true;
+		bool GIInteriors = false;  ///< ray-traced GI in interiors (no point-light bounce yet; else Screen-Space GI there)
 		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames
 		uint32_t GIView = 0;      ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
 	};

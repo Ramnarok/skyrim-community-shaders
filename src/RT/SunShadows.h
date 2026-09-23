@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <winrt/base.h>
 
+#include "BufferPool.h"
 #include "FrameTypes.h"
 #include "RT.h"
 #include "SharedTexture.h"
@@ -68,18 +69,23 @@ namespace RT
 		/**
 		 * @param a_rasterDepth The R32 copy of the scene depth the Raytracer shares with D3D11 (read by every pass).
 		 * @param a_copyCS D3D11 copy shader (CopyDepthCS) reused to copy the game's shadow mask on comparison frames.
+		 * @param a_alphaAtlas M7c alpha atlas, or nullptr (then nothing is alpha-tested).
 		 */
 		bool Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
-			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D11ComputeShader* a_copyCS);
+			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D11ComputeShader* a_copyCS, ID3D12Resource* a_alphaAtlas);
 		const std::string& GetFailureReason() const { return failureReason; }
 		void SetTimestampFrequency(uint64_t a_frequency) { timestampFrequency = a_frequency; }
 
 		/** @brief D3D11 side, before the fence signal: on comparison frames copy the game's kSHADOW_MASK into a shared texture. */
 		void CopyInputs(bool a_compareShadowMap);
 
-		/** @brief Records trace, temporal and spatial passes (the TLAS must be built and barriered). */
-		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas,
-			const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const SunShadowParams& a_params,
+		/**
+		 * @brief Records trace, temporal and spatial passes (the TLAS must be built and barriered, and the alpha atlas
+		 * in NON_PIXEL_SHADER_RESOURCE). a_instances / a_meshPool: this frame's instance data and static mesh pages,
+		 * read by the M7c alpha test.
+		 */
+		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
+			const BufferPool& a_meshPool, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const SunShadowParams& a_params,
 			bool a_compareShadowMap, bool a_captureDump);
 
 		/** @brief Reads the slot's counters and timestamps once its fence value has completed (never waits). */
@@ -120,8 +126,10 @@ namespace RT
 		winrt::com_ptr<ID3D12PipelineState> tracePipeline;
 		winrt::com_ptr<ID3D12PipelineState> temporalPipeline;
 		winrt::com_ptr<ID3D12PipelineState> spatialPipeline;
-		winrt::com_ptr<ID3D12DescriptorHeap> heap;  // 5 tables: trace, temporal[2], spatial[2]
+		winrt::com_ptr<ID3D12DescriptorHeap> heap;  // 5 tables: trace, temporal[2], spatial[2]; then mesh pages + alpha atlas
 		uint32_t descriptorSize = 0;
+		ID3D12Resource* alphaAtlas = nullptr;
+		std::array<uint64_t, 64> describedPageSerials{};  // BufferPool page serial each mesh-page descriptor describes
 
 		winrt::com_ptr<ID3D12Resource> uploads[kFramesInFlight];  // constants + zeros for the counter clear
 		uint8_t* uploadCpu[kFramesInFlight]{};

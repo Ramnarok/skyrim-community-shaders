@@ -48,6 +48,9 @@ static const uint kTracedFarther = 7;
 static const uint kTracedMiss = 8;
 static const uint kExcludedAlpha = 9;
 static const uint kExcludedClutter = 10;
+static const uint kAlphaTestedCounted = 11;  // M7c: counted pixels whose traced hit passed the alpha test
+static const uint kAlphaTestedMatched = 12;
+static const uint kExcludedWind = 13;  // M7c: mismatches on wind-animated foliage
 
 void Count(uint a_slot, bool a_condition)
 {
@@ -85,6 +88,26 @@ bool AboveTerrainWithin(float3 a_point, float a_height)
 	query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskTerrain, down);
 	query.Proceed();
 	return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+}
+
+// True if wind-animated geometry (TREE_ANIM) lies within a_margin of a_point along a_direction, alpha holes included:
+// the game's vertex shader sways it along its normals, so the raster may show it where the rest-pose TLAS doesn't.
+bool NearWindAnimated(float3 a_point, float3 a_direction, float a_margin)
+{
+	RayDesc segment;
+	segment.Origin = a_point - a_direction * a_margin;
+	segment.Direction = a_direction;
+	segment.TMin = 0.0;
+	segment.TMax = 2.0 * a_margin;
+	RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskStatic | kMaskAlphaTested | kMaskActor, segment);
+	while (query.Proceed()) {
+		if ((Instances[query.CandidateInstanceID()].Flags & kInstanceWindAnimated) != 0) {
+			query.Abort();
+			return true;
+		}
+	}
+	return false;
 }
 
 // True if a_point lies inside (a_margin-inflated) bounds of geometry the TLAS doesn't contain.
@@ -137,9 +160,9 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	ray.TMin = 0.0;
 	ray.TMax = maxT;
 
-	RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+	RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
 	query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskStatic | kMaskTerrain | kMaskAlphaTested | kMaskActor, ray);
-	query.Proceed();
+	PROCEED_ALPHA_TESTED(query);
 	const bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 	const float t = hit ? query.CommittedRayT() : maxT;
 	InstanceData hitData = (InstanceData)0;
@@ -151,33 +174,44 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 
 	// Which pixels can't be verified:
 	//  - a match is always counted: the static surface is visibly there and correct;
-	//  - a mismatch whose traced hit is an alpha-tested mesh: its holes need textures (M7) -> excluded (alpha);
+	//  - a mismatch whose traced hit is an alpha-tested mesh without an alpha-atlas tile (traced as a solid card,
+	//    M7c alpha test off or not loaded yet) -> excluded (alpha); alpha-tested hits with a tile are counted;
 	//  - a mismatch where the raster surface is nearer and lies inside the bounds of geometry the TLAS doesn't
 	//    contain (actors, dynamic, LOD): the game is showing that object -> excluded (occluder);
 	//  - a mismatch where the raster surface is nearer and stands within ClutterHeight above the terrain directly
 	//    below it: grass / ground clutter, whose bounds aren't usable -> excluded (clutter). Tested against the
-	//    terrain below the raster point, not the traced hit, because blades also hang over rocks and roads.
+	//    terrain below the raster point, not the traced hit, because blades also hang over rocks and roads;
+	//  - a mismatch on wind-animated foliage (TREE_ANIM: trees, ferns): the traced hit is such a mesh, or the raster
+	//    surface is nearer and such a mesh lies within kWindMargin of it. The game's vertex shader sways these along
+	//    their normals every frame; the TLAS holds the rest pose -> excluded (wind), counted separately.
 	// Everything else (traced nearer, misses, anything else farther) is a real mismatch.
 	const float relative = abs(t - rasterT) / max(rasterT, 1e-3);
 	const bool candidate = !sky && !outside;
 	const bool agrees = candidate && hit && relative <= C.MismatchThreshold;
 	bool excludedAlpha = false;
+	bool excludedWind = false;
 	bool excluded = false;
 	bool excludedClutter = false;
 	if (candidate && !agrees) {
-		excludedAlpha = hit && (hitData.Flags & kInstanceAlphaTested) != 0;
+		excludedAlpha = hit && (hitData.Flags & kInstanceAlphaTested) != 0 && (hitData.Alpha & 0xFFFu) == 0;
 		const bool rasterNearer = !hit || t > rasterT;
-		if (!excludedAlpha && rasterNearer && C.ExclusionCount > 0)
+		if (!excludedAlpha) {
+			const float windMargin = max(8.0, rasterT * 0.02);
+			excludedWind = (hit && (hitData.Flags & kInstanceWindAnimated) != 0) ||
+			               (rasterNearer && NearWindAnimated(rasterPosition, direction, windMargin));
+		}
+		if (!excludedAlpha && !excludedWind && rasterNearer && C.ExclusionCount > 0)
 			excluded = PointInExclusion(rasterPosition, direction, max(4.0, rasterT * C.ExclusionMargin));
-		if (!excludedAlpha && !excluded && rasterNearer)
+		if (!excludedAlpha && !excludedWind && !excluded && rasterNearer)
 			excludedClutter = AboveTerrainWithin(rasterPosition, C.ClutterHeight);
 	}
 
-	const bool counted = candidate && !excluded && !excludedAlpha && !excludedClutter;
+	const bool counted = candidate && !excluded && !excludedAlpha && !excludedWind && !excludedClutter;
 	const bool matched = agrees;
 	const bool nearer = counted && hit && !matched && t < rasterT;
 	const bool farther = counted && hit && !matched && t >= rasterT;
 	const bool miss = counted && !hit;
+	const bool alphaTestedHit = counted && hit && (hitData.Alpha & 0xFFFu) != 0;
 
 	Count(kRenderPixels, true);
 	Count(kSky, sky);
@@ -190,6 +224,9 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	Count(kTracedMiss, miss);
 	Count(kExcludedAlpha, excludedAlpha);
 	Count(kExcludedClutter, excludedClutter);
+	Count(kAlphaTestedCounted, alphaTestedHit);
+	Count(kAlphaTestedMatched, alphaTestedHit && matched);
+	Count(kExcludedWind, excludedWind);
 
 	// Depth view: near = bright, log scaled; misses dark blue.
 	const float depthValue = 1.0 - saturate(log2(1.0 + t) / log2(1.0 + C.MaxDistance));
@@ -199,7 +236,7 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 
 	NormalView[dispatchID.xy] = any(hitNormal != 0.0) ? float4(hitNormal * 0.5 + 0.5, 1.0) : float4(0.0, 0.0, 0.0, 1.0);
 
-	// Diff view: black sky, dark grey outside the loaded cells, grey excluded occluder, pink excluded alpha,
+	// Diff view: black sky, dark grey outside the loaded cells, grey excluded occluder, pink excluded alpha, ochre wind,
 	// green match, red traced nearer, blue traced farther, yellow traced miss.
 	float3 diff = float3(0.0, 0.0, 0.0);
 	if (outside)
@@ -208,6 +245,8 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 		diff = float3(0.45, 0.45, 0.45);
 	else if (excludedAlpha)
 		diff = float3(0.75, 0.5, 0.75);
+	else if (excludedWind)
+		diff = float3(0.7, 0.55, 0.2);
 	else if (excludedClutter)
 		diff = float3(0.4, 0.65, 0.65);
 	else if (matched)

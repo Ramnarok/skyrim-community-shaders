@@ -27,6 +27,13 @@ namespace RT
 			return names;
 		}
 
+		json PoseJson(const SkinPoseStats& a_pose)
+		{
+			return { { "shapes", a_pose.shapes }, { "compared", a_pose.compared }, { "differ_over_1_unit", a_pose.differ },
+				{ "max_translation_delta", a_pose.maxDelta }, { "frame_id_min", a_pose.compared ? a_pose.minFrameID : 0u },
+				{ "frame_id_max", a_pose.maxFrameID }, { "partitions_posed_from_renderer_matrices", a_pose.fromCache } };
+		}
+
 		json SceneJson(const DebugDumpData& a_data)
 		{
 			const auto& s = a_data.scene;
@@ -49,6 +56,7 @@ namespace RT
 				{ "alpha_blended_instances", s.alphaBlendedInstances },
 				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
+				{ "skin_pose_vs_renderer_matrices", { { "trees", PoseJson(s.treePose) }, { "other", PoseJson(s.otherPose) } } },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
 		}
@@ -113,11 +121,15 @@ namespace RT
 						{ "excluded_occluder_not_in_tlas", t.counters[kExcluded] },
 						{ "excluded_alpha_tested_mismatch", t.counters[kExcludedAlpha] },
 						{ "excluded_terrain_clutter", t.counters[kExcludedClutter] },
+						{ "excluded_wind_animated_foliage", t.counters[kExcludedWind] },
 						{ "counted", t.counters[kCounted] },
 						{ "matched", t.counters[kMatched] },
 						{ "traced_nearer", t.counters[kTracedNearer] },
 						{ "traced_farther", t.counters[kTracedFarther] },
-						{ "traced_miss", t.counters[kTracedMiss] } } },
+						{ "traced_miss", t.counters[kTracedMiss] },
+						{ "alpha_tested_counted", t.counters[kAlphaTestedCounted] },
+						{ "alpha_tested_matched", t.counters[kAlphaTestedMatched] } } },
+				{ "alpha_tested_mismatch_percent", t.counters[kAlphaTestedCounted] ? 100.0f * (t.counters[kAlphaTestedCounted] - t.counters[kAlphaTestedMatched]) / t.counters[kAlphaTestedCounted] : 0.0f },
 				{ "mismatch_threshold_relative", Raytracer::kMismatchThreshold },
 				{ "clutter_height_units", Raytracer::kClutterHeight },
 				{ "depth_mismatch_percent", t.MismatchPercent() },
@@ -245,6 +257,57 @@ namespace RT
 			};
 		}
 
+		json SkinPoseJson(const DebugDumpData& a_data)
+		{
+			json samples = json::array();
+			for (const auto& s : a_data.poseSamples) {
+				samples.push_back({
+					{ "tree", s.tree },
+					{ "bone_count", s.boneCount },
+					{ "frame_id", s.frameID },
+					{ "num_matrices", s.numMatrices },
+					{ "num_registers", s.numRegisters },
+					{ "allocated_size", s.allocatedSize },
+					{ "bone0_world_3x4", s.bone0World },
+					{ "palette0_3x4", s.palette0 },
+					{ "bone_matrices_read", s.boneMatricesRead },
+					{ "bone_matrices_first_floats", s.boneMatrices },
+					{ "prev_bone_matrices_first_floats", s.prevBoneMatrices },
+					{ "present",
+						{ { "read", s.presentRead },
+							{ "frame_id", s.presentFrameID },
+							{ "bone0_world_3x4", s.presentBone0World },
+							{ "bone_matrices_first_floats", s.presentBoneMatrices } } },
+				});
+			}
+			return samples;
+		}
+
+		json AlphaAtlasJson(const DebugDumpData& a_data)
+		{
+			const auto& a = a_data.alphaAtlas;
+			json images = json::array();
+			for (const auto& image : a_data.images) {
+				if (image.name == "alpha_atlas")
+					images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			}
+			return {
+				{ "available", a.available },
+				{ "enabled", a.enabled },
+				{ "tile_size", AlphaAtlas::kTileSize },
+				{ "tiles", { { "capacity", a.capacity }, { "used", a.tilesUsed }, { "filled_last_frame", a.filledLastFrame }, { "evicted_last_frame", a.evictedLastFrame }, { "total_fills", a.totalFills }, { "total_evictions", a.totalEvictions } } },
+				{ "alpha_tested_candidates",
+					{ { "total", a.candidates },
+						{ "alpha_tested_in_traces", a.candidatesTested },
+						{ "opaque_no_texture", a.candidatesNoTexture },
+						{ "opaque_no_uv", a.candidatesNoUV },
+						{ "opaque_zero_threshold", a.candidatesZeroThreshold },
+						{ "opaque_unsupported_texture", a.candidatesUnsupported },
+						{ "opaque_waiting_for_tile", a.candidatesWaiting } } },
+				{ "images", images },
+			};
+		}
+
 		json BuildJson(const DebugDumpData& a_data, const std::string& a_pngName, bool a_pngWritten)
 		{
 			const auto& s = a_data.stats;
@@ -254,6 +317,8 @@ namespace RT
 
 			return {
 				{ "milestone", "M7" },
+				{ "alpha_atlas", AlphaAtlasJson(a_data) },
+				{ "skin_pose_samples", SkinPoseJson(a_data) },
 				{ "skinned", SkinnedJson(a_data) },
 				{ "global_illumination", GlobalIlluminationJson(a_data) },
 				{ "sun_shadows", SunShadowsJson(a_data) },

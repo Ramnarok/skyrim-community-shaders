@@ -22,7 +22,7 @@ namespace RT
 	{
 		float toSun[3]{ 0.0f, 0.0f, 1.0f };  ///< unit direction towards the sun (or moon), world space
 		float coneHalfAngleDegrees = 0.5f;  ///< apparent angular radius of the light: penumbra width
-		bool alphaTestedCasters = false;    ///< alpha-tested meshes cast as opaque (no alpha textures until M7)
+		bool alphaTestedCasters = true;     ///< alpha-tested meshes cast (alpha-tested against the M7c atlas when enabled)
 		float normalBias = 1.0f;            ///< ray origin offset along the surface normal (game units)
 		float distanceBias = 0.002f;        ///< extra offset per unit of view distance
 		uint32_t maxHistory = 24;           ///< temporal accumulation cap (frames); 1 disables accumulation
@@ -118,9 +118,10 @@ namespace RT
 		float intensity = 1.0f;       ///< scale of the bounce light fed to the composite
 		float aoStrength = 1.0f;      ///< 0 = no RT ambient occlusion
 		float rayLength = 3000.0f;    ///< game units
-		bool alphaTestedCasters = false;
+		bool alphaTestedCasters = true;
 		uint32_t maxAccumulatedFrames = 30;  ///< REBLUR history (frames)
 		uint32_t viewMode = 0;               ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
+		bool interior = false;               ///< interior cell: the directional light is unshadowed, as in Lighting.hlsl
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12). */
@@ -183,6 +184,13 @@ namespace RT
 	GIOutputs SubmitGI(const GIParams& a_params);
 
 	const GIStats* GetGIStats();
+
+	/** @brief M7c: alpha-test alpha-tested meshes (foliage) in every trace; off traces them as solid cards. */
+	void SetAlphaTest(bool a_enabled);
+	/** @brief M7: take skinned bone palettes from the renderer's own matrices instead of the bones' world transforms. */
+	void SetSkinPoseFromCache(bool a_enabled);
+	/** @brief M7c alpha-atlas stats, or nullptr. */
+	const struct AlphaAtlasStats* GetAlphaAtlasStats();
 	/** @brief M7 skinning stats, or nullptr. */
 	const struct SkinnedStats* GetRaytracerSkinnedStats();
 	/** @brief GI debug view (RGBA8) when GIParams::viewMode is set, or nullptr. */

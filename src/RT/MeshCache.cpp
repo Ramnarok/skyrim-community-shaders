@@ -571,9 +571,14 @@ namespace RT
 				.indexOffset = static_cast<uint32_t>(entry.indexAllocation.offset),
 				.stride = entry.stride,
 				.albedo = candidate.albedo,
+				.alpha = candidate.alphaWord,
+				.uvPage = entry.vertexAllocation.page,
+				.uvOffset = static_cast<uint32_t>(entry.vertexAllocation.offset),
+				.uvStride = entry.stride,
 				.terrain = candidate.terrain,
 				.alphaTested = candidate.alphaTested,
-				.alphaBlended = candidate.alphaBlended });
+				.alphaBlended = candidate.alphaBlended,
+				.windAnimated = candidate.windAnimated });
 		}
 	}
 }

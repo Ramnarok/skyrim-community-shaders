@@ -41,6 +41,9 @@ namespace RT
 		ID3D11ShaderResourceView* diffuseSRV = nullptr;  // game-owned, valid this frame only (terrain: first layer)
 		uint32_t albedo = 0;  // M6: average diffuse colour, RGBA8 as the texture stores it (filled by MaterialTable)
 		bool skinned = false;  // M7: one skin partition; rendererData is the partition's bind-pose buffers
+		uint8_t alphaThreshold = 0;  // M7c: NiAlphaProperty::alphaThreshold (the game discards alpha below threshold / 255)
+		uint32_t alphaWord = 0;      // M7c: InstanceData::Alpha (atlas tile, threshold, UV offset), filled by AlphaAtlas; 0 = opaque
+		bool windAnimated = false;   // M7c: kTreeAnim; the game's vertex shader sways it along its normals (Lighting.hlsl TREE_ANIM)
 	};
 
 	/** @brief M7: one skin partition of a skinned shape this frame, with its bone palette. */
@@ -58,13 +61,51 @@ namespace RT
 		uint32_t dynamicStride = 0;      // bytes per vertex (float3 at offset 0)
 		uint32_t dynamicVertexCount = 0;
 		uint32_t dynamicVersion = 0;     // BSDynamicTriShape frameCount: changes when the game rewrites the data
+		bool tree = false;               // under a BSTreeNode
+		uint32_t rendererFrameID = 0;    // NiSkinInstance::frameID when its renderer matrices were read, else 0
+	};
+
+	/**
+	 * @brief M7 tree-pose diagnostic: what one skin instance looked like at the scene walk (and, filled by the sidecar,
+	 * again at Present of the same frame). Compares our palette source (boneWorldTransforms x skinToBone) with the
+	 * renderer's own NiSkinInstance::boneMatrices cache, whose layout this is meant to reveal.
+	 */
+	struct SkinPoseSample
+	{
+		static constexpr uint32_t kRawFloats = 36;  // three bones' worth if the cache holds 3 x float4 per bone
+
+		const RE::NiSkinInstance* skin = nullptr;  // identity only; re-read at Present under an SEH guard
+		bool tree = false;                         // under a BSTreeNode (branches sway on bones)
+		uint32_t boneCount = 0;
+		// At the scene walk.
+		uint32_t frameID = 0;
+		uint32_t numMatrices = 0;
+		uint32_t numRegisters = 0;
+		uint32_t allocatedSize = 0;
+		std::array<float, 12> bone0World{};  // boneWorldTransforms[0] as row-major 3x4 (rotate * scale | translate)
+		std::array<float, 12> palette0{};    // our palette entry for skin bone 0 (boneWorld * skinToBone)
+		std::array<float, kRawFloats> boneMatrices{};
+		std::array<float, kRawFloats> prevBoneMatrices{};
+		bool boneMatricesRead = false;
+		// At Present of the same frame.
+		bool presentRead = false;
+		uint32_t presentFrameID = 0;
+		std::array<float, 12> presentBone0World{};
+		std::array<float, kRawFloats> presentBoneMatrices{};
 	};
 
 	struct SkinnedScene
 	{
 		std::vector<SkinnedPartition> partitions;
 		std::vector<float> palettes;
+		std::vector<float> rendererPalettes;  ///< same layout: the renderer's matrices for each palette bone (else a copy)
+		std::vector<SkinPoseSample> poseSamples;  ///< up to 4 trees and 4 other skins per frame (M7 diagnostic)
 	};
+
+	/** @brief Fills a sample's walk-time fields from its skin instance (call during the scene walk). */
+	void ReadSkinPose(const RE::NiSkinInstance* a_skin, SkinPoseSample& a_sample);
+	/** @brief Re-reads a sample's Present-time fields; false if the skin can't be read (SEH-guarded). */
+	bool ReadSkinPoseAtPresent(SkinPoseSample& a_sample);
 
 	/** @brief World-space bounding sphere of geometry the TLAS does not contain (actors, grass, alpha-tested, ...). */
 	struct ExclusionBound
@@ -79,6 +120,18 @@ namespace RT
 		bool bounded = false;  ///< false in interiors: everything visible is loaded
 		RE::NiPoint3 min;
 		RE::NiPoint3 max;
+	};
+
+	/** @brief M7: our bone palettes vs the renderer's NiSkinInstance::boneMatrices, per kind of skin. */
+	struct SkinPoseStats
+	{
+		uint32_t shapes = 0;
+		uint32_t compared = 0;   ///< shapes whose renderer matrices could be read
+		uint32_t differ = 0;     ///< compared shapes with any bone translation more than 1 unit off
+		float maxDelta = 0.0f;   ///< largest bone translation difference (game units)
+		uint32_t minFrameID = UINT32_MAX;  ///< NiSkinInstance::frameID range (when the renderer last refreshed the matrices)
+		uint32_t maxFrameID = 0;
+		uint32_t fromCache = 0;  ///< partitions posed from the renderer's matrices (refreshed this frame)
 	};
 
 	struct SceneStats
@@ -105,6 +158,8 @@ namespace RT
 		uint32_t skinnedRejectedPartitions = 0;
 		uint32_t dynamicShapes = 0;          ///< M7b: dynamic (FaceGen) shapes extracted as skinned
 		uint32_t dynamicRejectedShapes = 0;  ///< dynamic shapes without usable skin or position data: excluded
+		SkinPoseStats treePose;   ///< skinned shapes under a BSTreeNode
+		SkinPoseStats otherPose;  ///< actors and everything else skinned
 		float traversalMs = 0.0f;
 	};
 
@@ -113,5 +168,6 @@ namespace RT
 	 * loaded cell into a_out / a_skinned (cleared first).
 	 * @return False when there is no world (main menu, loading), in which case a_out is empty.
 	 */
-	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats);
+	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats,
+		bool a_poseFromCache);
 }

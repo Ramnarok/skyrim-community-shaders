@@ -2,6 +2,7 @@
 
 #if defined(SKYRIMRT_NRD)
 
+#	include "AlphaAtlas.h"
 #	include "Deferred.h"
 
 #	include <DirectXPackedVector.h>
@@ -35,7 +36,7 @@ namespace RT
 			float ambientGamma;
 			float ambientMult;
 			uint32_t viewMode;
-			uint32_t pad;
+			uint32_t interior;
 		};
 		static_assert(sizeof(GIConstants) == 352);
 
@@ -58,7 +59,8 @@ namespace RT
 		constexpr uint32_t kTableSize = kTableSrvs + kTableUavs;
 		constexpr uint32_t kTraceTable = GlobalIllumination::kMeshPageSlots;
 		constexpr uint32_t kResolveTable = kTraceTable + kTableSize;
-		constexpr uint32_t kDescriptorCount = kResolveTable + kTableSize;
+		constexpr uint32_t kAlphaAtlasDescriptor = kResolveTable + kTableSize;  // M7c
+		constexpr uint32_t kDescriptorCount = kAlphaAtlasDescriptor + 1;
 
 		constexpr auto kSRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 		constexpr auto kUAV = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -140,7 +142,9 @@ namespace RT
 		D3D12_DESCRIPTOR_RANGE tableRanges[2]{};
 		tableRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kTableSrvs, 1, 0, 0 };           // t1..t4
 		tableRanges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kTableUavs, 0, 0, kTableSrvs };  // u0..u3
-		D3D12_DESCRIPTOR_RANGE pageRange = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kMeshPageSlots, 0, 1, 0 };  // t0, space1
+		D3D12_DESCRIPTOR_RANGE pageRanges[2]{};
+		pageRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kMeshPageSlots, 0, 1, 0 };  // t0, space1: mesh pages
+		pageRanges[1] = GetAlphaAtlasRange(kAlphaAtlasDescriptor);                    // t0, space2: M7c alpha atlas
 
 		D3D12_ROOT_PARAMETER params[6]{};
 		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;  // b0
@@ -154,11 +158,12 @@ namespace RT
 		params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		params[4].DescriptorTable = { 2, tableRanges };
 		params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-		params[5].DescriptorTable = { 1, &pageRange };
+		params[5].DescriptorTable = { 2, pageRanges };
 		for (auto& param : params)
 			param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 6, .pParameters = params };
+		const D3D12_STATIC_SAMPLER_DESC sampler = GetAlphaAtlasSampler();
+		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 6, .pParameters = params, .NumStaticSamplers = 1, .pStaticSamplers = &sampler };
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put());
 		if (FAILED(hr))
@@ -221,11 +226,14 @@ namespace RT
 		uav(kResolveTable, 1, y.resource12.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
 		uav(kResolveTable, 2, coCg.resource12.get(), DXGI_FORMAT_R16G16_FLOAT);
 		uav(kResolveTable, 3, view.resource12.get(), DXGI_FORMAT_R8G8B8A8_UNORM);
+
+		WriteAlphaAtlasDescriptor(device, alphaAtlas, handle(kAlphaAtlasDescriptor));
 	}
 
 	bool GlobalIllumination::Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
-		uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth)
+		uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D12Resource* a_alphaAtlas)
 	{
+		alphaAtlas = a_alphaAtlas;
 		device = a_device;
 		d3d11Device = a_d3d11Device;
 		d3d11Context = a_d3d11Context;
@@ -404,6 +412,7 @@ namespace RT
 		c->ambientGamma = a_params.ambientGamma;
 		c->ambientMult = a_params.ambientMult;
 		c->viewMode = a_params.viewMode;
+		c->interior = a_params.interior ? 1u : 0u;
 
 		auto first = heap->GetCPUDescriptorHandleForHeapStart();
 		UpdatePageDescriptors(device, a_meshPool, first, descriptorSize, describedPageSerials.data(), SkinnedMeshes::kFirstPageSlot);
@@ -445,10 +454,14 @@ namespace RT
 							 TransitionBarrier(normalRoughness.get(), kSRV, kUAV),
 							 TransitionBarrier(nrdMotionVectors.get(), kSRV, kUAV),
 							 TransitionBarrier(noisy.get(), kSRV, kUAV) });
+		if (alphaAtlas)
+			Barriers(a_list, { TransitionBarrier(alphaAtlas, kCommon, kSRV) });  // M7c, filled on D3D11 at Prepass
 		bind();
 		a_list->SetPipelineState(tracePipeline.get());
 		a_list->SetComputeRootDescriptorTable(4, table(kTraceTable));
 		a_list->Dispatch(groupsX, groupsY, 1);
+		if (alphaAtlas)
+			Barriers(a_list, { TransitionBarrier(alphaAtlas, kSRV, kCommon) });
 		Barriers(a_list, { TransitionBarrier(viewZ.get(), kUAV, kSRV),
 							 TransitionBarrier(normalRoughness.get(), kUAV, kSRV),
 							 TransitionBarrier(nrdMotionVectors.get(), kUAV, kSRV),

@@ -6,6 +6,83 @@ namespace RT
 {
 	namespace
 	{
+		// Copies raw game memory whose layout or lifetime isn't guaranteed; false on an access violation.
+		// Kept free of C++ objects so __try is allowed.
+		bool GuardedCopy(void* a_destination, const void* a_source, size_t a_bytes)
+		{
+			__try {
+				std::memcpy(a_destination, a_source, a_bytes);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		void TransformTo3x4(const RE::NiTransform& a_transform, float* a_out)
+		{
+			const float translate[3] = { a_transform.translate.x, a_transform.translate.y, a_transform.translate.z };
+			for (int r = 0; r < 3; r++) {
+				for (int c = 0; c < 3; c++)
+					a_out[r * 4 + c] = a_transform.rotate.entry[r][c] * a_transform.scale;
+				a_out[r * 4 + 3] = translate[r];
+			}
+		}
+
+		bool IsUnderTree(const RE::NiAVObject* a_object)
+		{
+			for (auto* node = a_object ? a_object->parent : nullptr; node; node = node->parent) {
+				if (netimmerse_cast<RE::BSTreeNode*>(node))
+					return true;
+			}
+			return false;
+		}
+
+		void ReadBoneCache(const RE::NiSkinInstance* a_skin, void* a_cache, std::array<float, SkinPoseSample::kRawFloats>& a_out, bool& a_read)
+		{
+			const size_t bytes = std::min<size_t>(a_skin->allocatedSize, sizeof(a_out));
+			a_read = a_cache && bytes > 0 && GuardedCopy(a_out.data(), a_cache, bytes);
+		}
+	}
+
+	void ReadSkinPose(const RE::NiSkinInstance* a_skin, SkinPoseSample& a_sample)
+	{
+		a_sample.frameID = a_skin->frameID;
+		a_sample.numMatrices = a_skin->numMatrices;
+		a_sample.numRegisters = a_skin->numRegisters;
+		a_sample.allocatedSize = a_skin->allocatedSize;
+		auto* skinData = a_skin->skinData.get();
+		a_sample.boneCount = skinData ? skinData->GetBoneCount() : 0;
+		if (a_sample.boneCount > 0 && a_skin->boneWorldTransforms && a_skin->boneWorldTransforms[0]) {
+			const RE::NiTransform& boneWorld = *a_skin->boneWorldTransforms[0];
+			TransformTo3x4(boneWorld, a_sample.bone0World.data());
+			TransformTo3x4(boneWorld * skinData->GetBoneDataSkinToBone(0), a_sample.palette0.data());
+		}
+		ReadBoneCache(a_skin, a_skin->boneMatrices, a_sample.boneMatrices, a_sample.boneMatricesRead);
+		bool prevRead = false;
+		ReadBoneCache(a_skin, a_skin->prevBoneMatrices, a_sample.prevBoneMatrices, prevRead);
+	}
+
+	bool ReadSkinPoseAtPresent(SkinPoseSample& a_sample)
+	{
+		// The skin may have unloaded since the walk: copy its header first, guarded, and only follow pointers from it.
+		alignas(RE::NiSkinInstance) std::byte header[sizeof(RE::NiSkinInstance)];
+		if (!a_sample.skin || !GuardedCopy(header, a_sample.skin, sizeof(header)))
+			return false;
+		const auto* skin = reinterpret_cast<const RE::NiSkinInstance*>(header);
+		a_sample.presentFrameID = skin->frameID;
+		const RE::NiTransform* bone0 = nullptr;
+		RE::NiTransform boneWorld;
+		if (skin->boneWorldTransforms && GuardedCopy(&bone0, skin->boneWorldTransforms, sizeof(bone0)) && bone0 &&
+			GuardedCopy(&boneWorld, bone0, sizeof(boneWorld)))
+			TransformTo3x4(boneWorld, a_sample.presentBone0World.data());
+		bool read = false;
+		ReadBoneCache(skin, skin->boneMatrices, a_sample.presentBoneMatrices, read);
+		a_sample.presentRead = true;
+		return true;
+	}
+
+	namespace
+	{
 		using Type = RE::BSGeometry::Type;
 		using Feature = RE::BSShaderMaterial::Feature;
 
@@ -72,6 +149,7 @@ namespace RT
 		{
 			auto* lightingProperty = a_property;
 			const auto& geometryData = a_geometryData;
+			a_candidate.windAnimated = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim);
 			// Same test CS uses for landscape (TruePBR.cpp): the lighting material's feature.
 			if (auto* material = lightingProperty->material) {
 				const auto feature = material->GetFeature();
@@ -94,6 +172,7 @@ namespace RT
 			if (auto* alpha = geometryData.alphaProperty.get()) {
 				a_candidate.alphaTested = alpha->GetAlphaTesting();
 				a_candidate.alphaBlended = alpha->GetAlphaBlending();
+				a_candidate.alphaThreshold = alpha->alphaThreshold;
 			}
 		}
 
@@ -103,6 +182,8 @@ namespace RT
 			SkinnedScene& skinned;
 			std::vector<ExclusionBound>& exclusions;
 			SceneStats& stats;
+			bool poseFromCache = false;       // M7: palettes from NiSkinInstance::boneMatrices instead of bone world transforms
+			std::vector<float> cacheScratch;  // one skin's copied bone matrices
 		};
 
 		/**
@@ -134,6 +215,18 @@ namespace RT
 			}
 			const uint32_t skinBones = skinData->GetBoneCount();
 
+			// M7 tree-pose investigation: the renderer's own bone matrices (NiSkinInstance::boneMatrices, refreshed when the
+			// skin is drawn: 3 x float4 world-space rows per skin bone, the same form as our palette entries).
+			const bool tree = IsUnderTree(a_geometry);
+			auto& cache = a_out.cacheScratch;
+			bool cacheValid = skin->boneMatrices && skin->numRegisters == 3 && skin->numMatrices >= skinBones &&
+			                  skin->allocatedSize >= skinBones * 48;
+			if (cacheValid) {
+				cache.resize(static_cast<size_t>(skinBones) * 12);
+				cacheValid = GuardedCopy(cache.data(), skin->boneMatrices, static_cast<size_t>(skinBones) * 48);
+			}
+			float maxCacheDelta = 0.0f;
+
 			uint32_t accepted = 0;
 			for (uint32_t p = 0; p < partitions->numPartitions; p++) {
 				const auto& partition = partitions->partitions[p];
@@ -158,16 +251,21 @@ namespace RT
 						usable = false;
 						break;
 					}
-					const RE::NiTransform m = *boneWorld * skinData->GetBoneDataSkinToBone(bone);
-					const float translate[3] = { m.translate.x, m.translate.y, m.translate.z };
-					for (int r = 0; r < 3; r++) {
-						for (int c = 0; c < 3; c++)
-							a_out.skinned.palettes.push_back(m.rotate.entry[r][c] * m.scale);
-						a_out.skinned.palettes.push_back(translate[r]);
+					float row[12];
+					TransformTo3x4(*boneWorld * skinData->GetBoneDataSkinToBone(bone), row);
+					a_out.skinned.palettes.insert(a_out.skinned.palettes.end(), row, row + 12);
+					// The renderer's matrix for the same bone; whether to use it is decided after the walk, once the
+					// newest frameID (this frame's draws) is known.
+					const float* cached = cacheValid ? cache.data() + static_cast<size_t>(bone) * 12 : row;
+					if (cacheValid) {
+						for (int r = 0; r < 3; r++)
+							maxCacheDelta = std::max(maxCacheDelta, std::abs(row[r * 4 + 3] - cached[r * 4 + 3]));
 					}
+					a_out.skinned.rendererPalettes.insert(a_out.skinned.rendererPalettes.end(), cached, cached + 12);
 				}
 				if (!usable) {
 					a_out.skinned.palettes.resize(paletteOffset);
+					a_out.skinned.rendererPalettes.resize(paletteOffset);
 					a_out.stats.skinnedRejectedPartitions++;
 					continue;
 				}
@@ -196,14 +294,34 @@ namespace RT
 				entry.halfPositions = desc.HasFlag(RE::BSGraphics::Vertex::VF_UV) ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0) == 8 :
 				                                                                      entry.skinningOffset == 8;
 				a_out.candidates.push_back(candidate);
+				entry.tree = tree;
+				entry.rendererFrameID = cacheValid ? skin->frameID : 0;
 				a_out.skinned.partitions.push_back(entry);
 				a_out.stats.skinnedPartitions++;
 				a_out.stats.skinnedBones += partition.numBones;
 				a_out.stats.skinnedHalfPositions += entry.halfPositions;
 				accepted++;
 			}
-			if (accepted > 0)
+			if (accepted > 0) {
 				a_out.stats.skinnedShapes++;
+				auto& pose = tree ? a_out.stats.treePose : a_out.stats.otherPose;
+				pose.shapes++;
+				if (cacheValid) {
+					pose.compared++;
+					pose.differ += maxCacheDelta > 1.0f;
+					pose.maxDelta = std::max(pose.maxDelta, maxCacheDelta);
+					pose.minFrameID = std::min(pose.minFrameID, skin->frameID);
+					pose.maxFrameID = std::max(pose.maxFrameID, skin->frameID);
+				}
+				// M7 tree-pose diagnostic: a few trees and a few other skins (actors) per frame.
+				auto& samples = a_out.skinned.poseSamples;
+				const auto sameKind = std::ranges::count_if(samples, [&](const SkinPoseSample& a_sample) { return a_sample.tree == tree; });
+				if (sameKind < 4) {
+					SkinPoseSample sample{ .skin = skin, .tree = tree };
+					ReadSkinPose(skin, sample);
+					samples.push_back(sample);
+				}
+			}
 			return accepted > 0;
 		}
 
@@ -247,8 +365,9 @@ namespace RT
 				switch (category) {
 				case GeometryCategory::kStaticMesh:
 				case GeometryCategory::kTerrain:
-					// Alpha-tested meshes are in the TLAS (opaque until M7); the trace identifies them by the hit
-					// instance, so they don't add exclusion bounds (their bounds often cover whole rooms).
+					// Alpha-tested meshes are in the TLAS (alpha-tested against the M7c atlas once it has their
+					// texture); the trace identifies them by the hit instance, so they don't add exclusion bounds
+					// (their bounds often cover whole rooms).
 					candidate.world = geometry->world;
 					a_out.stats.alphaTestedInstances += candidate.alphaTested;
 					a_out.stats.alphaBlendedInstances += candidate.alphaBlended;
@@ -309,15 +428,15 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats);
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_poseFromCache);
 
 		// Last line of defence: reading the game's scene graph can still race with cell loading in ways the
 		// loading-menu check doesn't cover. An access violation drops this frame's scene instead of the game.
 		// Kept free of C++ objects so __try is allowed.
-		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool& a_faulted)
+		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_poseFromCache, bool& a_faulted)
 		{
 			__try {
-				return CollectSceneUnguarded(a_out, a_skinned, a_exclusions, a_area, a_stats);
+				return CollectSceneUnguarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_poseFromCache);
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				a_faulted = true;
 				return false;
@@ -325,11 +444,13 @@ namespace RT
 		}
 	}
 
-	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats)
+	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_poseFromCache)
 	{
 		a_out.clear();
 		a_skinned.partitions.clear();
 		a_skinned.palettes.clear();
+		a_skinned.poseSamples.clear();
+		a_skinned.rendererPalettes.clear();
 		a_exclusions.clear();
 		a_area = {};
 		a_stats = {};
@@ -341,7 +462,7 @@ namespace RT
 			return false;
 
 		bool faulted = false;
-		const bool collected = CollectSceneGuarded(a_out, a_skinned, a_exclusions, a_area, a_stats, faulted);
+		const bool collected = CollectSceneGuarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_poseFromCache, faulted);
 		if (faulted) {
 			static uint32_t faults = 0;
 			if (++faults <= 10)
@@ -349,6 +470,8 @@ namespace RT
 			a_out.clear();
 			a_skinned.partitions.clear();
 			a_skinned.palettes.clear();
+			a_skinned.poseSamples.clear();
+			a_skinned.rendererPalettes.clear();
 			a_exclusions.clear();
 			a_area = {};
 			a_stats = {};
@@ -359,7 +482,7 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats)
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_poseFromCache)
 		{
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes || !RE::PlayerCharacter::GetSingleton() || !RE::PlayerCharacter::GetSingleton()->Is3DLoaded())
@@ -375,7 +498,7 @@ namespace RT
 		const RE::TESObjectCELL* skyCell = worldSpace ? worldSpace->GetSkyCell() : nullptr;
 		const bool interior = tes->interiorCell != nullptr;
 
-		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats };
+		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats, a_poseFromCache, {} };
 		tes->ForEachCell([&](RE::TESObjectCELL* a_cell) {
 			auto* loadedData = a_cell ? a_cell->GetRuntimeData().loadedData : nullptr;
 			if (!loadedData || !loadedData->cell3D)
@@ -413,6 +536,23 @@ namespace RT
 			}
 		}
 		a_stats.exclusionBounds = static_cast<uint32_t>(a_exclusions.size());
+
+		// M7: pose skinned partitions with the matrices the renderer drew them with this frame. Trees are re-posed by
+		// culling after some of their draws, so their bones' current transforms can disagree with what was drawn.
+		// Skins not drawn this frame keep stale renderer matrices (older frameID) and use their bones instead.
+		if (a_poseFromCache) {
+			uint32_t newest = 0;
+			for (const auto& partition : a_skinned.partitions)
+				newest = std::max(newest, partition.rendererFrameID);
+			for (const auto& partition : a_skinned.partitions) {
+				if (newest == 0 || partition.rendererFrameID != newest)
+					continue;
+				const auto first = static_cast<ptrdiff_t>(partition.paletteOffset);
+				const auto count = static_cast<ptrdiff_t>(partition.boneCount) * 12;
+				std::copy(a_skinned.rendererPalettes.begin() + first, a_skinned.rendererPalettes.begin() + first + count, a_skinned.palettes.begin() + first);
+				(partition.tree ? a_stats.treePose : a_stats.otherPose).fromCache++;
+			}
+		}
 
 		// Unique meshes: instances of the same mesh share rendererData.
 		ankerl::unordered_dense::set<const void*> staticMeshes;

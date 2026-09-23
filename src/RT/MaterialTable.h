@@ -7,6 +7,21 @@
 
 namespace RT
 {
+	/**
+	 * @brief What a game texture SRV points at. The game's textures unload and their SRV addresses get reused, so
+	 * tables keyed by SRV compare this each frame; a different resource or size means a different texture.
+	 */
+	struct TextureIdentity
+	{
+		ID3D11Resource* resource = nullptr;  // not referenced: identity only
+		uint32_t width = 0;
+		uint32_t height = 0;
+		bool supported = false;  ///< a plain single-sample 2D texture viewed as TEXTURE2D
+		bool operator==(const TextureIdentity&) const = default;
+	};
+
+	TextureIdentity GetTextureIdentity(ID3D11ShaderResourceView* a_srv);
+
 	struct MaterialTableStats
 	{
 		uint32_t textures = 0;         ///< diffuse textures with a computed average
