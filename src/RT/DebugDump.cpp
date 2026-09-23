@@ -11,6 +11,74 @@ namespace RT
 			return { { "avg", a_series.Average() }, { "max", a_series.Max() }, { "samples", a_series.count } };
 		}
 
+		std::string VertexFlagNames(uint16_t a_flags)
+		{
+			using V = RE::BSGraphics::Vertex;
+			constexpr std::pair<uint16_t, const char*> kNames[] = {
+				{ V::VF_VERTEX, "VERTEX" }, { V::VF_UV, "UV" }, { V::VF_UV_2, "UV2" }, { V::VF_NORMAL, "NORMAL" },
+				{ V::VF_TANGENT, "TANGENT" }, { V::VF_COLORS, "COLORS" }, { V::VF_SKINNED, "SKINNED" }, { V::VF_LANDDATA, "LANDDATA" },
+				{ V::VF_EYEDATA, "EYEDATA" }, { V::VF_INSTANCEDATA, "INSTANCEDATA" }, { V::VF_FULLPREC, "FULLPREC" }
+			};
+			std::string names;
+			for (const auto& [bit, name] : kNames) {
+				if (a_flags & bit)
+					names += names.empty() ? name : std::string("|") + name;
+			}
+			return names;
+		}
+
+		json SceneJson(const DebugDumpData& a_data)
+		{
+			const auto& s = a_data.scene;
+			json instances = json::object();
+			for (size_t i = 0; i < s.instances.size(); i++)
+				instances[std::string(GetCategoryName(static_cast<GeometryCategory>(i)))] = s.instances[i];
+			return {
+				{ "in_world", a_data.inWorld },
+				{ "cells", s.cells },
+				{ "hidden_subtrees_skipped", s.hiddenSubtrees },
+				{ "geometry_instances", instances },
+				{ "alpha_tested_instances", s.alphaTestedInstances },
+				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
+				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
+			};
+		}
+
+		json CacheJson(const MeshCacheStats& c)
+		{
+			json formats = json::array();
+			for (const auto& f : c.formats) {
+				formats.push_back({ { "flags", std::format("{:#06x}", f.flags) },
+					{ "flag_names", VertexFlagNames(f.flags) },
+					{ "stride_from_desc", f.strideFromDesc },
+					{ "stride_from_getsize", f.strideFromGetSize },
+					{ "vb_bytes_per_vertex", f.vbBytesPerVertex },
+					{ "meshes", f.meshes } });
+			}
+			constexpr double kMB = 1024.0 * 1024.0;
+			return {
+				{ "entries", c.entries },
+				{ "resident", c.resident },
+				{ "pending", c.pending },
+				{ "resident_vb_mb", c.residentVertexBytes / kMB },
+				{ "resident_ib_mb", c.residentIndexBytes / kMB },
+				{ "pool_reserved_mb", c.poolBytes / kMB },
+				{ "pool_pages", c.poolPages },
+				{ "per_frame",
+					{ { "last_frame", { { "uploads", c.uploadsLastFrame }, { "evictions", c.evictionsLastFrame }, { "readbacks_started", c.readbacksLastFrame }, { "upload_mb", c.uploadBytesLastFrame / kMB } } },
+						{ "uploads", TimingJson(c.uploadsPerFrame) },
+						{ "evictions", TimingJson(c.evictionsPerFrame) },
+						{ "upload_mb", TimingJson(c.uploadMBPerFrame) },
+						{ "update_ms", TimingJson(c.updateMs) } } },
+				{ "totals", { { "uploads", c.totalUploads }, { "evictions", c.totalEvictions }, { "readbacks", c.totalReadbacks }, { "failed", c.totalFailed }, { "deferred", c.totalDeferred } } },
+				{ "upload_source", { { "raw_cpu", c.sourceRawCpu }, { "d3d11_readback", c.sourceD3D11Readback } } },
+				{ "raw_pointers_per_new_mesh", { { "both", c.rawBoth }, { "vertex_only", c.rawVertexOnly }, { "index_only", c.rawIndexOnly }, { "neither", c.rawNeither } } },
+				{ "raw_vs_gpu_check", { { "compared", c.rawCompared }, { "matched", c.rawMatched }, { "mismatched", c.rawMismatched }, { "copy_faults", c.rawCopyFaults } } },
+				{ "stride_check", { { "vb_size_matches", c.strideMatchesVB }, { "vb_size_mismatches", c.strideMismatchesVB }, { "ib_size_matches", c.indexBytesMatchIB }, { "ib_size_mismatches", c.indexBytesMismatchIB } } },
+				{ "vertex_formats", formats },
+			};
+		}
+
 		json BuildJson(const DebugDumpData& a_data, const std::string& a_pngName, bool a_pngWritten)
 		{
 			const auto& s = a_data.stats;
@@ -19,7 +87,9 @@ namespace RT
 			const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
 
 			return {
-				{ "milestone", "M2" },
+				{ "milestone", "M3" },
+				{ "scene", SceneJson(a_data) },
+				{ "mesh_cache", CacheJson(a_data.cache) },
 				{ "frame", a_data.gameFrame },
 				{ "written_utc", std::format("{:%FT%TZ}", now) },
 				{ "adapter", { { "name", a_data.caps.adapterName }, { "luid", FormatLuid(a_data.caps.adapterLuid) }, { "dxr_tier", GetTierName(a_data.caps.raytracingTier) } } },

@@ -4,7 +4,9 @@
 #include <d3d12.h>
 #include <winrt/base.h>
 
+#include "MeshCache.h"
 #include "RT.h"
+#include "Scene.h"
 
 namespace RT
 {
@@ -42,6 +44,9 @@ namespace RT
 		ID3D11ShaderResourceView* GetTestPatternSRV() const { return framesSubmitted > 0 ? patternSRV11.get() : nullptr; }
 		const InteropStats& GetStats() const { return stats; }
 		const SpikeResults& GetSpikeResults() const { return spike; }
+		const SceneStats& GetSceneStats() const { return sceneStats; }
+		const TimingSeries& GetSceneTraversalMs() const { return sceneTraversalMs; }
+		const MeshCacheStats& GetMeshCacheStats() const { return meshCache.GetStats(); }
 		const std::string& GetFailureReason() const { return failureReason; }
 
 	private:
@@ -58,6 +63,7 @@ namespace RT
 		winrt::com_ptr<ID3D12CommandQueue> queue;
 		winrt::com_ptr<ID3D12CommandAllocator> allocators[kFramesInFlight];
 		winrt::com_ptr<ID3D12GraphicsCommandList> commandList;
+		winrt::com_ptr<ID3D12GraphicsCommandList> uploadList;  // mesh uploads, executed after the D3D11 handoff signal
 		winrt::com_ptr<ID3D12Fence> fence;
 		uint64_t fenceValue = 0;
 		uint64_t slotFenceValues[kFramesInFlight]{};
@@ -98,6 +104,13 @@ namespace RT
 		LARGE_INTEGER startTime{};
 		uint32_t framesSubmitted = 0;
 		bool deviceRemoved = false;
+
+		// M3 scene extraction.
+		MeshCache meshCache;
+		std::vector<GeometryCandidate> candidates;
+		SceneStats sceneStats;
+		TimingSeries sceneTraversalMs;
+		bool inWorld = false;
 
 		InteropStats stats;
 		SpikeResults spike;

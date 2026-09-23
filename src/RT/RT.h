@@ -11,6 +11,10 @@
  */
 namespace RT
 {
+	struct SceneStats;
+	struct MeshCacheStats;
+	struct TimingSeries;
+
 	/** @brief What the capability probe found on the game's adapter. */
 	struct Capabilities
 	{
@@ -124,6 +128,9 @@ namespace RT
 
 	const InteropStats* GetInteropStats();
 	const SpikeResults* GetSpikeResults();
+	const SceneStats* GetSceneStats();
+	const TimingSeries* GetSceneTraversalMs();
+	const MeshCacheStats* GetMeshCacheStats();
 
 	/** @brief Human-readable name for a raytracing tier, e.g. "1.1"; derived from the enum value so tiers newer than the SDK still print. */
 	std::string GetTierName(D3D12_RAYTRACING_TIER a_tier);

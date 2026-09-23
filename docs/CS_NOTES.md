@@ -170,3 +170,11 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 - Debug layer/DRED (debug builds) are enabled in `SkyrimRT::Load()` because enabling them after any D3D12 device exists removes that device (CS's frame-gen device included).
 - D3D12 shaders: `D3DCompileFromFile(... "cs_5_1")` on `Data\\Shaders\\SkyrimRT\\*.hlsl`. RayQuery (M4) will need DXC / SM 6.5.
 - Sharing results and timings: ARCHITECTURE §2.
+
+## SkyrimRT scene extraction (M3)
+
+- `src/RT/Scene.{h,cpp}`: `TES::ForEachCell` → `cell->GetRuntimeData().loadedData->cell3D`, manual walk (prunes `NiAVObject::Flag::kHidden` subtrees), classification by `BSGeometry::GetType().get()`, `skinInstance`, shader property RTTI (`netimmerse_cast`), terrain = lighting material `Feature::kMultiTexLand[LODBlend]` (same test as `TruePBR.cpp`).
+- `src/RT/MeshCache.{h,cpp}`: 64 MB DEFAULT pages (first fit), 32 MB UPLOAD ring, 8 MB / 128 meshes / 16 readbacks per frame, evict after 120 unseen frames. Uploads run in a second command list after the D3D11 handoff signal.
+- CommonLib declares its own `RE::ID3D11Buffer`; `reinterpret_cast` to `::ID3D11Buffer*` to call D3D11 on it.
+- `VertexDesc` keeps its bits private and `GetSize()` is non-const; copy the struct (`memcpy` for the raw bits).
+- M3 costs (RTX 4080 SUPER, 26 exterior cells / big dungeon): scene walk 0.5–1.2 ms CPU per frame (the main CPU cost; candidate for walking every N frames or event-driven attach/detach), cache update 0.05–0.12 ms.

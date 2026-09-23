@@ -1,6 +1,8 @@
 #pragma once
 
+#include "MeshCache.h"
 #include "RT.h"
+#include "Scene.h"
 
 namespace RT
 {
@@ -16,6 +18,10 @@ namespace RT
 		Capabilities caps;
 		InteropStats stats;
 		SpikeResults spike;
+		bool inWorld = false;
+		SceneStats scene;
+		TimingSeries sceneTraversalMs;
+		MeshCacheStats cache;
 	};
 
 	/**

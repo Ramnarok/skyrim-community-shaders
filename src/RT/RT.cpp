@@ -142,6 +142,21 @@ namespace RT
 		return sidecar ? &sidecar->GetSpikeResults() : nullptr;
 	}
 
+	const SceneStats* GetSceneStats()
+	{
+		return sidecar ? &sidecar->GetSceneStats() : nullptr;
+	}
+
+	const TimingSeries* GetSceneTraversalMs()
+	{
+		return sidecar ? &sidecar->GetSceneTraversalMs() : nullptr;
+	}
+
+	const MeshCacheStats* GetMeshCacheStats()
+	{
+		return sidecar ? &sidecar->GetMeshCacheStats() : nullptr;
+	}
+
 	std::string GetTierName(D3D12_RAYTRACING_TIER a_tier)
 	{
 		// Tier enum values encode major/minor as major * 10 + minor (1_0 = 10, 1_1 = 11). Deriving

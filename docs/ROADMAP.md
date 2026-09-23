@@ -7,7 +7,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 | M0 | Environment + codebase exploration | ✅ 2026-09-23 |
 | M1 | RT feature skeleton + DXR capability check | ✅ 2026-09-23 |
 | M2 | D3D12 sidecar + interop proof | ✅ 2026-09-23 (16-min run, 52,160 round trips, 0 skipped, no device removal, 0.30 ms avg) |
-| M3 | Scene extraction + stats dump | ☐ |
+| M3 | Scene extraction + stats dump | ✅ 2026-09-23 (5,428 uploads, 0 failed, stride verified 5,428/5,428; see ARCHITECTURE §3) |
 | M4 | BLAS/TLAS + traced debug view (depth match) | ☐ |
 | M5 | RT sun shadows | ☐ |
 | M6 | 1-bounce diffuse GI + NRD | ☐ |

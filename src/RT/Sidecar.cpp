@@ -81,6 +81,10 @@ namespace RT
 			return fail(std::format("CreateCommandList failed ({})", FormatHResult(hr)));
 		commandList->SetName(L"SkyrimRT::CommandList");
 		commandList->Close();
+		if (hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators[0].get(), nullptr, IID_PPV_ARGS(uploadList.put())); FAILED(hr))
+			return fail(std::format("CreateCommandList(upload) failed ({})", FormatHResult(hr)));
+		uploadList->SetName(L"SkyrimRT::UploadList");
+		uploadList->Close();
 
 		// One shared fence, used in both directions: D3D11 signals odd values for D3D12 to wait on,
 		// D3D12 signals the next value for D3D11 to wait on.
@@ -101,6 +105,9 @@ namespace RT
 			return false;
 
 		RunSharedBufferSpike();
+
+		if (!meshCache.Init(device.get(), d3d11Device.get(), d3d11Context.get()))
+			return fail("mesh cache upload ring could not be created");
 
 		logger::info("[SkyrimRT] Sidecar running: shared fence OK, test texture created in {} ({}x{})",
 			spike.textureCreatedInD3D12 ? "D3D12, opened in D3D11" : "D3D11, opened in D3D12", kPatternSize, kPatternSize);
@@ -477,6 +484,10 @@ namespace RT
 		data.caps = GetCapabilities();
 		data.stats = stats;
 		data.spike = spike;
+		data.inWorld = inWorld;
+		data.scene = sceneStats;
+		data.sceneTraversalMs = sceneTraversalMs;
+		data.cache = meshCache.GetStats();
 		WriteDebugDumpAsync(std::move(data));
 	}
 
@@ -564,6 +575,22 @@ namespace RT
 		ctx->End(d3d11Disjoint[slot].get());
 		slotHasTimings[slot] = true;
 
+		// M3: extract the scene and stream new meshes into the cache. The upload list runs after the
+		// signal D3D11 waits on, so uploads never lengthen the D3D11 round trip.
+		inWorld = CollectScene(candidates, sceneStats);
+		if (inWorld)
+			sceneTraversalMs.Add(sceneStats.traversalMs);
+		uploadList->Reset(allocator, nullptr);
+		const uint64_t uploadFence = fenceValue + 1;
+		const bool uploadsRecorded = meshCache.Update(candidates, framesSubmitted, stats.lastCompletedFenceValue, uploadList.get(), uploadFence);
+		uploadList->Close();
+		if (uploadsRecorded) {
+			ID3D12CommandList* uploadLists[] = { uploadList.get() };
+			queue->ExecuteCommandLists(1, uploadLists);
+			queue->Signal(fence.get(), ++fenceValue);
+			slotFenceValues[slot] = fenceValue;
+		}
+
 		if (dumpThisFrame) {
 			dumpRequested = false;
 			dumpInFlight = true;
@@ -572,7 +599,7 @@ namespace RT
 			dumpGameFrame = pendingDumpGameFrame;
 		}
 
-		stats.lastSignaledFenceValue = toD3D11;
+		stats.lastSignaledFenceValue = fenceValue;
 		stats.framesSubmitted = ++framesSubmitted;
 
 		LARGE_INTEGER cpuEnd;

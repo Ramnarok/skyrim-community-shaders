@@ -90,18 +90,21 @@ M2 measurements (RTX 4080 SUPER, ~57 fps, 13,207 frames): the D3D11→D3D12→D3
 **Reading mesh data:**
 - ✅ `BSGeometry::GetGeometryRuntimeData().rendererData` is a `BSGraphics::TriShape*` (struct defined in `RE/N/NiSkinPartition.h`). It holds `vertexBuffer`, `indexBuffer` (`ID3D11Buffer*`), `vertexDesc`, **and `rawVertexData` / `rawIndexData` CPU pointers.** ⚠ If the game keeps the raw pointers alive, M3 can upload from CPU memory and skip copying game-owned D3D11 buffers entirely. Count non-null raw pointers in the M3 dump.
 - ✅ Vertex and triangle counts: `BSTriShape::GetTrishapeRuntimeData().vertexCount` / `.triangleCount` (both `uint16_t`).
-- Vertices are **interleaved and packed**. Position is at offset 0:
-  - When `VF_FULLPREC` is set, it's `float3`.
-  - Otherwise it's a half4.
+- Vertices are **interleaved and packed**. Position is at offset 0.
+  - ⚠ **Measured in M3 (5,428 meshes, 3 locations): `VF_FULLPREC` (0x400) was never set, yet every stride only adds up with a 16-byte position** (e.g. flags 0x3b = VERTEX|UV|NORMAL|TANGENT|COLORS → 32 = 16 + 4 + 4 + 4 + 4). So the runtime layout is `float3` position + one float (bitangent X), not `half4`. Treat positions as `R32G32B32_FLOAT` and confirm with the M4 depth-match test. The original "half4 unless VF_FULLPREC" assumption (nifskope's on-disk layout) does not hold for the uploaded buffers.
+  - Formats seen: 0x3b (stride 32, 88% of meshes), 0x1b VERTEX|UV|NORMAL|TANGENT (28), 0xbb … |LANDDATA (40, all terrain).
 - DXR accepts the matching BLAS vertex format directly:
   - `R32G32B32_FLOAT` or `R16G16B16A16_FLOAT` (w ignored).
   - Set the stride to the full vertex size.
-- So we can build the BLAS from the copied interleaved buffer without repacking. Partly verified: `Vertex::VF_FULLPREC = 0x400`; flags sit at bits 44+ (`VertexDesc::HasFlag`); per-attribute offsets come from `GetAttributeOffset(attr)`. ⚠ **Don't use `VertexDesc::GetSize()` for the stride**: it always counts position as 16 bytes, even for half4 positions. Use `(desc & 0xF) * 4` (nifskope layout) and confirm against real buffers in M3.
+- So we can build the BLAS from the copied interleaved buffer without repacking. Flags sit at bits 44+ (`VertexDesc::HasFlag`); per-attribute offsets come from `GetAttributeOffset(attr)`.
+- ✅ **Stride = `(desc & 0xF) * 4`**, verified in M3: it matched the game's VB `ByteWidth / vertexCount` for 5,428/5,428 meshes. **Never use `VertexDesc::GetSize()`**: it ignores `VF_LANDDATA` and reports 32 for terrain, whose real stride is 40.
+- ✅ Indices are 16-bit, `triangleCount * 3 * 2` bytes; matched the IB `ByteWidth` for 5,428/5,428 meshes.
 - Indices are 16-bit.
 
 **Mesh cache:**
 - Key: `rendererData` pointer (or the VB pointer).
 - Value: the D3D12 buffer copies, BLAS, geometry-table index and material info.
+- ✅ Upload source (M3): `TriShape::rawVertexData`/`rawIndexData` were both present for 93% of new meshes (5,044) and **byte-identical to the GPU buffers in 16/16 sampled meshes**, with 0 access faults. Terrain (384 meshes) keeps `rawVertexData` but not `rawIndexData`, so it goes through the D3D11 staging readback. Key = `TriShape*` + VB pointer + desc + counts, which guards against address reuse.
 - ⚠ Lifetime: meshes unload with cells. Detect removal with a generation sweep: a mesh not seen for K frames is evicted after a fence confirms the GPU is idle on it. Never dereference a stale game pointer; key only, don't hold raw pointers across frames without validation.
 - Upload budget: at most N MB and M BLAS builds per frame. The rest waits, which is acceptable because it streams.
 

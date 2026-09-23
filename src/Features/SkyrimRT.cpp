@@ -1,7 +1,9 @@
 #include "SkyrimRT.h"
 
 #include "I18n/I18n.h"
+#include "RT/MeshCache.h"
 #include "RT/RT.h"
+#include "RT/Scene.h"
 
 #define I18N_KEY_PREFIX "feature.skyrim_rt."
 
@@ -134,6 +136,29 @@ void SkyrimRT::DrawSettings()
 			DrawResult(T(TKEY("buffer_12_to_11"), "Buffer DirectX 12 -> 11"), spike->bufferD3D12ToD3D11Open);
 			ImGui::Text("%s: %s", T(TKEY("buffer_12_to_11_data"), "Buffer DirectX 12 -> 11 data"), spike->bufferD3D12ToD3D11Verified ? T(TKEY("verified"), "verified") : T(TKEY("not_verified"), "not verified"));
 			DrawResult(T(TKEY("buffer_11_to_12"), "Buffer DirectX 11 -> 12"), spike->bufferD3D11ToD3D12Open);
+		}
+
+		ImGui::Spacing();
+		ImGui::Spacing();
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("scene"), "Scene and mesh cache"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		const auto* scene = RT::GetSceneStats();
+		const auto* traversal = RT::GetSceneTraversalMs();
+		const auto* cache = RT::GetMeshCacheStats();
+		if (scene && traversal && cache) {
+			using C = RT::GeometryCategory;
+			auto count = [&](C a_category) { return scene->instances[static_cast<size_t>(a_category)]; };
+			ImGui::Text("%s: %u", T(TKEY("cells"), "Loaded cells"), scene->cells);
+			ImGui::Text("%s: %u (%u %s)", T(TKEY("static_meshes"), "Static mesh instances"), count(C::kStaticMesh), scene->uniqueStaticMeshes, T(TKEY("unique"), "unique"));
+			ImGui::Text("%s: %u (%u %s)", T(TKEY("terrain"), "Terrain instances"), count(C::kTerrain), scene->uniqueTerrainMeshes, T(TKEY("unique"), "unique"));
+			ImGui::Text("%s: %u / %u / %u / %u", T(TKEY("skipped_types"), "Skipped: skinned / dynamic / instanced / LOD"), count(C::kSkinned), count(C::kDynamic), count(C::kInstanced), count(C::kLOD));
+			ImGui::Text("%s: %.3f ms", T(TKEY("traversal"), "Scene traversal"), traversal->Average());
+			ImGui::Text("%s: %u / %u (%u %s)", T(TKEY("cache_entries"), "Cache resident / entries"), cache->resident, cache->entries, cache->pending, T(TKEY("pending"), "pending"));
+			ImGui::Text("%s: %.1f MB", T(TKEY("cache_gpu"), "Cache GPU memory"), (cache->residentVertexBytes + cache->residentIndexBytes) / (1024.0 * 1024.0));
+			ImGui::Text("%s: %u / %u", T(TKEY("cache_frame"), "Uploads / evictions last frame"), cache->uploadsLastFrame, cache->evictionsLastFrame);
+			ImGui::Text("%s: %u / %u", T(TKEY("cache_sources"), "Uploaded from CPU copy / GPU readback"), cache->sourceRawCpu, cache->sourceD3D11Readback);
 		}
 
 		ImGui::Spacing();
