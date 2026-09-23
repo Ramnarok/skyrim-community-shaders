@@ -554,8 +554,6 @@ namespace RT
 		data.giCompiledIn = IsGICompiledIn();
 		data.materials = materialTable.GetStats();
 		data.alphaAtlas = alphaAtlas.GetStats();
-		data.poseSamples = std::move(dumpPoseSamples);
-		dumpPoseSamples.clear();
 		alphaAtlas.ReadDumpImage(data.images);
 #if defined(SKYRIMRT_NRD)
 		if (gi) {
@@ -609,11 +607,6 @@ namespace RT
 
 		auto* ctx = d3d11Context.get();
 		if (dumpStage == DumpStage::kCaptureOn) {
-			// Same frame as the walk that took the samples: has the pose moved since the Prepass?
-			if (dumpGameFrame == a_gameFrame) {
-				for (auto& sample : dumpPoseSamples)
-					ReadSkinPoseAtPresent(sample);
-			}
 			const bool anyRT = dumpShadowsTraced || dumpGITraced;
 			captureOn.Begin(d3d11Device.get(), ctx, anyRT ? "final_rt_on" : "final");
 			if (anyRT) {
@@ -661,7 +654,7 @@ namespace RT
 #endif
 
 		// Scene first: the TLAS is built from this frame's instances.
-		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats, skinPoseFromCache);
+		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats, treeRestPose);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);
 		// Albedos for the instance data; the candidates' texture pointers are only valid this frame.
@@ -778,7 +771,6 @@ namespace RT
 		if (dumpThisFrame) {
 			if (alphaAtlasReady)
 				alphaAtlas.CaptureForDump();
-			dumpPoseSamples = skinnedScene.poseSamples;  // re-read at this frame's Present (M7 tree-pose diagnostic)
 			dumpHasTrace = debugTrace;
 			dumpShadowsTraced = shadows != nullptr;
 			dumpGITraced = false;  // set by SubmitGI later this frame

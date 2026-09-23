@@ -25,7 +25,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TraceDebugView,
 	DebugView,
 	AlphaTest,
-	SkinPoseFromCache,
+	TreeRestPose,
 	SunShadows,
 	SunAngularRadius,
 	AlphaTestedShadows,
@@ -198,7 +198,7 @@ void SkyrimRT::Prepass()
 	params.spatialRadius = settings.ShadowSpatialRadius;
 	params.viewMode = settings.ShadowView;
 	RT::SetAlphaTest(settings.AlphaTest);
-	RT::SetSkinPoseFromCache(settings.SkinPoseFromCache);
+	RT::SetTreeRestPose(settings.TreeRestPose);
 	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr, gi);
 
 	// Screen-Space Shadows skipped its pass for this frame, so the slot is ours. A mask that couldn't be traced
@@ -458,9 +458,9 @@ void SkyrimRT::DrawSettings()
 		if (const auto* atlas = RT::GetAlphaAtlasStats(); atlas && atlas->available && settings.AlphaTest)
 			ImGui::Text("%s: %u / %u (%u / %u)", T(TKEY("alpha_atlas_status"), "Alpha atlas tiles (alpha-tested meshes)"), atlas->tilesUsed, atlas->capacity, atlas->candidatesTested, atlas->candidates);
 
-		ImGui::Checkbox(T(TKEY("skin_pose_from_cache"), "Skinned pose from renderer matrices"), &settings.SkinPoseFromCache);
+		ImGui::Checkbox(T(TKEY("tree_rest_pose"), "Trace trees in their rest pose"), &settings.TreeRestPose);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("skin_pose_from_cache_tooltip"), "Pose trees (and characters drawn this frame) from the exact bone matrices the game draws them with, instead of their bones' current transforms. Trees need this: culling re-poses their swaying branches after some of their draws."));
+			ImGui::Text("%s", T(TKEY("tree_rest_pose_tooltip"), "Trace trees without their sway. Every camera that culls a tree (the view, the shadow maps, Skylighting) re-poses its branches, so the swaying pose at tracing time can belong to another camera and jump away from the drawn tree."));
 
 		ImGui::BeginDisabled(!settings.Enabled || !RT::IsRunning());
 		if (ImGui::Button(T(TKEY("write_dump"), "Write debug dump (F10)")))

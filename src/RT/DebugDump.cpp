@@ -27,14 +27,6 @@ namespace RT
 			return names;
 		}
 
-		json PoseJson(const SkinPoseStats& a_pose)
-		{
-			return { { "shapes", a_pose.shapes }, { "compared", a_pose.compared }, { "differ_over_1_unit", a_pose.differ },
-				{ "max_translation_delta", a_pose.maxDelta }, { "frame_id_min", a_pose.compared ? a_pose.minFrameID : 0u },
-				{ "frame_id_max", a_pose.maxFrameID }, { "partitions_posed_from_renderer_matrices", a_pose.fromCache },
-				{ "partitions_by_matrix_age_frames", { { "0", a_pose.lagPartitions[0] }, { "1-2", a_pose.lagPartitions[1] }, { "3-8", a_pose.lagPartitions[2] }, { "over_8", a_pose.lagPartitions[3] } } } };
-		}
-
 		json SceneJson(const DebugDumpData& a_data)
 		{
 			const auto& s = a_data.scene;
@@ -57,7 +49,7 @@ namespace RT
 				{ "alpha_blended_instances", s.alphaBlendedInstances },
 				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
-				{ "skin_pose_vs_renderer_matrices", { { "trees", PoseJson(s.treePose) }, { "other", PoseJson(s.otherPose) } } },
+				{ "trees", { { "skinned_shapes", s.treeShapes }, { "rest_pose_shapes", s.treeRestPoseShapes } } },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
 		}
@@ -258,32 +250,6 @@ namespace RT
 			};
 		}
 
-		json SkinPoseJson(const DebugDumpData& a_data)
-		{
-			json samples = json::array();
-			for (const auto& s : a_data.poseSamples) {
-				samples.push_back({
-					{ "tree", s.tree },
-					{ "bone_count", s.boneCount },
-					{ "frame_id", s.frameID },
-					{ "num_matrices", s.numMatrices },
-					{ "num_registers", s.numRegisters },
-					{ "allocated_size", s.allocatedSize },
-					{ "bone0_world_3x4", s.bone0World },
-					{ "palette0_3x4", s.palette0 },
-					{ "bone_matrices_read", s.boneMatricesRead },
-					{ "bone_matrices_first_floats", s.boneMatrices },
-					{ "prev_bone_matrices_first_floats", s.prevBoneMatrices },
-					{ "present",
-						{ { "read", s.presentRead },
-							{ "frame_id", s.presentFrameID },
-							{ "bone0_world_3x4", s.presentBone0World },
-							{ "bone_matrices_first_floats", s.presentBoneMatrices } } },
-				});
-			}
-			return samples;
-		}
-
 		json AlphaAtlasJson(const DebugDumpData& a_data)
 		{
 			const auto& a = a_data.alphaAtlas;
@@ -319,7 +285,6 @@ namespace RT
 			return {
 				{ "milestone", "M7" },
 				{ "alpha_atlas", AlphaAtlasJson(a_data) },
-				{ "skin_pose_samples", SkinPoseJson(a_data) },
 				{ "skinned", SkinnedJson(a_data) },
 				{ "global_illumination", GlobalIlluminationJson(a_data) },
 				{ "sun_shadows", SunShadowsJson(a_data) },

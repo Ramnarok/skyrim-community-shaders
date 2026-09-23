@@ -38,7 +38,6 @@ namespace RT
 		SkinnedStats skinned;
 		MaterialTableStats materials;
 		AlphaAtlasStats alphaAtlas;
-		std::vector<SkinPoseSample> poseSamples;  ///< M7 tree-pose diagnostic
 		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
 	};
 

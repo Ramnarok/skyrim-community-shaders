@@ -11,7 +11,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 | M4 | BLAS/TLAS + traced debug view (depth match) | ✅ 2026-09-23 (mismatch 0.02–0.14% in Whiterun, Bleak Falls Barrow, Solitude; see ARCHITECTURE §4) |
 | M5 | RT sun shadows | ✅ 2026-09-23 (98% agreement with the game's shadow mask at Whiterun; round trip 1.0–1.2 ms at 1280×720 on RTX 4080 SUPER, shadow passes 0.13–0.29 ms; 1440p / 3070-class cost not measured; see ARCHITECTURE §5) |
 | M6 | 1-bounce diffuse GI + NRD | ✅ 2026-09-24 (GI hand-off 0.70 ms, passes 0.42–0.51 ms at 1280×720 on RTX 4080 SUPER; frame time unchanged within noise; NRD in private builds only, see CLAUDE.md and ARCHITECTURE §5) |
-| M7 | Actors (skinning) + alpha-tested geometry | ✅ 2026-09-24. M7a skinned actors + M7b FaceGen heads (depth mismatch incl. actors 0.001–0.03%). M7c foliage alpha test, trees and hair included (forest shadow agreement 68% → 85–91%; depth mismatch 0.81–1.11% in the forest with wind sway bucketed; alpha-tested hits 0.4–0.7%), trees posed from the renderer's bone matrices (trunk mismatch 0.34–0.79%, from up to 11.9%). **Open:** a trunk sliver still alternates a sway step either side of the drawn pose, and flicker with GI on is still reported (under investigation); a fireplace card in the TLAS but not in the depth (interior, 2%). Interiors use Screen-Space GI until point-light bounce lands (next). See ARCHITECTURE §4 "M7". |
+| M7 | Actors (skinning) + alpha-tested geometry | ✅ 2026-09-24. M7a skinned actors + M7b FaceGen heads (depth mismatch incl. actors 0.001–0.03%). M7c foliage alpha test, trees and hair included (forest shadow agreement 68% → 85–91%; depth mismatch 0.4–1.1% in the forest with wind sway bucketed; alpha-tested hits 0.3–0.7%). Trees are traced in their rest pose: every culling camera (view, shadow cascades, Skylighting) re-poses their swaying bones, which made trunks jump and flicker (up to 12.8% mismatch, a dark GI band); rest pose: 0.87%, band gone. **Open:** a fireplace card in the TLAS but not in the depth (interior, 2%). Interiors use Screen-Space GI until point-light bounce lands (next). See ARCHITECTURE §4 "M7". |
 | M8 | Many lights (ReSTIR DI), reflections, LOD, multi-bounce path tracing | ☐ |
 
 ---
@@ -110,6 +110,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 - ReSTIR DI for point lights (RTXDI), removing the per-object light limit.
 - Point lights in the GI bounce (interiors need it before RT GI can replace Screen-Space GI there). Next after M7c.
 - Wind sway (`TREE_ANIM`) replicated on D3D12, so foliage matches the raster exactly.
+- Trees as static BLASes (they're traced in rest pose, so per-frame skinning and refit are wasted work).
 - Reflections.
 - Distant LOD in the TLAS.
 - Water.

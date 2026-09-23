@@ -187,8 +187,8 @@ namespace RT
 
 	/** @brief M7c: alpha-test alpha-tested meshes (foliage) in every trace; off traces them as solid cards. */
 	void SetAlphaTest(bool a_enabled);
-	/** @brief M7: take skinned bone palettes from the renderer's own matrices instead of the bones' world transforms. */
-	void SetSkinPoseFromCache(bool a_enabled);
+	/** @brief M7: trace trees in their rest pose instead of their swaying bones' current pose. */
+	void SetTreeRestPose(bool a_enabled);
 	/** @brief M7c alpha-atlas stats, or nullptr. */
 	const struct AlphaAtlasStats* GetAlphaAtlasStats();
 	/** @brief M7 skinning stats, or nullptr. */

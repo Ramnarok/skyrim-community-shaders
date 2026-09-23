@@ -163,10 +163,10 @@ namespace RT
 			sidecar->SetAlphaTest(a_enabled);
 	}
 
-	void SetSkinPoseFromCache(bool a_enabled)
+	void SetTreeRestPose(bool a_enabled)
 	{
 		if (sidecar)
-			sidecar->SetSkinPoseFromCache(a_enabled);
+			sidecar->SetTreeRestPose(a_enabled);
 	}
 
 	const AlphaAtlasStats* GetAlphaAtlasStats()

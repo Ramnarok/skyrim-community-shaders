@@ -42,7 +42,7 @@ struct SkyrimRT : OverlayFeature
 		bool TraceDebugView = false;  ///< M4: trace the depth / instance / normal / mismatch debug views every frame
 		uint32_t DebugView = 3;       ///< 0 depth, 1 instance, 2 normal, 3 depth-mismatch diff
 		bool AlphaTest = true;        ///< M7c: alpha-test foliage in every trace (else solid cards)
-		bool SkinPoseFromCache = true;   ///< M7: pose skins drawn this frame from the renderer's NiSkinInstance::boneMatrices
+		bool TreeRestPose = true;        ///< M7: trace trees without sway (their bones hold the last culling camera's pose)
 		bool SunShadows = true;       ///< M5: ray-traced sun shadows in place of Screen-Space Shadows
 		float SunAngularRadius = 0.5f;  ///< degrees; penumbra width
 		bool AlphaTestedShadows = true;
