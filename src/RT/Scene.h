@@ -36,14 +36,38 @@ namespace RT
 		uint32_t triangleCount = 0;
 		bool terrain = false;
 		bool alphaTested = false;
+		bool alphaBlended = false;  // drawn in the transparent pass: not in the pre-water depth
+		RE::NiTransform world;  // absolute world transform, copied this frame
+	};
+
+	/** @brief World-space bounding sphere of geometry the TLAS does not contain (actors, grass, alpha-tested, ...). */
+	struct ExclusionBound
+	{
+		RE::NiPoint3 center;
+		float radius = 0.0f;
+	};
+
+	/** @brief Axis-aligned world bounds of the loaded cells (absolute coordinates). */
+	struct LoadedArea
+	{
+		bool bounded = false;  ///< false in interiors: everything visible is loaded
+		RE::NiPoint3 min;
+		RE::NiPoint3 max;
 	};
 
 	struct SceneStats
 	{
 		uint32_t cells = 0;
+		uint32_t exclusionBounds = 0;
+		std::array<uint32_t, static_cast<size_t>(GeometryCategory::kCount)> exclusionsByCategory{};  ///< indexed by GeometryCategory
+		std::array<float, static_cast<size_t>(GeometryCategory::kCount)> exclusionMaxRadius{};       ///< largest bound radius per category
+		uint32_t exclusionsRejectedTooLarge = 0;
 		uint32_t hiddenSubtrees = 0;  ///< Subtrees skipped because a node was flagged kHidden.
 		std::array<uint32_t, static_cast<size_t>(GeometryCategory::kCount)> instances{};
 		uint32_t alphaTestedInstances = 0;  ///< Subset of static + terrain instances.
+		uint32_t alphaBlendedInstances = 0;  ///< Subset of static + terrain instances.
+		bool grassWalked = false;           ///< BGSGrassManager::grassNode was found and walked
+		uint32_t grassBounds = 0;           ///< exclusion bounds contributed by grass
 		uint32_t uniqueStaticMeshes = 0;
 		uint32_t uniqueTerrainMeshes = 0;
 		float traversalMs = 0.0f;
@@ -53,5 +77,5 @@ namespace RT
 	 * @brief Collects static and terrain geometry from every loaded cell into a_out (cleared first).
 	 * @return False when there is no world (main menu, loading), in which case a_out is empty.
 	 */
-	bool CollectScene(std::vector<GeometryCandidate>& a_out, SceneStats& a_stats);
+	bool CollectScene(std::vector<GeometryCandidate>& a_out, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats);
 }

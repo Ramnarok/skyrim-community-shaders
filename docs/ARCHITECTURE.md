@@ -121,6 +121,17 @@ M2 measurements (RTX 4080 SUPER, ~57 fps, 13,207 frames): the D3D11→D3D12→D3
   - `InstanceMask` bits: 0x01 static, 0x02 terrain, 0x04 actor, 0x08 alpha-tested. Lets shaders choose what casts/receives.
 - Use scratch buffers from a ring allocator, and keep the build count per frame bounded.
 
+### M4 results and lessons (2026-09-23)
+
+- ✅ Transform convention: `NiTransform` is `rotate * p * scale + translate` with `rotate.entry[row][col]` (CommonLib `NiMatrix3::operator*`), so `D3D12_RAYTRACING_INSTANCE_DESC::Transform[r][c] = entry[r][c] * scale`, `Transform[r][3] = translate[r] - CameraPosAdjust[r]`. Verified: static geometry matches raster depth to 0.001–0.14% in three locations.
+- ✅ Rays: unproject the render-region pixel centre with `FrameBuffer::CameraViewProjInverse` (jittered, `row_major`, `mul(M, v)`, exactly as CS's `FrameBuffer.hlsli`) at depth 0 and 1. Render size = `Util::ConvertToDynamic(screen)`, captured with the matrices in `Feature::Prepass()`.
+- ✅ Raster depth to compare against: `Util::GetCurrentSceneDepthSRV(false)` at Present time (TerrainBlending's R32 depth when active), copied into a D3D11-created shared R32 texture.
+- **Never walk the scene graph while a loading screen is up.** Present keeps firing while cells are torn down; the first M4 run crashed on a garbage child pointer after `coc`. `CollectScene` skips frames with `LoadingMenu`/`MainMenu` open and runs under an SEH guard.
+- **Grass is not under the cells' 3D.** It lives under `BGSGrassManager::grassNode`; the manager pointer is captured from CS's `GrassOptimizations::LoadGrassType` hook, not `BGSGrassManager::GetSingleton()`, since that CommonLib ID has no 1.7.99-specific entry and a missing Address Library ID is fatal. The grass shapes' bounds did **not** cover the drawn grass, so grass is identified geometrically instead (below).
+- **Alpha-tested meshes are ~20% of static instances** and their bounds often cover whole rooms. They stay in the TLAS (opaque until M7) on mask 0x08; mismatches where they're hit are attributed to alpha, not to geometry errors. **Alpha-blended** meshes (glass, light rays) are drawn after the depth copy, so they sit on mask 0x20, outside the depth trace.
+- **Depth-mismatch metric definition** (`RayQueryDebugCS.hlsl`): relative distance difference > 1%. Pixels are counted unless sky, outside the loaded cells, or a *mismatch* that is (a) an alpha-tested hit, (b) raster-nearer inside the bounds of skinned/dynamic/LOD geometry, or (c) raster-nearer within 150 units above the terrain directly below (grass / ground clutter; this could also hide a missing object under 150 units, so it's counted separately). Matches are always counted. Coverage (counted / non-sky) was 45–95%.
+- Costs at 1280×720 (RTX 4080 SUPER): BLAS builds 0.15–0.29 ms (steady state; bursts on cell load), exclusion BLAS + TLAS 0.23–0.29 ms, trace + counters 0.23–0.50 ms. The whole M4 frame runs inside the M2 D3D11↔D3D12 round trip.
+
 ## 5. Tracing: inline RayQuery first
 
 Start with **DXR 1.1 inline `RayQuery` in compute shaders**. It avoids state objects and shader binding tables, and it's a much smaller surface area to debug. Move to a full `DispatchRays` pipeline only if we need many hit shaders.

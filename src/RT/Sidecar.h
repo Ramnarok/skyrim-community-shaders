@@ -6,6 +6,7 @@
 
 #include "MeshCache.h"
 #include "RT.h"
+#include "Raytracer.h"
 #include "Scene.h"
 
 namespace RT
@@ -29,10 +30,13 @@ namespace RT
 		 * @param a_device The probe-verified D3D12 device on the game's adapter (ownership is taken).
 		 * @return False if any required object could not be created; failureReason is set.
 		 */
-		bool Init(winrt::com_ptr<ID3D12Device> a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context);
+		bool Init(winrt::com_ptr<ID3D12Device> a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context, uint32_t a_screenWidth, uint32_t a_screenHeight);
 
-		/** @brief One interop round trip: D3D11 → D3D12 test-pattern dispatch → D3D11. Call once per frame on the render thread. */
-		void OnFrame();
+		/**
+		 * @brief One interop round trip per frame (render thread): scene extraction, D3D11 → D3D12 (test pattern,
+		 * and with a_trace the BLAS/TLAS/RayQuery debug trace) → D3D11, then mesh uploads.
+		 */
+		void OnFrame(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_trace);
 
 		/** @brief Queues a dump; the pattern copy rides along with the next round trip and is written once it completes. */
 		void RequestDebugDump(uint32_t a_gameFrame)
@@ -47,6 +51,7 @@ namespace RT
 		const SceneStats& GetSceneStats() const { return sceneStats; }
 		const TimingSeries& GetSceneTraversalMs() const { return sceneTraversalMs; }
 		const MeshCacheStats& GetMeshCacheStats() const { return meshCache.GetStats(); }
+		const Raytracer* GetRaytracer() const { return raytracerReady ? &raytracer : nullptr; }
 		const std::string& GetFailureReason() const { return failureReason; }
 
 	private:
@@ -60,9 +65,10 @@ namespace RT
 		void FinishDumpIfReady();
 
 		winrt::com_ptr<ID3D12Device> device;
+		winrt::com_ptr<ID3D12Device5> device5;  // raytracing interface of the same device
 		winrt::com_ptr<ID3D12CommandQueue> queue;
 		winrt::com_ptr<ID3D12CommandAllocator> allocators[kFramesInFlight];
-		winrt::com_ptr<ID3D12GraphicsCommandList> commandList;
+		winrt::com_ptr<ID3D12GraphicsCommandList4> commandList;
 		winrt::com_ptr<ID3D12GraphicsCommandList> uploadList;  // mesh uploads, executed after the D3D11 handoff signal
 		winrt::com_ptr<ID3D12Fence> fence;
 		uint64_t fenceValue = 0;
@@ -108,9 +114,16 @@ namespace RT
 		// M3 scene extraction.
 		MeshCache meshCache;
 		std::vector<GeometryCandidate> candidates;
+		std::vector<ExclusionBound> exclusions;
+		LoadedArea loadedArea;
 		SceneStats sceneStats;
 		TimingSeries sceneTraversalMs;
 		bool inWorld = false;
+
+		// M4 ray tracing.
+		Raytracer raytracer;
+		bool raytracerReady = false;
+		bool dumpHasTrace = false;
 
 		InteropStats stats;
 		SpikeResults spike;

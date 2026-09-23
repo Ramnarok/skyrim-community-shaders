@@ -47,7 +47,7 @@ namespace RT
 		}
 	}
 
-	bool Sidecar::Init(winrt::com_ptr<ID3D12Device> a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context)
+	bool Sidecar::Init(winrt::com_ptr<ID3D12Device> a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context, uint32_t a_screenWidth, uint32_t a_screenHeight)
 	{
 		device = std::move(a_device);
 		QueryPerformanceFrequency(&qpcFrequency);
@@ -67,6 +67,9 @@ namespace RT
 			return fail(std::format("ID3D11DeviceContext4 unavailable ({})", FormatHResult(hr)));
 
 		device->SetName(L"SkyrimRT::Device");
+		// DXR 1.1 was verified by the probe, so ID3D12Device5 exists.
+		if (hr = device->QueryInterface(IID_PPV_ARGS(device5.put())); FAILED(hr))
+			return fail(std::format("ID3D12Device5 unavailable ({})", FormatHResult(hr)));
 
 		D3D12_COMMAND_QUEUE_DESC queueDesc{ .Type = D3D12_COMMAND_LIST_TYPE_DIRECT };
 		if (hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(queue.put())); FAILED(hr))
@@ -106,8 +109,12 @@ namespace RT
 
 		RunSharedBufferSpike();
 
-		if (!meshCache.Init(device.get(), d3d11Device.get(), d3d11Context.get()))
+		if (!meshCache.Init(device5.get(), d3d11Device.get(), d3d11Context.get()))
 			return fail("mesh cache upload ring could not be created");
+
+		// M4 ray tracing. A failure here only disables tracing; the M2/M3 interop keeps running.
+		raytracerReady = raytracer.Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight);
+		raytracer.SetTimestampFrequency(d3d12TimestampFrequency);
 
 		logger::info("[SkyrimRT] Sidecar running: shared fence OK, test texture created in {} ({}x{})",
 			spike.textureCreatedInD3D12 ? "D3D12, opened in D3D11" : "D3D11, opened in D3D12", kPatternSize, kPatternSize);
@@ -488,10 +495,16 @@ namespace RT
 		data.scene = sceneStats;
 		data.sceneTraversalMs = sceneTraversalMs;
 		data.cache = meshCache.GetStats();
+		if (raytracerReady) {
+			data.haveTrace = dumpHasTrace;
+			data.trace = raytracer.GetStats();
+			if (dumpHasTrace)
+				raytracer.ReadDumpImages(data.images);
+		}
 		WriteDebugDumpAsync(std::move(data));
 	}
 
-	void Sidecar::OnFrame()
+	void Sidecar::OnFrame(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_trace)
 	{
 		if (deviceRemoved)
 			return;
@@ -512,13 +525,26 @@ namespace RT
 			return;
 		}
 		CollectTimings(slot);
+		if (raytracerReady)
+			raytracer.CollectResults(slot);
+
+		// Scene first: the TLAS is built from this frame's instances.
+		inWorld = CollectScene(candidates, exclusions, loadedArea, sceneStats);
+		if (inWorld)
+			sceneTraversalMs.Add(sceneStats.traversalMs);
+
+		// Trace only when the camera was captured for this very frame (SkyrimRT::Prepass), so matrices, depth and
+		// transforms all describe the same frame.
+		const bool trace = a_trace && raytracerReady && inWorld && a_camera.valid && a_camera.gameFrame == a_gameFrame;
 
 		auto* ctx = d3d11Context.get();
 
-		// D3D11 -> D3D12: everything the game queued so far (including last frame's overlay read of the
-		// pattern) happens before D3D12 may touch the texture again.
+		// D3D11 -> D3D12: everything the game queued so far (including last frame's overlay reads) happens before
+		// D3D12 may touch the shared textures again.
 		ctx->Begin(d3d11Disjoint[slot].get());
 		ctx->End(d3d11Begin[slot].get());
+		if (trace)
+			raytracer.CopyDepth();
 		const uint64_t toD3D12 = ++fenceValue;
 		ctx->Signal(d3d11Fence.get(), toD3D12);
 		ctx->Flush();  // let the D3D12 queue start as soon as possible instead of at Present
@@ -560,6 +586,10 @@ namespace RT
 			commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 			Transition(commandList.get(), patternTexture.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
 		}
+
+		// M4: BLAS builds, TLAS, trace, all before the signal D3D11 waits on so the overlay shows this frame.
+		if (trace)
+			raytracer.Record(commandList.get(), slot, framesSubmitted, meshCache, candidates, exclusions, loadedArea, a_camera, dumpThisFrame);
 		commandList->Close();
 
 		queue->Wait(fence.get(), toD3D12);
@@ -575,11 +605,8 @@ namespace RT
 		ctx->End(d3d11Disjoint[slot].get());
 		slotHasTimings[slot] = true;
 
-		// M3: extract the scene and stream new meshes into the cache. The upload list runs after the
-		// signal D3D11 waits on, so uploads never lengthen the D3D11 round trip.
-		inWorld = CollectScene(candidates, sceneStats);
-		if (inWorld)
-			sceneTraversalMs.Add(sceneStats.traversalMs);
+		// M3: stream new meshes into the cache. The upload list runs after the signal D3D11 waits on, so uploads
+		// never lengthen the D3D11 round trip.
 		uploadList->Reset(allocator, nullptr);
 		const uint64_t uploadFence = fenceValue + 1;
 		const bool uploadsRecorded = meshCache.Update(candidates, framesSubmitted, stats.lastCompletedFenceValue, uploadList.get(), uploadFence);
@@ -592,6 +619,7 @@ namespace RT
 		}
 
 		if (dumpThisFrame) {
+			dumpHasTrace = trace;
 			dumpRequested = false;
 			dumpInFlight = true;
 			dumpFenceValue = toD3D11;

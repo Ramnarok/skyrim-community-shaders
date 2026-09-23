@@ -5,6 +5,7 @@
 #include <deque>
 #include <winrt/base.h>
 
+#include "BufferPool.h"
 #include "RT.h"
 #include "Scene.h"
 
@@ -27,7 +28,7 @@ namespace RT
 		uint32_t pending = 0;  ///< queued, readback in flight or upload in flight
 		uint64_t residentVertexBytes = 0;
 		uint64_t residentIndexBytes = 0;
-		uint64_t poolBytes = 0;  ///< GPU memory reserved by the pool pages
+		uint64_t poolBytes = 0;  ///< GPU memory reserved by the mesh pool pages
 		uint32_t poolPages = 0;
 
 		uint32_t uploadsLastFrame = 0;
@@ -59,12 +60,36 @@ namespace RT
 		uint32_t rawMismatched = 0;
 		uint32_t rawCopyFaults = 0;  ///< access violations while copying raw data (caught)
 
+		// M4 bottom-level acceleration structures.
+		uint32_t blasBuilt = 0;       ///< entries that currently have a BLAS
+		uint32_t blasPending = 0;     ///< resident entries still waiting for a BLAS
+		uint32_t blasBuiltLastFrame = 0;
+		uint64_t blasTotalBuilt = 0;
+		uint64_t blasFailed = 0;
+		uint64_t asPoolBytes = 0;
+		uint64_t blasBytes = 0;
+
 		std::vector<VertexFormatStats> formats;
 	};
 
+	/** @brief One TLAS instance for this frame, resolved from a scene candidate. */
+	struct InstanceRecord
+	{
+		D3D12_GPU_VIRTUAL_ADDRESS blas = 0;
+		RE::NiTransform world;
+		uint32_t vertexPage = 0;
+		uint32_t vertexOffset = 0;
+		uint32_t indexPage = 0;
+		uint32_t indexOffset = 0;
+		uint32_t stride = 0;
+		bool terrain = false;
+		bool alphaTested = false;
+		bool alphaBlended = false;
+	};
+
 	/**
-	 * @brief Static-mesh cache: one D3D12 copy of each unique mesh, uploaded on a per-frame budget and
-	 * evicted when unseen. Buffers can't be shared between the devices (M2 spike), so data comes from the
+	 * @brief Static-mesh cache: one D3D12 copy (and BLAS) of each unique mesh, uploaded on a per-frame budget
+	 * and evicted when unseen. Buffers can't be shared between the devices (M2 spike), so data comes from the
 	 * game's CPU copy when present, else from a D3D11 staging readback polled without CPU waits.
 	 */
 	class MeshCache
@@ -72,14 +97,17 @@ namespace RT
 	public:
 		static constexpr uint64_t kPageBytes = 64ull << 20;
 		static constexpr uint64_t kPoolBudgetBytes = 2048ull << 20;
+		static constexpr uint64_t kASPoolBudgetBytes = 2048ull << 20;
 		static constexpr uint64_t kUploadRingBytes = 32ull << 20;
 		static constexpr uint64_t kMaxUploadBytesPerFrame = 8ull << 20;
 		static constexpr uint32_t kMaxNewMeshesPerFrame = 128;
 		static constexpr uint32_t kMaxReadbacksPerFrame = 16;
 		static constexpr uint64_t kEvictAfterFrames = 120;
 		static constexpr uint32_t kRawVerifySamples = 16;
+		static constexpr uint32_t kMaxBlasBuildsPerFrame = 256;
+		static constexpr uint64_t kMaxBlasTrianglesPerFrame = 2'000'000;
 
-		bool Init(ID3D12Device* a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context);
+		bool Init(ID3D12Device5* a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context);
 
 		/**
 		 * @brief Per-frame update. Records copy commands into a_list; they complete at a_submitFence.
@@ -87,44 +115,19 @@ namespace RT
 		 */
 		bool Update(const std::vector<GeometryCandidate>& a_candidates, uint64_t a_frame, uint64_t a_completedFence, ID3D12GraphicsCommandList* a_list, uint64_t a_submitFence);
 
+		/**
+		 * @brief Records BLAS builds for resident meshes seen this frame that don't have one yet.
+		 * Each build gets its own scratch range starting at a_scratchUsed; the caller issues the UAV barrier.
+		 */
+		void BuildBLASes(ID3D12GraphicsCommandList4* a_list, uint64_t a_frame, D3D12_GPU_VIRTUAL_ADDRESS a_scratch, uint64_t a_scratchBytes, uint64_t& a_scratchUsed);
+
+		/** @brief Resolves this frame's candidates to instances whose mesh has a BLAS. */
+		void GatherInstances(const std::vector<GeometryCandidate>& a_candidates, std::vector<InstanceRecord>& a_out) const;
+
+		const BufferPool& GetMeshPool() const { return pool; }
 		const MeshCacheStats& GetStats() const { return stats; }
 
 	private:
-		struct Allocation
-		{
-			static constexpr uint32_t kInvalidPage = UINT32_MAX;
-			uint32_t page = kInvalidPage;
-			uint64_t offset = 0;
-			uint64_t size = 0;
-			bool IsValid() const { return page != kInvalidPage; }
-		};
-
-		/** @brief First-fit suballocator over 64 MB DEFAULT-heap buffers; larger meshes get a dedicated buffer. */
-		class BufferPool
-		{
-		public:
-			void Init(ID3D12Device* a_device) { device = a_device; }
-			bool Allocate(uint64_t a_bytes, Allocation& a_out);
-			void Free(Allocation& a_allocation);
-			ID3D12Resource* GetResource(uint32_t a_page) const { return pages[a_page].buffer.get(); }
-			uint64_t GetReservedBytes() const { return reservedBytes; }
-			uint32_t GetPageCount() const;
-
-		private:
-			struct Page
-			{
-				winrt::com_ptr<ID3D12Resource> buffer;
-				uint64_t size = 0;
-				std::map<uint64_t, uint64_t> freeRanges;  // offset -> size
-				bool dedicated = false;
-			};
-			bool CreatePage(uint64_t a_bytes, bool a_dedicated, uint32_t& a_index);
-
-			ID3D12Device* device = nullptr;
-			std::vector<Page> pages;
-			uint64_t reservedBytes = 0;
-		};
-
 		/** @brief UPLOAD-heap ring; space is reclaimed once the fence value of the frame that used it completes. */
 		class UploadRing
 		{
@@ -159,6 +162,7 @@ namespace RT
 			using is_avalanching = void;
 			uint64_t operator()(const MeshKey& a_key) const noexcept;
 		};
+		static MeshKey MakeKey(const GeometryCandidate& a_candidate);
 
 		enum class State : uint8_t
 		{
@@ -177,10 +181,14 @@ namespace RT
 			uint64_t lastSeenFrame = 0;
 			uint64_t uploadFence = 0;
 			uint32_t stride = 0;
+			uint32_t vertexCount = 0;
+			uint32_t triangleCount = 0;
 			uint64_t vertexBytes = 0;
 			uint64_t indexBytes = 0;
-			Allocation vertexAllocation;
-			Allocation indexAllocation;
+			PoolAllocation vertexAllocation;
+			PoolAllocation indexAllocation;
+			PoolAllocation blasAllocation;
+			bool blasFailed = false;
 			// D3D11 staging readback (readback source, or verification of a raw upload).
 			winrt::com_ptr<ID3D11Buffer> stagingVB;
 			winrt::com_ptr<ID3D11Buffer> stagingIB;
@@ -203,10 +211,11 @@ namespace RT
 		void PollReadbacks(ID3D12GraphicsCommandList* a_list, uint64_t a_submitFence, uint64_t& a_budgetBytes, bool& a_recorded);
 		void Release(MeshEntry& a_entry);
 
-		ID3D12Device* device = nullptr;
+		ID3D12Device5* device = nullptr;
 		ID3D11Device* d3d11Device = nullptr;
 		ID3D11DeviceContext* d3d11Context = nullptr;
-		BufferPool pool;
+		BufferPool pool;    // vertex + index data
+		BufferPool asPool;  // bottom-level acceleration structures
 		UploadRing ring;
 		ankerl::unordered_dense::map<MeshKey, MeshEntry, MeshKeyHash> entries;
 		std::deque<MeshKey> queue;

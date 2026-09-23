@@ -1203,6 +1203,9 @@ else()
 endif()
 add_custom_target("Package-AIO-Manual" DEPENDS ${AIO_PACKAGE})
 
+# SkyrimRT: DXC-compiled Shader Model 6 shaders (included after the AIO target exists, see the file)
+include("${CMAKE_SOURCE_DIR}/cmake/SkyrimRTShaders.cmake")
+
 message("*************************************************************")
 message("Community Shaders configuration complete")
 message("To prepare a package of AIO (.7z when 7-Zip is found), Core, or Features")

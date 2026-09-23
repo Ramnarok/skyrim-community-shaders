@@ -3,14 +3,18 @@
 #include "I18n/I18n.h"
 #include "RT/MeshCache.h"
 #include "RT/RT.h"
+#include "RT/Raytracer.h"
 #include "RT/Scene.h"
+#include "State.h"
 
 #define I18N_KEY_PREFIX "feature.skyrim_rt."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SkyrimRT::Settings,
 	Enabled,
-	ShowTestPattern)
+	ShowTestPattern,
+	TraceDebugView,
+	DebugView)
 
 namespace
 {
@@ -50,13 +54,26 @@ void SkyrimRT::SetupResources()
 	logger::info("[SkyrimRT] DXR {} available, sidecar active (enabled setting: {})", RT::GetTierName(RT::kRequiredTier), settings.Enabled);
 }
 
+void SkyrimRT::Prepass()
+{
+	if (!settings.Enabled || !settings.TraceDebugView)
+		return;
+	// Same sources ScreenSpaceShadows uses in its Prepass: CS's cached per-frame buffer and the
+	// dynamic-resolution render size (DLSS/FSR render below output resolution).
+	const auto& frameBuffer = globals::game::frameBufferCached;
+	const auto* graphicsState = globals::game::graphicsState;
+	const float2 renderSize = Util::ConvertToDynamic(float2{ static_cast<float>(graphicsState->screenWidth), static_cast<float>(graphicsState->screenHeight) });
+	RT::CaptureCamera(reinterpret_cast<const float*>(&frameBuffer.GetCameraViewProjInverse()), &frameBuffer.GetCameraPosAdjust().x,
+		static_cast<uint32_t>(std::lround(renderSize.x)), static_cast<uint32_t>(std::lround(renderSize.y)), globals::state->frameCount);
+}
+
 void SkyrimRT::Reset()
 {
 	// Disabled means no D3D12 work and no fence waits at all.
 	if (!settings.Enabled)
 		return;
 
-	RT::OnFrame();
+	RT::OnFrame(settings.TraceDebugView);
 
 	const bool keyDown = (GetAsyncKeyState(kDumpHotkey) & 0x8000) != 0;
 	if (keyDown && !dumpKeyWasDown && IsGameWindowFocused())
@@ -68,23 +85,41 @@ void SkyrimRT::DrawOverlay()
 {
 	if (!IsOverlayVisible())
 		return;
-	auto* srv = RT::GetTestPatternSRV();
-	if (!srv)
-		return;
 
 	constexpr float kMargin = 16.0f;
 	const auto& io = ImGui::GetIO();
-	ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - kMargin, kMargin), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-	ImGui::SetNextWindowBgAlpha(0.6f);
 	constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
 	                                    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove;
-	if (ImGui::Begin("##SkyrimRTTestPattern", nullptr, kFlags)) {
-		ImGui::TextUnformatted(T(TKEY("overlay_title"), "Skyrim RT: DirectX 12 interop test"));
-		ImGui::Image((void*)srv, ImVec2(256.0f, 256.0f));
-		if (const auto* stats = RT::GetInteropStats())
-			ImGui::Text("%s: %.3f ms", T(TKEY("round_trip_cost"), "Round trip cost"), stats->roundTripMs.Average());
+
+	if (auto* pattern = settings.ShowTestPattern ? RT::GetTestPatternSRV() : nullptr) {
+		ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - kMargin, kMargin), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+		ImGui::SetNextWindowBgAlpha(0.6f);
+		if (ImGui::Begin("##SkyrimRTTestPattern", nullptr, kFlags)) {
+			ImGui::TextUnformatted(T(TKEY("overlay_title"), "Skyrim RT: DirectX 12 interop test"));
+			ImGui::Image((void*)pattern, ImVec2(256.0f, 256.0f));
+			if (const auto* stats = RT::GetInteropStats())
+				ImGui::Text("%s: %.3f ms", T(TKEY("round_trip_cost"), "Round trip cost"), stats->roundTripMs.Average());
+		}
+		ImGui::End();
 	}
-	ImGui::End();
+
+	uint32_t textureWidth, textureHeight, renderWidth, renderHeight;
+	auto* view = settings.TraceDebugView ? RT::GetDebugViewSRV(settings.DebugView) : nullptr;
+	const auto* trace = RT::GetTraceStats();
+	if (view && trace && RT::GetDebugViewSize(textureWidth, textureHeight, renderWidth, renderHeight)) {
+		// Show only the render region (dynamic resolution renders into the top-left of the texture).
+		constexpr float kWidth = 640.0f;
+		const ImVec2 size(kWidth, kWidth * renderHeight / renderWidth);
+		const ImVec2 uvMax(static_cast<float>(renderWidth) / textureWidth, static_cast<float>(renderHeight) / textureHeight);
+		ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - kMargin, io.DisplaySize.y - kMargin), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+		ImGui::SetNextWindowBgAlpha(0.6f);
+		if (ImGui::Begin("##SkyrimRTDebugView", nullptr, kFlags)) {
+			ImGui::Text("%s: %.2f%% (%s %.1f%%)", T(TKEY("depth_mismatch"), "Depth mismatch"), trace->MismatchPercent(),
+				T(TKEY("coverage"), "coverage"), trace->CoveragePercent());
+			ImGui::Image((void*)view, size, ImVec2(0.0f, 0.0f), uvMax);
+		}
+		ImGui::End();
+	}
 }
 
 void SkyrimRT::DrawSettings()
@@ -97,6 +132,17 @@ void SkyrimRT::DrawSettings()
 		ImGui::Checkbox(T(TKEY("show_test_pattern"), "Show interop test pattern"), &settings.ShowTestPattern);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("show_test_pattern_tooltip"), "Show the animated image written by DirectX 12 in the top-right corner."));
+
+		ImGui::Checkbox(T(TKEY("trace_debug_view"), "Trace debug view"), &settings.TraceDebugView);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("trace_debug_view_tooltip"), "Build ray tracing acceleration structures and trace a debug view of the static scene every frame, shown in the bottom-right corner."));
+
+		const char* viewNames[] = { T(TKEY("view_depth"), "Traced depth"), T(TKEY("view_instance"), "Instance ID"), T(TKEY("view_normal"), "Geometric normal"), T(TKEY("view_diff"), "Depth mismatch vs raster") };
+		int view = static_cast<int>(std::min<uint32_t>(settings.DebugView, 3));
+		if (ImGui::Combo(T(TKEY("debug_view"), "Debug view"), &view, viewNames, IM_ARRAYSIZE(viewNames)))
+			settings.DebugView = static_cast<uint32_t>(view);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("debug_view_tooltip"), "Mismatch colours: green match, red traced nearer, blue traced farther, yellow traced miss, grey excluded (actors, foliage, dynamic), dark grey outside the loaded cells."));
 
 		ImGui::BeginDisabled(!settings.Enabled || !RT::IsRunning());
 		if (ImGui::Button(T(TKEY("write_dump"), "Write debug dump (F10)")))
@@ -159,6 +205,12 @@ void SkyrimRT::DrawSettings()
 			ImGui::Text("%s: %.1f MB", T(TKEY("cache_gpu"), "Cache GPU memory"), (cache->residentVertexBytes + cache->residentIndexBytes) / (1024.0 * 1024.0));
 			ImGui::Text("%s: %u / %u", T(TKEY("cache_frame"), "Uploads / evictions last frame"), cache->uploadsLastFrame, cache->evictionsLastFrame);
 			ImGui::Text("%s: %u / %u", T(TKEY("cache_sources"), "Uploaded from CPU copy / GPU readback"), cache->sourceRawCpu, cache->sourceD3D11Readback);
+			ImGui::Text("%s: %u (%u %s)", T(TKEY("blas_built"), "Acceleration structures built"), cache->blasBuilt, cache->blasPending, T(TKEY("pending"), "pending"));
+		}
+		if (const auto* trace = RT::GetTraceStats(); trace && trace->haveResult) {
+			ImGui::Text("%s: %.2f%% (%s %.1f%%)", T(TKEY("depth_mismatch"), "Depth mismatch"), trace->MismatchPercent(), T(TKEY("coverage"), "coverage"), trace->CoveragePercent());
+			ImGui::Text("%s: %u / %u", T(TKEY("tlas_instances"), "TLAS instances / exclusion bounds"), trace->instances, trace->exclusions);
+			ImGui::Text("%s: %.3f / %.3f / %.3f ms", T(TKEY("rt_timings"), "BLAS / TLAS / trace"), trace->blasBuildMs.Average(), trace->tlasBuildMs.Average(), trace->traceMs.Average());
 		}
 
 		ImGui::Spacing();

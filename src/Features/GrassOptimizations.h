@@ -266,6 +266,9 @@ public:
 		{
 			static RE::BSMultiStreamInstanceTriShape* thunk(RE::BGSGrassManager* grassManager, RE::GrassParam* a_param, uint32_t CellXDivided, uint32_t CellYDivided, uint64_t* typeKey, RE::BSFixedString* modelPath);
 			static inline REL::Relocation<decltype(thunk)> func;
+
+			/** @brief The game's grass manager as passed to this hook (SkyrimRT reads its grassNode). May be set from grass-loading threads. */
+			static inline std::atomic<RE::BGSGrassManager*> lastGrassManager{ nullptr };
 		};
 
 		static void Install()

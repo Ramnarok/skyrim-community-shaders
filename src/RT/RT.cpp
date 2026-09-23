@@ -12,6 +12,7 @@ namespace RT
 	{
 		Capabilities capabilities;
 		std::unique_ptr<Sidecar> sidecar;
+		FrameCamera camera;
 
 		std::string WideToUtf8(const wchar_t* a_text)
 		{
@@ -90,7 +91,8 @@ namespace RT
 
 		// Keep the device: it becomes the sidecar.
 		auto newSidecar = std::make_unique<Sidecar>();
-		if (!newSidecar->Init(std::move(device), a_device, a_context)) {
+		const auto* graphicsState = globals::game::graphicsState;
+		if (!newSidecar->Init(std::move(device), a_device, a_context, graphicsState->screenWidth, graphicsState->screenHeight)) {
 			capabilities.failureReason = newSidecar->GetFailureReason();
 			return false;
 		}
@@ -98,10 +100,46 @@ namespace RT
 		return true;
 	}
 
-	void OnFrame()
+	void CaptureCamera(const float* a_viewProjInverse, const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame)
+	{
+		camera.valid = true;
+		camera.gameFrame = a_gameFrame;
+		std::memcpy(camera.viewProjInverse, a_viewProjInverse, sizeof(camera.viewProjInverse));
+		camera.posAdjust = { a_posAdjust[0], a_posAdjust[1], a_posAdjust[2] };
+		camera.renderWidth = a_renderWidth;
+		camera.renderHeight = a_renderHeight;
+	}
+
+	void OnFrame(bool a_trace)
 	{
 		if (sidecar)
-			sidecar->OnFrame();
+			sidecar->OnFrame(globals::state->frameCount, camera, a_trace);
+	}
+
+	ID3D11ShaderResourceView* GetDebugViewSRV(uint32_t a_view)
+	{
+		const auto* raytracer = sidecar ? sidecar->GetRaytracer() : nullptr;
+		if (!raytracer || a_view >= static_cast<uint32_t>(DebugView::kCount) || !raytracer->GetStats().haveResult)
+			return nullptr;
+		return raytracer->GetViewSRV(static_cast<DebugView>(a_view));
+	}
+
+	bool GetDebugViewSize(uint32_t& a_textureWidth, uint32_t& a_textureHeight, uint32_t& a_renderWidth, uint32_t& a_renderHeight)
+	{
+		const auto* raytracer = sidecar ? sidecar->GetRaytracer() : nullptr;
+		if (!raytracer || !raytracer->GetStats().haveResult)
+			return false;
+		a_textureWidth = raytracer->GetTextureWidth();
+		a_textureHeight = raytracer->GetTextureHeight();
+		a_renderWidth = raytracer->GetStats().renderWidth;
+		a_renderHeight = raytracer->GetStats().renderHeight;
+		return a_renderWidth > 0 && a_renderHeight > 0;
+	}
+
+	const TraceStats* GetTraceStats()
+	{
+		const auto* raytracer = sidecar ? sidecar->GetRaytracer() : nullptr;
+		return raytracer ? &raytracer->GetStats() : nullptr;
 	}
 
 	void RequestDebugDump()

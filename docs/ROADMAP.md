@@ -8,7 +8,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 | M1 | RT feature skeleton + DXR capability check | ✅ 2026-09-23 |
 | M2 | D3D12 sidecar + interop proof | ✅ 2026-09-23 (16-min run, 52,160 round trips, 0 skipped, no device removal, 0.30 ms avg) |
 | M3 | Scene extraction + stats dump | ✅ 2026-09-23 (5,428 uploads, 0 failed, stride verified 5,428/5,428; see ARCHITECTURE §3) |
-| M4 | BLAS/TLAS + traced debug view (depth match) | ☐ |
+| M4 | BLAS/TLAS + traced debug view (depth match) | ✅ 2026-09-23 (mismatch 0.02–0.14% in Whiterun, Bleak Falls Barrow, Solitude; see ARCHITECTURE §4) |
 | M5 | RT sun shadows | ☐ |
 | M6 | 1-bounce diffuse GI + NRD | ☐ |
 | M7 | Actors (skinning) + alpha-tested geometry | ☐ |

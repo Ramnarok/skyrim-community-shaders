@@ -31,14 +31,23 @@ namespace RT
 		{
 			const auto& s = a_data.scene;
 			json instances = json::object();
-			for (size_t i = 0; i < s.instances.size(); i++)
-				instances[std::string(GetCategoryName(static_cast<GeometryCategory>(i)))] = s.instances[i];
+			json exclusions = json::object();
+			for (size_t i = 0; i < s.instances.size(); i++) {
+				const std::string name(GetCategoryName(static_cast<GeometryCategory>(i)));
+				instances[name] = s.instances[i];
+				if (s.exclusionsByCategory[i])
+					exclusions[name] = { { "bounds", s.exclusionsByCategory[i] }, { "max_radius", s.exclusionMaxRadius[i] } };
+			}
+			exclusions["rejected_radius_over_20000"] = s.exclusionsRejectedTooLarge;
 			return {
 				{ "in_world", a_data.inWorld },
 				{ "cells", s.cells },
 				{ "hidden_subtrees_skipped", s.hiddenSubtrees },
 				{ "geometry_instances", instances },
+				{ "exclusion_bounds_by_category", exclusions },
 				{ "alpha_tested_instances", s.alphaTestedInstances },
+				{ "alpha_blended_instances", s.alphaBlendedInstances },
+				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
@@ -79,6 +88,49 @@ namespace RT
 			};
 		}
 
+		json TraceJson(const DebugDumpData& a_data)
+		{
+			const auto& t = a_data.trace;
+			const auto& c = a_data.cache;
+			constexpr double kMB = 1024.0 * 1024.0;
+			constexpr float kTargetPercent = 2.0f;
+			json images = json::array();
+			for (const auto& image : a_data.images)
+				images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			return {
+				{ "traced_dump_frame", a_data.haveTrace },
+				{ "have_result", t.haveResult },
+				{ "render_size", { t.renderWidth, t.renderHeight } },
+				{ "instances", t.instances },
+				{ "instances_dropped", t.instancesDropped },
+				{ "exclusion_bounds", t.exclusions },
+				{ "pixels",
+					{ { "render", t.counters[kRenderPixels] },
+						{ "sky", t.counters[kSky] },
+						{ "outside_loaded_cells", t.counters[kOutsideLoaded] },
+						{ "excluded_occluder_not_in_tlas", t.counters[kExcluded] },
+						{ "excluded_alpha_tested_mismatch", t.counters[kExcludedAlpha] },
+						{ "excluded_terrain_clutter", t.counters[kExcludedClutter] },
+						{ "counted", t.counters[kCounted] },
+						{ "matched", t.counters[kMatched] },
+						{ "traced_nearer", t.counters[kTracedNearer] },
+						{ "traced_farther", t.counters[kTracedFarther] },
+						{ "traced_miss", t.counters[kTracedMiss] } } },
+				{ "mismatch_threshold_relative", Raytracer::kMismatchThreshold },
+				{ "clutter_height_units", Raytracer::kClutterHeight },
+				{ "depth_mismatch_percent", t.MismatchPercent() },
+				{ "coverage_percent", t.CoveragePercent() },
+				{ "target_percent", kTargetPercent },
+				{ "within_target", t.haveResult && t.counters[kCounted] > 0 && t.MismatchPercent() < kTargetPercent },
+				{ "window", { { "depth_mismatch_percent", TimingJson(t.mismatchPercent) }, { "coverage_percent", TimingJson(t.coveragePercent) } } },
+				{ "timings_ms", { { "blas_builds", TimingJson(t.blasBuildMs) }, { "tlas_build", TimingJson(t.tlasBuildMs) }, { "trace", TimingJson(t.traceMs) } } },
+				{ "blas", { { "built", c.blasBuilt }, { "pending", c.blasPending }, { "built_last_frame", c.blasBuiltLastFrame }, { "total_built", c.blasTotalBuilt }, { "failed", c.blasFailed }, { "blas_mb", c.blasBytes / kMB }, { "as_pool_reserved_mb", c.asPoolBytes / kMB } } },
+				{ "loaded_area", { { "bounded", t.area.bounded }, { "min_xy", { t.area.min.x, t.area.min.y } }, { "max_xy", { t.area.max.x, t.area.max.y } } } },
+				{ "camera_pos_adjust", { t.posAdjust.x, t.posAdjust.y, t.posAdjust.z } },
+				{ "images", images },
+			};
+		}
+
 		json BuildJson(const DebugDumpData& a_data, const std::string& a_pngName, bool a_pngWritten)
 		{
 			const auto& s = a_data.stats;
@@ -87,7 +139,8 @@ namespace RT
 			const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
 
 			return {
-				{ "milestone", "M3" },
+				{ "milestone", "M4" },
+				{ "trace", TraceJson(a_data) },
 				{ "scene", SceneJson(a_data) },
 				{ "mesh_cache", CacheJson(a_data.cache) },
 				{ "frame", a_data.gameFrame },
@@ -145,6 +198,19 @@ namespace RT
 			const HRESULT pngHr = DirectX::SaveToWICFile(image, DirectX::WIC_FLAGS_NONE, DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), pngPath.c_str());
 			if (FAILED(pngHr))
 				logger::error("[SkyrimRT] Debug dump: writing {} failed ({})", pngPath.string(), FormatHResult(pngHr));
+
+			for (const auto& debugImage : data.images) {
+				DirectX::Image view{};
+				view.width = debugImage.width;
+				view.height = debugImage.height;
+				view.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+				view.rowPitch = static_cast<size_t>(debugImage.width) * 4;
+				view.slicePitch = view.rowPitch * debugImage.height;
+				view.pixels = const_cast<uint8_t*>(debugImage.pixels.data());
+				const auto viewPath = dir / std::format("debug_{}_{}.png", debugImage.name, data.gameFrame);
+				if (const HRESULT hr = DirectX::SaveToWICFile(view, DirectX::WIC_FLAGS_NONE, DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), viewPath.c_str()); FAILED(hr))
+					logger::error("[SkyrimRT] Debug dump: writing {} failed ({})", viewPath.string(), FormatHResult(hr));
+			}
 
 			if (SUCCEEDED(comHr))
 				CoUninitialize();

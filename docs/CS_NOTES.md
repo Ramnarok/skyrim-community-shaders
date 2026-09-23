@@ -178,3 +178,12 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 - CommonLib declares its own `RE::ID3D11Buffer`; `reinterpret_cast` to `::ID3D11Buffer*` to call D3D11 on it.
 - `VertexDesc` keeps its bits private and `GetSize()` is non-const; copy the struct (`memcpy` for the raw bits).
 - M3 costs (RTX 4080 SUPER, 26 exterior cells / big dungeon): scene walk 0.5–1.2 ms CPU per frame (the main CPU cost; candidate for walking every N frames or event-driven attach/detach), cache update 0.05–0.12 ms.
+
+## SkyrimRT ray tracing (M4)
+
+- `src/RT/Raytracer.{h,cpp}`: BLAS builds (via `MeshCache::BuildBLASes`), exclusion AABB BLAS, TLAS, trace, counter/timestamp readback. `src/RT/BufferPool.{h,cpp}`: shared first-fit pool (mesh data and BLAS memory).
+- DXC shaders: sources in `src/RT/Shaders/*.hlsl` → `cmake/SkyrimRTShaders.cmake` (Windows SDK `dxc.exe`, `cs_6_5`, signed via `dxil.dll`) → `Data/Shaders/SkyrimRT/*.cso`. Kept out of `features/` so CS's FXC validation ignores them.
+- **CMake gotcha:** with `AIO_ZIP_TO_DIST`/`AUTO_PLUGIN_DEPLOYMENT` the `AIO` target copies instead of installing, and `CleanupStaleEntries` deletes untracked files under `aio/Shaders`. The `.cso` copy is therefore a `POST_BUILD` step of the `AIO` target, and `SkyrimRTShaders.cmake` is included at the end of `CMakeLists.txt` (after `AIO` exists).
+- Camera capture: `SkyrimRT::Prepass()` (main deferred prepass) copies `frameBufferCached` + render size; the trace runs only if the capture's `frameCount` equals the frame being presented.
+- Grass: `GrassOptimizations::Hooks::LoadGrassType::lastGrassManager` (atomic, added for SkyrimRT) holds the game's `BGSGrassManager*`.
+- Overlay: the debug view is drawn bottom-right via `ImGui::Image` with UVs cropped to the render region.

@@ -4,7 +4,6 @@ namespace RT
 {
 	namespace
 	{
-		constexpr uint64_t kPoolAlignment = 256;
 		constexpr uint64_t kRingAlignment = 16;
 
 		uint64_t AlignUp(uint64_t a_value, uint64_t a_alignment)
@@ -36,120 +35,6 @@ namespace RT
 			a_buffer->GetDesc(&desc);
 			return desc.ByteWidth;
 		}
-	}
-
-	// ----------------------------------------------------------------------------------------------
-	// BufferPool
-
-	bool MeshCache::BufferPool::CreatePage(uint64_t a_bytes, bool a_dedicated, uint32_t& a_index)
-	{
-		D3D12_HEAP_PROPERTIES heap{ .Type = D3D12_HEAP_TYPE_DEFAULT };
-		D3D12_RESOURCE_DESC desc{};
-		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		desc.Width = a_bytes;
-		desc.Height = 1;
-		desc.DepthOrArraySize = 1;
-		desc.MipLevels = 1;
-		desc.SampleDesc = { 1, 0 };
-		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-		winrt::com_ptr<ID3D12Resource> buffer;
-		if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(buffer.put()))))
-			return false;
-		buffer->SetName(a_dedicated ? L"SkyrimRT::MeshDedicated" : L"SkyrimRT::MeshPage");
-
-		a_index = static_cast<uint32_t>(pages.size());
-		for (uint32_t i = 0; i < pages.size(); i++) {
-			if (!pages[i].buffer) {
-				a_index = i;
-				break;
-			}
-		}
-		if (a_index == pages.size())
-			pages.emplace_back();
-
-		auto& page = pages[a_index];
-		page.buffer = std::move(buffer);
-		page.size = a_bytes;
-		page.dedicated = a_dedicated;
-		page.freeRanges.clear();
-		if (!a_dedicated)
-			page.freeRanges.emplace(0, a_bytes);
-		reservedBytes += a_bytes;
-		return true;
-	}
-
-	bool MeshCache::BufferPool::Allocate(uint64_t a_bytes, Allocation& a_out)
-	{
-		const uint64_t bytes = AlignUp(std::max<uint64_t>(a_bytes, 1), kPoolAlignment);
-
-		if (bytes > kPageBytes) {
-			uint32_t index;
-			if (reservedBytes + bytes > kPoolBudgetBytes || !CreatePage(bytes, true, index))
-				return false;
-			a_out = { index, 0, bytes };
-			return true;
-		}
-
-		auto tryPage = [&](uint32_t a_index) {
-			auto& page = pages[a_index];
-			for (auto it = page.freeRanges.begin(); it != page.freeRanges.end(); ++it) {
-				if (it->second < bytes)
-					continue;
-				const uint64_t offset = it->first;
-				const uint64_t remaining = it->second - bytes;
-				page.freeRanges.erase(it);
-				if (remaining)
-					page.freeRanges.emplace(offset + bytes, remaining);
-				a_out = { a_index, offset, bytes };
-				return true;
-			}
-			return false;
-		};
-
-		for (uint32_t i = 0; i < pages.size(); i++) {
-			if (pages[i].buffer && !pages[i].dedicated && tryPage(i))
-				return true;
-		}
-
-		uint32_t index;
-		if (reservedBytes + kPageBytes > kPoolBudgetBytes || !CreatePage(kPageBytes, false, index))
-			return false;
-		return tryPage(index);
-	}
-
-	void MeshCache::BufferPool::Free(Allocation& a_allocation)
-	{
-		if (!a_allocation.IsValid())
-			return;
-		auto& page = pages[a_allocation.page];
-		if (page.dedicated) {
-			reservedBytes -= page.size;
-			page.buffer = nullptr;
-			page.size = 0;
-		} else {
-			auto& ranges = page.freeRanges;
-			auto [it, inserted] = ranges.emplace(a_allocation.offset, a_allocation.size);
-			if (auto next = std::next(it); next != ranges.end() && it->first + it->second == next->first) {
-				it->second += next->second;
-				ranges.erase(next);
-			}
-			if (it != ranges.begin()) {
-				if (auto prev = std::prev(it); prev->first + prev->second == it->first) {
-					prev->second += it->second;
-					ranges.erase(it);
-				}
-			}
-		}
-		a_allocation = {};
-	}
-
-	uint32_t MeshCache::BufferPool::GetPageCount() const
-	{
-		uint32_t count = 0;
-		for (const auto& page : pages)
-			count += page.buffer != nullptr;
-		return count;
 	}
 
 	// ----------------------------------------------------------------------------------------------
@@ -223,12 +108,18 @@ namespace RT
 		return ankerl::unordered_dense::detail::wyhash::hash(&a_key, sizeof(a_key));
 	}
 
-	bool MeshCache::Init(ID3D12Device* a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context)
+	MeshCache::MeshKey MeshCache::MakeKey(const GeometryCandidate& a_candidate)
+	{
+		return { a_candidate.rendererData, a_candidate.rendererData->vertexBuffer, a_candidate.vertexDesc, a_candidate.vertexCount, a_candidate.triangleCount };
+	}
+
+	bool MeshCache::Init(ID3D12Device5* a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context)
 	{
 		device = a_device;
 		d3d11Device = a_d3d11Device;
 		d3d11Context = a_d3d11Context;
-		pool.Init(a_device);
+		pool.Init(a_device, kPageBytes, kPoolBudgetBytes, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_NONE, L"SkyrimRT::MeshPage");
+		asPool.Init(a_device, kPageBytes, kASPoolBudgetBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"SkyrimRT::BLASPage");
 		return ring.Init(a_device, kUploadRingBytes);
 	}
 
@@ -236,6 +127,7 @@ namespace RT
 	{
 		pool.Free(a_entry.vertexAllocation);
 		pool.Free(a_entry.indexAllocation);
+		asPool.Free(a_entry.blasAllocation);
 		a_entry.stagingVB = nullptr;
 		a_entry.stagingIB = nullptr;
 		a_entry.readbackDone = nullptr;
@@ -440,7 +332,7 @@ namespace RT
 		// 1. Mark every mesh seen this frame; register new ones.
 		for (const auto& candidate : a_candidates) {
 			auto* rendererData = candidate.rendererData;
-			const MeshKey key{ rendererData, rendererData->vertexBuffer, candidate.vertexDesc, candidate.vertexCount, candidate.triangleCount };
+			const MeshKey key = MakeKey(candidate);
 			auto [it, inserted] = entries.try_emplace(key);
 			auto& entry = it->second;
 			entry.lastSeenFrame = a_frame;
@@ -448,6 +340,8 @@ namespace RT
 				continue;
 
 			entry.terrain = candidate.terrain;
+			entry.vertexCount = candidate.vertexCount;
+			entry.triangleCount = candidate.triangleCount;
 
 			// Three independent stride measurements (M3 acceptance: verify the VertexDesc bits).
 			auto desc = rendererData->vertexDesc;  // GetSize() is non-const
@@ -559,6 +453,18 @@ namespace RT
 		}
 		stats.poolBytes = pool.GetReservedBytes();
 		stats.poolPages = pool.GetPageCount();
+		stats.blasBuilt = 0;
+		stats.blasPending = 0;
+		stats.blasBytes = 0;
+		for (const auto& [key, entry] : entries) {
+			if (entry.blasAllocation.IsValid()) {
+				stats.blasBuilt++;
+				stats.blasBytes += entry.blasAllocation.size;
+			} else if (entry.state == State::kResident && !entry.blasFailed) {
+				stats.blasPending++;
+			}
+		}
+		stats.asPoolBytes = asPool.GetReservedBytes();
 		stats.formats.clear();
 		for (const auto& [flags, format] : formats)
 			stats.formats.push_back(format);
@@ -569,5 +475,81 @@ namespace RT
 		QueryPerformanceCounter(&end);
 		stats.updateMs.Add(static_cast<float>(static_cast<double>(end.QuadPart - start.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart)));
 		return recorded;
+	}
+
+	void MeshCache::BuildBLASes(ID3D12GraphicsCommandList4* a_list, uint64_t a_frame, D3D12_GPU_VIRTUAL_ADDRESS a_scratch, uint64_t a_scratchBytes, uint64_t& a_scratchUsed)
+	{
+		stats.blasBuiltLastFrame = 0;
+		uint64_t triangles = 0;
+
+		for (auto& [key, entry] : entries) {
+			if (stats.blasBuiltLastFrame >= kMaxBlasBuildsPerFrame || triangles >= kMaxBlasTrianglesPerFrame)
+				break;
+			// Only meshes in the scene, whose upload has completed (state is updated from the fence). BLAS builds are
+			// recorded before this frame's Update() marks meshes seen, so "seen last frame" is the freshest mark.
+			if (entry.state != State::kResident || entry.blasAllocation.IsValid() || entry.blasFailed || entry.lastSeenFrame + 1 < a_frame)
+				continue;
+
+			// ARCHITECTURE §3/M3: positions are float3 at offset 0; stride from the VertexDesc nibble; 16-bit indices.
+			D3D12_RAYTRACING_GEOMETRY_DESC geometry{};
+			geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+			geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+			geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+			geometry.Triangles.VertexCount = entry.vertexCount;
+			geometry.Triangles.VertexBuffer = { pool.GetAddress(entry.vertexAllocation), entry.stride };
+			geometry.Triangles.IndexFormat = DXGI_FORMAT_R16_UINT;
+			geometry.Triangles.IndexCount = entry.triangleCount * 3;
+			geometry.Triangles.IndexBuffer = pool.GetAddress(entry.indexAllocation);
+
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs{};
+			inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+			inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+			inputs.NumDescs = 1;
+			inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+			inputs.pGeometryDescs = &geometry;
+
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild{};
+			device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &prebuild);
+			const uint64_t scratchBytes = (prebuild.ScratchDataSizeInBytes + BufferPool::kAlignment - 1) & ~(BufferPool::kAlignment - 1);
+			if (a_scratchUsed + scratchBytes > a_scratchBytes)
+				break;  // scratch full: the rest waits for next frame
+			if (!asPool.Allocate(prebuild.ResultDataMaxSizeInBytes, entry.blasAllocation)) {
+				entry.blasFailed = true;
+				stats.blasFailed++;
+				continue;
+			}
+
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
+			build.Inputs = inputs;
+			build.DestAccelerationStructureData = asPool.GetAddress(entry.blasAllocation);
+			build.ScratchAccelerationStructureData = a_scratch + a_scratchUsed;
+			a_list->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+
+			a_scratchUsed += scratchBytes;
+			triangles += entry.triangleCount;
+			stats.blasBuiltLastFrame++;
+			stats.blasTotalBuilt++;
+		}
+	}
+
+	void MeshCache::GatherInstances(const std::vector<GeometryCandidate>& a_candidates, std::vector<InstanceRecord>& a_out) const
+	{
+		a_out.clear();
+		for (const auto& candidate : a_candidates) {
+			auto it = entries.find(MakeKey(candidate));
+			if (it == entries.end() || !it->second.blasAllocation.IsValid())
+				continue;
+			const auto& entry = it->second;
+			a_out.push_back({ .blas = asPool.GetAddress(entry.blasAllocation),
+				.world = candidate.world,
+				.vertexPage = entry.vertexAllocation.page,
+				.vertexOffset = static_cast<uint32_t>(entry.vertexAllocation.offset),
+				.indexPage = entry.indexAllocation.page,
+				.indexOffset = static_cast<uint32_t>(entry.indexAllocation.offset),
+				.stride = entry.stride,
+				.terrain = candidate.terrain,
+				.alphaTested = candidate.alphaTested,
+				.alphaBlended = candidate.alphaBlended });
+		}
 	}
 }

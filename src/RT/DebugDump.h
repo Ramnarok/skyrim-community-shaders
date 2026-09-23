@@ -2,6 +2,7 @@
 
 #include "MeshCache.h"
 #include "RT.h"
+#include "Raytracer.h"
 #include "Scene.h"
 
 namespace RT
@@ -22,6 +23,9 @@ namespace RT
 		SceneStats scene;
 		TimingSeries sceneTraversalMs;
 		MeshCacheStats cache;
+		bool haveTrace = false;  ///< the dump frame was traced (images are this frame's)
+		TraceStats trace;
+		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
 	};
 
 	/**

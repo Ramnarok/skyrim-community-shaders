@@ -864,6 +864,9 @@ RE::BSMultiStreamInstanceTriShape* GrassOptimizations::Hooks::LoadGrassType::thu
 {
 	auto* shape = func(grassManager, a_param, CellXDivided, CellYDivided, typeKey, modelPath);
 
+	if (grassManager)
+		lastGrassManager.store(grassManager, std::memory_order_relaxed);
+
 	if (shape && modelPath)
 		globals::features::grassOptimizations.bucketStore.meshLibrary.RecordModelPath(shape, modelPath->c_str());
 

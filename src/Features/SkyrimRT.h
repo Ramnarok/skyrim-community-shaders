@@ -22,7 +22,7 @@ struct SkyrimRT : OverlayFeature
 	{
 		return { T("feature.skyrim_rt.description", "Experimental hybrid ray-traced lighting using a DirectX 12 raytracing device alongside the game's renderer."),
 			{ T("feature.skyrim_rt.key_feature_1", "Requires a GPU with DirectX Raytracing tier 1.1"),
-				T("feature.skyrim_rt.key_feature_2", "Work in progress: currently runs a DirectX 12 interop test") } };
+				T("feature.skyrim_rt.key_feature_2", "Work in progress: currently traces debug views of the static scene") } };
 	}
 
 	/** @brief Debug dump hotkey (ROADMAP verification loop). */
@@ -31,10 +31,15 @@ struct SkyrimRT : OverlayFeature
 	struct Settings
 	{
 		bool Enabled = true;
-		bool ShowTestPattern = true;
+		bool ShowTestPattern = false;
+		bool TraceDebugView = true;  ///< M4: build BLAS/TLAS and trace the debug views every frame
+		uint32_t DebugView = 3;      ///< 0 depth, 1 instance, 2 normal, 3 depth-mismatch diff
 	};
 
 	Settings settings;
+
+	/** @brief Captures the main camera for the M4 trace (the per-frame buffer holds it during the deferred prepass). */
+	virtual void Prepass() override;
 
 	/** @brief Enables the D3D12 debug layer and DRED in debug builds, before any D3D12 device exists. */
 	virtual void Load() override;
@@ -50,7 +55,7 @@ struct SkyrimRT : OverlayFeature
 
 	/** @brief Composites the D3D12-written test pattern into the top-right corner. */
 	virtual void DrawOverlay() override;
-	virtual bool IsOverlayVisible() const override { return settings.Enabled && settings.ShowTestPattern; }
+	virtual bool IsOverlayVisible() const override { return settings.Enabled && (settings.ShowTestPattern || settings.TraceDebugView); }
 
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
