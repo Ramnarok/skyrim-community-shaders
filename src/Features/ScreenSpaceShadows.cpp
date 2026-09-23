@@ -1,5 +1,6 @@
 #include "ScreenSpaceShadows.h"
 
+#include "Features/SkyrimRT.h"
 #include "Features/TerrainBlending.h"
 #include "I18n/I18n.h"
 #include "State.h"
@@ -230,6 +231,10 @@ void ScreenSpaceShadows::DrawShadows()
 
 void ScreenSpaceShadows::Prepass()
 {
+	// Skyrim RT binds its ray-traced sun-shadow mask at t45 instead (its Prepass runs later in the feature list).
+	if (globals::features::skyrimRT.ProvidesSunShadowMask())
+		return;
+
 	auto context = globals::d3d::context;
 
 	float white[4] = { 1, 1, 1, 1 };

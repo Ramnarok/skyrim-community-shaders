@@ -461,9 +461,12 @@ namespace RT
 
 	void Sidecar::FinishDumpIfReady()
 	{
-		if (!dumpInFlight || dumpFenceValue > stats.lastCompletedFenceValue)
+		if (dumpStage != DumpStage::kFinishing || dumpFenceValue > stats.lastCompletedFenceValue)
 			return;
-		dumpInFlight = false;
+		auto* ctx = d3d11Context.get();
+		if (!captureOn.Poll(ctx) || (!captureOff.IsIdle() && !captureOff.Poll(ctx)))
+			return;
+		dumpStage = DumpStage::kIdle;
 
 		DebugDumpData data;
 		data.gameFrame = dumpGameFrame;
@@ -498,16 +501,72 @@ namespace RT
 		if (raytracerReady) {
 			data.haveTrace = dumpHasTrace;
 			data.trace = raytracer.GetStats();
-			if (dumpHasTrace)
-				raytracer.ReadDumpImages(data.images);
+			raytracer.ReadDumpImages(data.images);  // only what this dump's round trip captured
+			if (raytracer.SunShadowsReady()) {
+				data.haveShadows = dumpShadowsTraced;
+				data.shadows = raytracer.GetSunShadows().GetStats();
+			}
+		}
+		for (auto* capture : { &captureOn, &captureOff }) {
+			if (capture->IsIdle())
+				continue;
+			auto image = capture->Take();
+			if (!image.pixels.empty())
+				data.images.push_back(std::move(image));
 		}
 		WriteDebugDumpAsync(std::move(data));
 	}
 
-	void Sidecar::OnFrame(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_trace)
+	ID3D11ShaderResourceView* Sidecar::AcquireSunShadowMask(uint32_t a_gameFrame)
+	{
+		if (!raytracerReady || !raytracer.SunShadowsReady())
+			return nullptr;
+		auto& shadows = raytracer.GetSunShadows();
+		// Traced this frame, or last frame when this frame's round trip had to skip a busy slot.
+		const bool fresh = shadowTracedEver && (lastShadowGameFrame == a_gameFrame || lastShadowGameFrame + 1 == a_gameFrame);
+		if (fresh) {
+			maskClearedWhileStale = false;
+		} else if (!maskClearedWhileStale) {
+			shadows.ClearMask();
+			maskClearedWhileStale = true;
+		}
+		return shadows.GetMaskSRV();
+	}
+
+	void Sidecar::OnPresent(uint32_t a_gameFrame)
 	{
 		if (deviceRemoved)
 			return;
+
+		// No-op when SkyrimRT::Prepass already ran this frame's round trip.
+		Submit(a_gameFrame, FrameCamera{}, false, nullptr);
+		if (deviceRemoved)
+			return;
+
+		auto* ctx = d3d11Context.get();
+		if (dumpStage == DumpStage::kCaptureOn) {
+			captureOn.Begin(d3d11Device.get(), ctx, dumpShadowsTraced ? "final_rt_on" : "final");
+			if (dumpShadowsTraced) {
+				dumpStage = DumpStage::kSuppressing;
+				suppressUntilFrame = a_gameFrame + kSuppressFrames;
+			} else {
+				dumpStage = DumpStage::kFinishing;
+			}
+		} else if (dumpStage == DumpStage::kSuppressing && a_gameFrame >= suppressUntilFrame) {
+			captureOff.Begin(d3d11Device.get(), ctx, "final_rt_off");
+			dumpStage = DumpStage::kFinishing;
+		}
+
+		stats.lastCompletedFenceValue = fence->GetCompletedValue();
+		FinishDumpIfReady();
+	}
+
+	void Sidecar::Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows)
+	{
+		if (deviceRemoved || (haveSubmitted && lastSubmitGameFrame == a_gameFrame))
+			return;
+		haveSubmitted = true;
+		lastSubmitGameFrame = a_gameFrame;
 
 		LARGE_INTEGER cpuStart;
 		QueryPerformanceCounter(&cpuStart);
@@ -517,7 +576,6 @@ namespace RT
 			return;
 
 		stats.lastCompletedFenceValue = fence->GetCompletedValue();
-		FinishDumpIfReady();
 
 		const uint32_t slot = framesSubmitted % kFramesInFlight;
 		if (slotFenceValues[slot] > stats.lastCompletedFenceValue) {
@@ -535,16 +593,20 @@ namespace RT
 
 		// Trace only when the camera was captured for this very frame (SkyrimRT::Prepass), so matrices, depth and
 		// transforms all describe the same frame.
-		const bool trace = a_trace && raytracerReady && inWorld && a_camera.valid && a_camera.gameFrame == a_gameFrame;
+		const bool buildScene = raytracerReady && inWorld && a_camera.valid && a_camera.gameFrame == a_gameFrame && (a_debugTrace || a_shadows);
+		const bool debugTrace = buildScene && a_debugTrace;
+		const SunShadowParams* shadows = (buildScene && a_shadows && raytracer.SunShadowsReady()) ? a_shadows : nullptr;
+		const bool dumpThisFrame = dumpRequested && dumpStage == DumpStage::kIdle;
+		const bool compareShadowMap = dumpThisFrame && shadows;
 
 		auto* ctx = d3d11Context.get();
 
-		// D3D11 -> D3D12: everything the game queued so far (including last frame's overlay reads) happens before
-		// D3D12 may touch the shared textures again.
+		// D3D11 -> D3D12: everything the game queued so far (including last frame's reads of the shared textures)
+		// happens before D3D12 may touch them again.
 		ctx->Begin(d3d11Disjoint[slot].get());
 		ctx->End(d3d11Begin[slot].get());
-		if (trace)
-			raytracer.CopyDepth();
+		if (buildScene)
+			raytracer.CopyInputs(compareShadowMap);
 		const uint64_t toD3D12 = ++fenceValue;
 		ctx->Signal(d3d11Fence.get(), toD3D12);
 		ctx->Flush();  // let the D3D12 queue start as soon as possible instead of at Present
@@ -576,7 +638,6 @@ namespace RT
 		commandList->EndQuery(timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1);
 		commandList->ResolveQueryData(timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2, 2, timestampReadback.get(), sizeof(uint64_t) * slot * 2);
 
-		const bool dumpThisFrame = dumpRequested && !dumpInFlight;
 		if (dumpThisFrame) {
 			Transition(commandList.get(), patternTexture.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
 			D3D12_TEXTURE_COPY_LOCATION dst{ .pResource = patternReadback.get(), .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
@@ -587,9 +648,11 @@ namespace RT
 			Transition(commandList.get(), patternTexture.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
 		}
 
-		// M4: BLAS builds, TLAS, trace, all before the signal D3D11 waits on so the overlay shows this frame.
-		if (trace)
-			raytracer.Record(commandList.get(), slot, framesSubmitted, meshCache, candidates, exclusions, loadedArea, a_camera, dumpThisFrame);
+		// M4/M5: BLAS builds, TLAS, debug trace, sun shadows, all before the signal D3D11 waits on, so this frame's
+		// opaque pass lights with this frame's mask.
+		if (buildScene)
+			raytracer.Record(commandList.get(), slot, framesSubmitted, meshCache, candidates, exclusions, loadedArea, a_camera,
+				debugTrace, shadows, compareShadowMap, dumpThisFrame);
 		commandList->Close();
 
 		queue->Wait(fence.get(), toD3D12);
@@ -618,13 +681,19 @@ namespace RT
 			slotFenceValues[slot] = fenceValue;
 		}
 
+		if (shadows) {
+			shadowTracedEver = true;
+			lastShadowGameFrame = a_gameFrame;
+		}
+
 		if (dumpThisFrame) {
-			dumpHasTrace = trace;
+			dumpHasTrace = debugTrace;
+			dumpShadowsTraced = shadows != nullptr;
 			dumpRequested = false;
-			dumpInFlight = true;
+			dumpStage = DumpStage::kCaptureOn;
 			dumpFenceValue = toD3D11;
 			dumpPatternFrame = framesSubmitted;
-			dumpGameFrame = pendingDumpGameFrame;
+			dumpGameFrame = a_gameFrame;
 		}
 
 		stats.lastSignaledFenceValue = fenceValue;

@@ -1,10 +1,12 @@
 #include "SkyrimRT.h"
 
+#include "Features/ScreenSpaceShadows.h"
 #include "I18n/I18n.h"
 #include "RT/MeshCache.h"
 #include "RT/RT.h"
 #include "RT/Raytracer.h"
 #include "RT/Scene.h"
+#include "RT/SunShadows.h"
 #include "State.h"
 
 #define I18N_KEY_PREFIX "feature.skyrim_rt."
@@ -14,10 +16,39 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Enabled,
 	ShowTestPattern,
 	TraceDebugView,
-	DebugView)
+	DebugView,
+	SunShadows,
+	SunAngularRadius,
+	AlphaTestedShadows,
+	ShadowNormalBias,
+	ShadowDistanceBias,
+	ShadowHistory,
+	ShadowSpatialRadius,
+	ShadowView)
 
 namespace
 {
+	// Same light Screen-Space Shadows uses: the shadow scene node's directional light (the sun, or the moon at night).
+	// Its world direction points away from the light, so the direction towards it is the negation.
+	bool GetDirectionToSun(float (&a_out)[3])
+	{
+		auto** accumulatorSlot = globals::game::currentAccumulator.get();
+		auto* accumulator = accumulatorSlot ? *accumulatorSlot : nullptr;
+		auto* shadowSceneNode = accumulator ? accumulator->GetRuntimeData().activeShadowSceneNode : nullptr;
+		auto* sunLight = shadowSceneNode ? shadowSceneNode->GetRuntimeData().sunLight : nullptr;
+		auto* light = sunLight ? skyrim_cast<RE::NiDirectionalLight*>(sunLight->light.get()) : nullptr;
+		if (!light)
+			return false;
+		const auto& direction = light->GetWorldDirection();
+		const float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+		if (!(length > 1e-6f))
+			return false;
+		a_out[0] = -direction.x / length;
+		a_out[1] = -direction.y / length;
+		a_out[2] = -direction.z / length;
+		return true;
+	}
+
 	bool IsGameWindowFocused()
 	{
 		auto renderer = globals::game::renderer;
@@ -54,17 +85,55 @@ void SkyrimRT::SetupResources()
 	logger::info("[SkyrimRT] DXR {} available, sidecar active (enabled setting: {})", RT::GetTierName(RT::kRequiredTier), settings.Enabled);
 }
 
+bool SkyrimRT::ProvidesSunShadowMask()
+{
+	// Cached per frame: Screen-Space Shadows asks first (its Prepass runs earlier in the feature list), and both must
+	// agree even if the device state changes during this frame's round trip.
+	const uint32_t frame = globals::state->frameCount;
+	if (providesMaskFrame != frame) {
+		providesMaskFrame = frame;
+		// Lighting.hlsl samples t45 only when compiled with SCREEN_SPACE_SHADOWS, i.e. when that feature is loaded,
+		// and only in exteriors; kFull is the sky mode Screen-Space Shadows traces in too.
+		const auto* sky = globals::game::sky;
+		providesMask = loaded && settings.Enabled && settings.SunShadows && globals::features::screenSpaceShadows.loaded &&
+		               sky && sky->mode.get() == RE::Sky::Mode::kFull && RT::CanTraceSunShadows() && !RT::IsSunShadowSuppressed();
+	}
+	return providesMask;
+}
+
 void SkyrimRT::Prepass()
 {
-	if (!settings.Enabled || !settings.TraceDebugView)
+	if (!settings.Enabled)
 		return;
+	const bool shadows = ProvidesSunShadowMask();
+	if (!shadows && !settings.TraceDebugView)
+		return;
+
 	// Same sources ScreenSpaceShadows uses in its Prepass: CS's cached per-frame buffer and the
 	// dynamic-resolution render size (DLSS/FSR render below output resolution).
 	const auto& frameBuffer = globals::game::frameBufferCached;
 	const auto* graphicsState = globals::game::graphicsState;
 	const float2 renderSize = Util::ConvertToDynamic(float2{ static_cast<float>(graphicsState->screenWidth), static_cast<float>(graphicsState->screenHeight) });
-	RT::CaptureCamera(reinterpret_cast<const float*>(&frameBuffer.GetCameraViewProjInverse()), &frameBuffer.GetCameraPosAdjust().x,
-		static_cast<uint32_t>(std::lround(renderSize.x)), static_cast<uint32_t>(std::lround(renderSize.y)), globals::state->frameCount);
+	RT::CaptureCamera(reinterpret_cast<const float*>(&frameBuffer.GetCameraViewProjInverse()), reinterpret_cast<const float*>(&frameBuffer.GetCameraViewProj()),
+		&frameBuffer.GetCameraPosAdjust().x, static_cast<uint32_t>(std::lround(renderSize.x)), static_cast<uint32_t>(std::lround(renderSize.y)), globals::state->frameCount);
+
+	RT::SunShadowParams params;
+	const bool traceShadows = shadows && GetDirectionToSun(params.toSun);
+	params.coneHalfAngleDegrees = settings.SunAngularRadius;
+	params.alphaTestedCasters = settings.AlphaTestedShadows;
+	params.normalBias = settings.ShadowNormalBias;
+	params.distanceBias = settings.ShadowDistanceBias;
+	params.maxHistory = settings.ShadowHistory;
+	params.spatialRadius = settings.ShadowSpatialRadius;
+	params.viewMode = settings.ShadowView;
+	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr);
+
+	// Screen-Space Shadows skipped its pass for this frame, so the slot is ours. A mask that couldn't be traced
+	// recently comes back cleared to lit.
+	if (shadows) {
+		if (auto* mask = RT::AcquireSunShadowMask())
+			globals::d3d::context->PSSetShaderResources(45, 1, &mask);
+	}
 }
 
 void SkyrimRT::Reset()
@@ -73,7 +142,7 @@ void SkyrimRT::Reset()
 	if (!settings.Enabled)
 		return;
 
-	RT::OnFrame(settings.TraceDebugView);
+	RT::OnFrame();
 
 	const bool keyDown = (GetAsyncKeyState(kDumpHotkey) & 0x8000) != 0;
 	if (keyDown && !dumpKeyWasDown && IsGameWindowFocused())
@@ -120,6 +189,74 @@ void SkyrimRT::DrawOverlay()
 		}
 		ImGui::End();
 	}
+
+	// Sun-shadow view, bottom-left.
+	auto* shadowView = settings.ShadowView != 0 && ProvidesSunShadowMask() ? RT::GetSunShadowViewSRV() : nullptr;
+	const auto* shadowStats = RT::GetSunShadowStats();
+	if (shadowView && shadowStats && shadowStats->renderWidth > 0 && shadowStats->renderHeight > 0) {
+		constexpr float kWidth = 640.0f;
+		const ImVec2 size(kWidth, kWidth * shadowStats->renderHeight / shadowStats->renderWidth);
+		const ImVec2 uvMax(static_cast<float>(shadowStats->renderWidth) / shadowStats->textureWidth, static_cast<float>(shadowStats->renderHeight) / shadowStats->textureHeight);
+		ImGui::SetNextWindowPos(ImVec2(kMargin, io.DisplaySize.y - kMargin), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+		ImGui::SetNextWindowBgAlpha(0.6f);
+		if (ImGui::Begin("##SkyrimRTShadowView", nullptr, kFlags)) {
+			ImGui::Text("%s: %.1f%% (%.3f ms)", settings.ShadowView == 1 ? T(TKEY("shadow_view_raw"), "RT sun shadow, raw") : T(TKEY("shadow_view_denoised"), "RT sun shadow, denoised"),
+				shadowStats->ShadowedPercent(), shadowStats->totalMs.Average());
+			ImGui::Image((void*)shadowView, size, ImVec2(0.0f, 0.0f), uvMax);
+		}
+		ImGui::End();
+	}
+}
+
+void SkyrimRT::DrawSunShadowSettings()
+{
+	ImGui::Checkbox(T(TKEY("sun_shadows"), "Ray-traced sun shadows"), &settings.SunShadows);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("sun_shadows_tooltip"), "Trace sun and moon shadows from the static scene and terrain in exteriors. They take the place of Screen-Space Shadows and combine with the game's shadow maps, which still provide shadows from characters, foliage and distant land."));
+
+	if (!globals::features::screenSpaceShadows.loaded)
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("sun_shadows_needs_sss"), "Requires the Screen-Space Shadows feature to be installed: the lighting shaders read the shadow mask through it."));
+	else if (settings.SunShadows && settings.Enabled && !RT::CanTraceSunShadows())
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("sun_shadows_unavailable"), "Unavailable: the ray tracing pipeline could not be set up. See CommunityShaders.log."));
+
+	ImGui::SliderFloat(T(TKEY("sun_angular_radius"), "Sun angular radius"), &settings.SunAngularRadius, 0.0f, 3.0f, "%.2f deg");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("sun_angular_radius_tooltip"), "Apparent size of the sun. Larger values give wider, softer shadow edges. The real sun is about 0.27 degrees."));
+
+	ImGui::Checkbox(T(TKEY("alpha_tested_shadows"), "Alpha-tested meshes cast shadows"), &settings.AlphaTestedShadows);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("alpha_tested_shadows_tooltip"), "Let foliage and other alpha-tested meshes cast ray-traced shadows. Their transparency isn't supported yet, so leaves cast solid shadows."));
+
+	ImGui::SliderInt(T(TKEY("shadow_history"), "Temporal history (frames)"), reinterpret_cast<int*>(&settings.ShadowHistory), 1, 64);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("shadow_history_tooltip"), "How many frames are blended to remove noise. Higher is smoother but reacts more slowly. 1 turns temporal filtering off."));
+
+	ImGui::SliderFloat(T(TKEY("shadow_spatial_radius"), "Spatial filter radius"), &settings.ShadowSpatialRadius, 0.0f, 8.0f, "%.1f px");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("shadow_spatial_radius_tooltip"), "Blur radius for the shadow edges, reduced as more history accumulates. 0 turns spatial filtering off."));
+
+	ImGui::SliderFloat(T(TKEY("shadow_normal_bias"), "Normal bias"), &settings.ShadowNormalBias, 0.0f, 8.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("shadow_normal_bias_tooltip"), "Offsets each shadow ray away from its surface, in game units, to prevent surfaces from shadowing themselves."));
+
+	ImGui::SliderFloat(T(TKEY("shadow_distance_bias"), "Distance bias"), &settings.ShadowDistanceBias, 0.0f, 0.01f, "%.4f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("shadow_distance_bias_tooltip"), "Extra ray offset that grows with distance from the camera, where depth precision is lower."));
+
+	const char* shadowViewNames[] = { T(TKEY("shadow_view_off"), "Off"), T(TKEY("shadow_view_raw"), "RT sun shadow, raw"), T(TKEY("shadow_view_denoised"), "RT sun shadow, denoised") };
+	int shadowView = static_cast<int>(std::min<uint32_t>(settings.ShadowView, 2));
+	if (ImGui::Combo(T(TKEY("shadow_view"), "Shadow debug view"), &shadowView, shadowViewNames, IM_ARRAYSIZE(shadowViewNames)))
+		settings.ShadowView = static_cast<uint32_t>(shadowView);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("shadow_view_tooltip"), "Show the ray-traced shadow mask in the bottom-left corner: white is lit, black is shadowed."));
+
+	if (const auto* stats = RT::GetSunShadowStats(); stats && stats->haveResult) {
+		ImGui::Text("%s: %s", T(TKEY("shadow_active"), "Active this frame"), ProvidesSunShadowMask() ? T(TKEY("yes"), "yes") : T(TKEY("no"), "no"));
+		ImGui::Text("%s: %.1f%%", T(TKEY("shadowed_pixels"), "Shadowed pixels (raw)"), stats->ShadowedPercent());
+		ImGui::Text("%s: %.3f / %.3f / %.3f ms", T(TKEY("shadow_timings"), "Trace / temporal / spatial"), stats->traceMs.Average(), stats->temporalMs.Average(), stats->spatialMs.Average());
+		if (const auto* interop = RT::GetInteropStats())
+			ImGui::Text("%s: %.3f ms", T(TKEY("frame_cost"), "Frame cost (whole ray tracing round trip)"), interop->roundTripMs.Average());
+	}
 }
 
 void SkyrimRT::DrawSettings()
@@ -149,8 +286,15 @@ void SkyrimRT::DrawSettings()
 			RT::RequestDebugDump();
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("write_dump_tooltip"), "Writes frame_<n>.json and a PNG of the test pattern to Documents\\My Games\\Skyrim Special Edition\\SKSE\\SkyrimRT."));
+			ImGui::Text("%s", T(TKEY("write_dump_tooltip"), "Writes frame_<n>.json and PNGs of the debug views, the shadow masks and the final frame with ray-traced shadows on and off to Documents\\My Games\\Skyrim Special Edition\\SKSE\\SkyrimRT."));
 
+		ImGui::Spacing();
+		ImGui::Spacing();
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("sun_shadows_section"), "Sun shadows"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		DrawSunShadowSettings();
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();

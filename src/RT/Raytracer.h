@@ -5,23 +5,15 @@
 #include <winrt/base.h>
 
 #include "BufferPool.h"
+#include "FrameTypes.h"
 #include "MeshCache.h"
 #include "RT.h"
 #include "Scene.h"
+#include "SharedTexture.h"
+#include "SunShadows.h"
 
 namespace RT
 {
-	/** @brief Camera of the frame being traced, captured from CS's per-frame buffer in SkyrimRT::Prepass(). */
-	struct FrameCamera
-	{
-		bool valid = false;
-		uint32_t gameFrame = 0;
-		float viewProjInverse[16]{};  // FrameBuffer::CameraViewProjInverse, raw (HLSL row_major)
-		RE::NiPoint3 posAdjust;       // FrameBuffer::CameraPosAdjust: TLAS origin
-		uint32_t renderWidth = 0;
-		uint32_t renderHeight = 0;
-	};
-
 	/** @brief Counter slots written by RayQueryDebugCS.hlsl (keep in sync). */
 	enum TraceCounter : uint32_t
 	{
@@ -73,15 +65,6 @@ namespace RT
 		}
 	};
 
-	/** @brief One debug image captured for the dump (render region only, RGBA8). */
-	struct DumpImage
-	{
-		std::string name;
-		uint32_t width = 0;
-		uint32_t height = 0;
-		std::vector<uint8_t> pixels;
-	};
-
 	/**
 	 * @brief M4 ray tracing: BLAS/TLAS management and the inline-RayQuery debug trace with the depth-mismatch metric.
 	 * All work is recorded into the sidecar's per-frame command list between the D3D11 -> D3D12 and D3D12 -> D3D11 fences.
@@ -102,36 +85,39 @@ namespace RT
 		const std::string& GetFailureReason() const { return failureReason; }
 		void SetTimestampFrequency(uint64_t a_frequency);
 
-		/** @brief D3D11 side, before the fence signal: copy this frame's pre-water depth into the shared texture. */
-		void CopyDepth();
+		/**
+		 * @brief D3D11 side, before the fence signal: copy this frame's scene depth into the shared texture and, on
+		 * comparison frames, the game's shadow mask.
+		 */
+		void CopyInputs(bool a_compareShadowMap);
 
-		/** @brief Records BLAS builds, the TLAS build, the trace and result readbacks into a_list. */
+		/**
+		 * @brief Records BLAS builds and the TLAS build, then the M4 debug trace (a_debugTrace) and the M5 sun shadows
+		 * (a_shadows non-null), with their result readbacks, into a_list.
+		 */
 		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, uint64_t a_frame, MeshCache& a_cache,
 			const std::vector<GeometryCandidate>& a_candidates, const std::vector<ExclusionBound>& a_exclusions,
-			const LoadedArea& a_area, const FrameCamera& a_camera, bool a_captureDump);
+			const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
+			bool a_compareShadowMap, bool a_captureDump);
 
 		/** @brief Reads the slot's counters and timestamps once its fence value has completed (never waits). */
 		void CollectResults(uint32_t a_slot);
 
-		/** @brief Copies the captured dump images out of the readback buffer (call once the dump's fence completed). */
+		/** @brief Copies the captured dump images out of the readback buffers (call once the dump's fence completed). */
 		void ReadDumpImages(std::vector<DumpImage>& a_out);
 
 		ID3D11ShaderResourceView* GetViewSRV(DebugView a_view) const { return views[static_cast<uint32_t>(a_view)].srv11.get(); }
 		uint32_t GetTextureWidth() const { return width; }
 		uint32_t GetTextureHeight() const { return height; }
 		const TraceStats& GetStats() const { return stats; }
+		bool SunShadowsReady() const { return sunShadowsReady; }
+		SunShadows& GetSunShadows() { return sunShadows; }
+		const SunShadows& GetSunShadows() const { return sunShadows; }
 
 	private:
-		struct SharedTexture
-		{
-			winrt::com_ptr<ID3D11Texture2D> texture11;
-			winrt::com_ptr<ID3D11ShaderResourceView> srv11;
-			winrt::com_ptr<ID3D11UnorderedAccessView> uav11;
-			winrt::com_ptr<ID3D12Resource> resource12;
-		};
-
-		bool CreateSharedTexture(DXGI_FORMAT a_format, const char* a_name, SharedTexture& a_out);
 		bool CreatePipeline();
+		void RecordDebugTrace(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, MeshCache& a_cache, uint32_t a_instanceCount, uint32_t a_exclusionCount,
+			const LoadedArea& a_area, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, bool a_captureDump);
 		void UpdatePageDescriptors(const BufferPool& a_pool);
 		bool Fail(std::string a_reason);
 
@@ -170,6 +156,7 @@ namespace RT
 		bool slotPending[kFramesInFlight]{};
 		struct SlotInfo
 		{
+			bool debugTraced = false;
 			uint32_t instances = 0;
 			uint32_t exclusions = 0;
 			uint32_t dropped = 0;
@@ -183,6 +170,10 @@ namespace RT
 		uint32_t dumpRowPitch = 0;
 		uint32_t dumpWidth = 0;
 		uint32_t dumpHeight = 0;
+		bool dumpCaptured = false;
+
+		SunShadows sunShadows;
+		bool sunShadowsReady = false;
 
 		std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instanceDescs;
 		std::vector<InstanceRecord> instances;

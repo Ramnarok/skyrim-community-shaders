@@ -27,6 +27,7 @@ endif()
 message(STATUS "SkyrimRT: using DXC ${SKYRIMRT_DXC}")
 
 file(GLOB SKYRIMRT_SHADER_SOURCES CONFIGURE_DEPENDS "${SKYRIMRT_SHADER_SOURCE_DIR}/*.hlsl")
+file(GLOB SKYRIMRT_SHADER_INCLUDES CONFIGURE_DEPENDS "${SKYRIMRT_SHADER_SOURCE_DIR}/*.hlsli")
 set(SKYRIMRT_SHADER_OUTPUTS)
 foreach(_source IN LISTS SKYRIMRT_SHADER_SOURCES)
     get_filename_component(_name "${_source}" NAME_WE)
@@ -34,8 +35,8 @@ foreach(_source IN LISTS SKYRIMRT_SHADER_SOURCES)
     add_custom_command(
         OUTPUT "${_output}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${SKYRIMRT_SHADER_OUTPUT_DIR}"
-        COMMAND "${SKYRIMRT_DXC}" -nologo -T cs_6_5 -E main -O3 -Fo "${_output}" "${_source}"
-        DEPENDS "${_source}"
+        COMMAND "${SKYRIMRT_DXC}" -nologo -T cs_6_5 -E main -O3 -I "${SKYRIMRT_SHADER_SOURCE_DIR}" -Fo "${_output}" "${_source}"
+        DEPENDS "${_source}" ${SKYRIMRT_SHADER_INCLUDES}
         COMMENT "SkyrimRT: dxc ${_name}.hlsl"
         VERBATIM
     )

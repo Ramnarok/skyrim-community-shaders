@@ -89,42 +89,6 @@ namespace RT
 		return false;
 	}
 
-	bool Raytracer::CreateSharedTexture(DXGI_FORMAT a_format, const char* a_name, SharedTexture& a_out)
-	{
-		// M2: shared textures must be created on the D3D11 side and opened in D3D12.
-		D3D11_TEXTURE2D_DESC desc{};
-		desc.Width = width;
-		desc.Height = height;
-		desc.MipLevels = 1;
-		desc.ArraySize = 1;
-		desc.Format = a_format;
-		desc.SampleDesc = { 1, 0 };
-		desc.Usage = D3D11_USAGE_DEFAULT;
-		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-		desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-		HRESULT hr = d3d11Device->CreateTexture2D(&desc, nullptr, a_out.texture11.put());
-		if (FAILED(hr))
-			return Fail(std::format("CreateTexture2D({}) failed ({})", a_name, FormatHResult(hr)));
-		Util::SetResourceName(a_out.texture11.get(), "SkyrimRT::%s", a_name);
-
-		winrt::com_ptr<IDXGIResource1> dxgiResource;
-		HANDLE sharedHandle = nullptr;
-		hr = a_out.texture11->QueryInterface(IID_PPV_ARGS(dxgiResource.put()));
-		if (SUCCEEDED(hr))
-			hr = dxgiResource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &sharedHandle);
-		if (SUCCEEDED(hr)) {
-			hr = device->OpenSharedHandle(sharedHandle, IID_PPV_ARGS(a_out.resource12.put()));
-			CloseHandle(sharedHandle);
-		}
-		if (FAILED(hr))
-			return Fail(std::format("sharing {} with D3D12 failed ({})", a_name, FormatHResult(hr)));
-
-		if (FAILED(hr = d3d11Device->CreateShaderResourceView(a_out.texture11.get(), nullptr, a_out.srv11.put())) ||
-			FAILED(hr = d3d11Device->CreateUnorderedAccessView(a_out.texture11.get(), nullptr, a_out.uav11.put())))
-			return Fail(std::format("D3D11 views for {} failed ({})", a_name, FormatHResult(hr)));
-		return true;
-	}
-
 	bool Raytracer::CreatePipeline()
 	{
 		// Compiled at build time by DXC (cmake/SkyrimRTShaders.cmake).
@@ -180,12 +144,13 @@ namespace RT
 		width = a_screenWidth;
 		height = a_screenHeight;
 
-		if (!CreateSharedTexture(DXGI_FORMAT_R32_FLOAT, "RasterDepth", rasterDepth))
-			return false;
+		std::string error;
+		if (!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R32_FLOAT, "RasterDepth", rasterDepth, error))
+			return Fail(std::move(error));
 		constexpr const char* kViewNames[] = { "DepthView", "InstanceView", "NormalView", "DiffView" };
 		for (uint32_t i = 0; i < views.size(); i++) {
-			if (!CreateSharedTexture(DXGI_FORMAT_R8G8B8A8_UNORM, kViewNames[i], views[i]))
-				return false;
+			if (!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, kViewNames[i], views[i], error))
+				return Fail(std::move(error));
 		}
 
 		copyDepthCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\SkyrimRT\\CopyDepthCS.hlsl", {}, "cs_5_0")));
@@ -298,18 +263,25 @@ namespace RT
 		instanceDescs.reserve(kMaxInstances);
 		logger::info("[SkyrimRT] Raytracer ready: {}x{} views, TLAS {:.1f} MB for {} instances, scratch {} MB",
 			width, height, tlasInfo.ResultDataMaxSizeInBytes / (1024.0 * 1024.0), kMaxInstances, kScratchBytes >> 20);
+
+		// M5. A failure here only disables sun shadows; the debug trace keeps working.
+		sunShadowsReady = sunShadows.Init(device, d3d11Device, d3d11Context, width, height, rasterDepth.resource12.get(), copyDepthCS.get());
 		return true;
 	}
 
 	void Raytracer::SetTimestampFrequency(uint64_t a_frequency)
 	{
 		timestampFrequency = a_frequency;
+		sunShadows.SetTimestampFrequency(a_frequency);
 	}
 
-	void Raytracer::CopyDepth()
+	void Raytracer::CopyInputs(bool a_compareShadowMap)
 	{
-		// The same scene depth CS's own passes read (DeferredCompositeCS, ScreenSpaceShadows): TerrainBlending's
-		// R32 depth when that feature is active, else the game's pre-water kPOST_ZPREPASS_COPY.
+		if (sunShadowsReady)
+			sunShadows.CopyInputs(a_compareShadowMap);
+
+		// The same scene depth ScreenSpaceShadows reads in its Prepass: TerrainBlending's R32 blended pre-pass depth
+		// when that feature is active, else the game's kPOST_ZPREPASS_COPY (at Prepass time: the depth pre-pass).
 		auto* depthSRV = Util::GetCurrentSceneDepthSRV(false);
 		if (!depthSRV)
 			return;
@@ -354,7 +326,8 @@ namespace RT
 
 	void Raytracer::Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, uint64_t a_frame, MeshCache& a_cache,
 		const std::vector<GeometryCandidate>& a_candidates, const std::vector<ExclusionBound>& a_exclusions,
-		const LoadedArea& a_area, const FrameCamera& a_camera, bool a_captureDump)
+		const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
+		bool a_compareShadowMap, bool a_captureDump)
 	{
 		uint8_t* upload = uploadCpu[a_slot];
 		const D3D12_GPU_VIRTUAL_ADDRESS uploadVA = uploads[a_slot]->GetGPUVirtualAddress();
@@ -442,11 +415,36 @@ namespace RT
 		GlobalUavBarrier(a_list);
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot + 2);
 
+		const uint32_t renderWidth = std::min(a_camera.renderWidth, width);
+		const uint32_t renderHeight = std::min(a_camera.renderHeight, height);
+		if (a_debugTrace)
+			RecordDebugTrace(a_list, a_slot, a_cache, instanceCount, exclusionCount, a_area, a_camera, renderWidth, renderHeight, a_captureDump);
+		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot + 3);
+		a_list->ResolveQueryData(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot, kTimestampsPerSlot, timestampReadback.get(), sizeof(uint64_t) * kTimestampsPerSlot * a_slot);
+
+		// 7. M5 sun shadows, reusing this frame's TLAS.
+		if (a_shadows && sunShadowsReady)
+			sunShadows.Record(a_list, a_slot, tlas->GetGPUVirtualAddress(), a_camera, renderWidth, renderHeight, *a_shadows, a_compareShadowMap, a_captureDump);
+
+		slotPending[a_slot] = true;
+		slotInfo[a_slot] = { a_debugTrace, instanceCount, exclusionCount, static_cast<uint32_t>(instances.size() - instanceCount),
+			renderWidth, renderHeight, a_area, adjust };
+	}
+
+	void Raytracer::RecordDebugTrace(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, MeshCache& a_cache, uint32_t a_instanceCount,
+		uint32_t a_exclusionCount, const LoadedArea& a_area, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, bool a_captureDump)
+	{
+		uint8_t* upload = uploadCpu[a_slot];
+		const D3D12_GPU_VIRTUAL_ADDRESS uploadVA = uploads[a_slot]->GetGPUVirtualAddress();
+		const auto& adjust = a_camera.posAdjust;
+
 		// 5. Trace.
 		auto* constants = reinterpret_cast<TraceConstants*>(upload + kConstantsOffset);
 		std::memcpy(constants->viewProjInverse, a_camera.viewProjInverse, sizeof(constants->viewProjInverse));
-		constants->renderSize[0] = std::min(a_camera.renderWidth, width);
-		constants->renderSize[1] = std::min(a_camera.renderHeight, height);
+		constants->renderSize[0] = a_renderWidth;
+		constants->renderSize[1] = a_renderHeight;
+		const uint32_t instanceCount = a_instanceCount;
+		const uint32_t exclusionCount = a_exclusionCount;
 		constants->instanceCount = instanceCount;
 		constants->exclusionCount = exclusionCount;
 		constants->loadedMin[0] = a_area.min.x - adjust.x;
@@ -487,21 +485,20 @@ namespace RT
 		a_list->CopyBufferRegion(countersReadback.get(), kCounterBytes * a_slot, counters.get(), 0, kCounterBytes);
 		Transition(a_list, counters.get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
 
-		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot + 3);
-		a_list->ResolveQueryData(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot, kTimestampsPerSlot, timestampReadback.get(), sizeof(uint64_t) * kTimestampsPerSlot * a_slot);
-
 		// 6. Optional dump: copy all four views into the readback buffer.
 		if (a_captureDump) {
 			const auto viewDesc = views[0].resource12->GetDesc();
 			D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
 			UINT64 bytes = 0;
 			device->GetCopyableFootprints(&viewDesc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
+			bytes = Align(bytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);  // placed footprint offsets must be 512-aligned
 			if (!dumpReadback && FAILED(CreateBufferResource(device, D3D12_HEAP_TYPE_READBACK, bytes * views.size(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE, dumpReadback.put()))) {
 				logger::error("[SkyrimRT] Debug dump: cannot create trace readback buffer");
 			} else {
 				dumpRowPitch = footprint.Footprint.RowPitch;
-				dumpWidth = constants->renderSize[0];
-				dumpHeight = constants->renderSize[1];
+				dumpWidth = a_renderWidth;
+				dumpHeight = a_renderHeight;
+				dumpCaptured = true;
 				for (uint32_t i = 0; i < views.size(); i++) {
 					Transition(a_list, views[i].resource12.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
 					D3D12_TEXTURE_COPY_LOCATION dst{ .pResource = dumpReadback.get(), .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
@@ -514,27 +511,28 @@ namespace RT
 				}
 			}
 		}
-
-		slotPending[a_slot] = true;
-		slotInfo[a_slot] = { instanceCount, exclusionCount, static_cast<uint32_t>(instances.size() - instanceCount),
-			constants->renderSize[0], constants->renderSize[1], a_area, adjust };
 	}
 
 	void Raytracer::CollectResults(uint32_t a_slot)
 	{
+		if (sunShadowsReady)
+			sunShadows.CollectResults(a_slot);
 		if (!slotPending[a_slot])
 			return;
 		slotPending[a_slot] = false;
 
-		const uint32_t* slotCounters = countersCpu + (kCounterBytes / sizeof(uint32_t)) * a_slot;
-		for (uint32_t i = 0; i < kCounterCount; i++)
-			stats.counters[i] = slotCounters[i];
 		const uint64_t* t = timestampCpu + kTimestampsPerSlot * a_slot;
 		stats.blasBuildMs.Add(Ms(t[0], t[1], timestampFrequency));
 		stats.tlasBuildMs.Add(Ms(t[1], t[2], timestampFrequency));
-		stats.traceMs.Add(Ms(t[2], t[3], timestampFrequency));
 
 		const auto& info = slotInfo[a_slot];
+		if (!info.debugTraced)
+			return;
+		const uint32_t* slotCounters = countersCpu + (kCounterBytes / sizeof(uint32_t)) * a_slot;
+		for (uint32_t i = 0; i < kCounterCount; i++)
+			stats.counters[i] = slotCounters[i];
+		stats.traceMs.Add(Ms(t[2], t[3], timestampFrequency));
+
 		stats.instances = info.instances;
 		stats.exclusions = info.exclusions;
 		stats.instancesDropped = info.dropped;
@@ -558,18 +556,22 @@ namespace RT
 
 	void Raytracer::ReadDumpImages(std::vector<DumpImage>& a_out)
 	{
-		if (!dumpReadback || !dumpWidth || !dumpHeight)
+		if (sunShadowsReady)
+			sunShadows.ReadDumpImages(a_out);
+		if (!dumpCaptured || !dumpReadback || !dumpWidth || !dumpHeight)
 			return;
+		dumpCaptured = false;
 		const auto viewDesc = views[0].resource12->GetDesc();
 		UINT64 bytes = 0;
 		device->GetCopyableFootprints(&viewDesc, 0, 1, 0, nullptr, nullptr, nullptr, &bytes);
+		bytes = Align(bytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
 
 		void* mapped = nullptr;
 		if (FAILED(dumpReadback->Map(0, nullptr, &mapped)))
 			return;
 		constexpr const char* kNames[] = { "depth", "instance", "normal", "diff" };
 		for (uint32_t i = 0; i < views.size(); i++) {
-			DumpImage image{ kNames[i], dumpWidth, dumpHeight, std::vector<uint8_t>(static_cast<size_t>(dumpWidth) * dumpHeight * 4) };
+			DumpImage image{ kNames[i], dumpWidth, dumpHeight, DXGI_FORMAT_R8G8B8A8_UNORM, std::vector<uint8_t>(static_cast<size_t>(dumpWidth) * dumpHeight * 4) };
 			const auto* source = static_cast<const uint8_t*>(mapped) + bytes * i;
 			for (uint32_t y = 0; y < dumpHeight; y++)
 				std::memcpy(image.pixels.data() + static_cast<size_t>(y) * dumpWidth * 4, source + static_cast<size_t>(y) * dumpRowPitch, static_cast<size_t>(dumpWidth) * 4);

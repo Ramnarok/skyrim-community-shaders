@@ -95,8 +95,10 @@ namespace RT
 			constexpr double kMB = 1024.0 * 1024.0;
 			constexpr float kTargetPercent = 2.0f;
 			json images = json::array();
-			for (const auto& image : a_data.images)
-				images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			for (const auto& image : a_data.images) {
+				if (image.name == "depth" || image.name == "instance" || image.name == "normal" || image.name == "diff")
+					images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			}
 			return {
 				{ "traced_dump_frame", a_data.haveTrace },
 				{ "have_result", t.haveResult },
@@ -131,6 +133,48 @@ namespace RT
 			};
 		}
 
+		json SunShadowsJson(const DebugDumpData& a_data)
+		{
+			const auto& s = a_data.shadows;
+			const auto& c = s.comparedCounters;
+			constexpr float kTargetMs = 2.0f;
+			json images = json::array();
+			for (const auto& image : a_data.images) {
+				if (image.name.starts_with("shadow_") || image.name.starts_with("game_shadow") || image.name.starts_with("final"))
+					images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			}
+			return {
+				{ "traced_dump_frame", a_data.haveShadows },
+				{ "have_result", s.haveResult },
+				{ "frames_traced", s.framesTraced },
+				{ "history_resets", s.historyResets },
+				{ "to_sun", { s.toSun[0], s.toSun[1], s.toSun[2] } },
+				{ "cone_half_angle_degrees", s.coneHalfAngleDegrees },
+				{ "pixels", { { "traced", s.counters[kShadowTraced] }, { "shadowed_raw", s.counters[kShadowShadowed] } } },
+				{ "shadowed_percent_raw", s.ShadowedPercent() },
+				{ "window", { { "shadowed_percent_raw", TimingJson(s.shadowedPercent) } } },
+				{ "vs_game_shadow_mask",
+					{ { "compared_dump_frame", s.haveComparison },
+						{ "note", "raw RT visibility vs the game's kSHADOW_MASK < 0.5, non-sky pixels closer than compare_distance" },
+						{ "compare_distance_units", SunShadows::kCompareDistance },
+						{ "compared", c[kCompareCompared] },
+						{ "both_lit", c[kCompareBothLit] },
+						{ "both_shadowed", c[kCompareBothShadowed] },
+						{ "rt_only_shadowed", c[kCompareRtOnly] },
+						{ "map_only_shadowed", c[kCompareMapOnly] },
+						{ "agreement_percent", s.AgreementPercent() } } },
+				{ "timings_ms",
+					{ { "trace", TimingJson(s.traceMs) },
+						{ "temporal", TimingJson(s.temporalMs) },
+						{ "spatial", TimingJson(s.spatialMs) },
+						{ "total_shadow_passes", TimingJson(s.totalMs) },
+						{ "note", "the frame-time cost is timings_ms.d3d11_round_trip (includes BLAS/TLAS, and the M4 debug trace when enabled)" } } },
+				{ "target_ms", kTargetMs },
+				{ "round_trip_within_target", a_data.stats.roundTripMs.count > 0 && a_data.stats.roundTripMs.Average() < kTargetMs },
+				{ "images", images },
+			};
+		}
+
 		json BuildJson(const DebugDumpData& a_data, const std::string& a_pngName, bool a_pngWritten)
 		{
 			const auto& s = a_data.stats;
@@ -139,7 +183,8 @@ namespace RT
 			const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
 
 			return {
-				{ "milestone", "M4" },
+				{ "milestone", "M5" },
+				{ "sun_shadows", SunShadowsJson(a_data) },
 				{ "trace", TraceJson(a_data) },
 				{ "scene", SceneJson(a_data) },
 				{ "mesh_cache", CacheJson(a_data.cache) },
@@ -203,12 +248,33 @@ namespace RT
 				DirectX::Image view{};
 				view.width = debugImage.width;
 				view.height = debugImage.height;
-				view.format = DXGI_FORMAT_R8G8B8A8_UNORM;
-				view.rowPitch = static_cast<size_t>(debugImage.width) * 4;
+				view.format = debugImage.format;
+				view.rowPitch = static_cast<size_t>(debugImage.width) * (DirectX::BitsPerPixel(debugImage.format) / 8);
 				view.slicePitch = view.rowPitch * debugImage.height;
 				view.pixels = const_cast<uint8_t*>(debugImage.pixels.data());
 				const auto viewPath = dir / std::format("debug_{}_{}.png", debugImage.name, data.gameFrame);
-				if (const HRESULT hr = DirectX::SaveToWICFile(view, DirectX::WIC_FLAGS_NONE, DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), viewPath.c_str()); FAILED(hr))
+
+				// Captured framebuffers may be BGRA8, 10-bit or float; PNG gets RGBA8 (float is clamped, not tonemapped).
+				// Their alpha channel is meaningless (often 0), so it's forced opaque.
+				const bool framebuffer = debugImage.name.starts_with("final");
+				DirectX::ScratchImage converted;
+				const DirectX::Image* toSave = &view;
+				if (view.format != DXGI_FORMAT_R8G8B8A8_UNORM || framebuffer) {
+					const HRESULT hr = view.format != DXGI_FORMAT_R8G8B8A8_UNORM ?
+					                       DirectX::Convert(view, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted) :
+					                       converted.InitializeFromImage(view);
+					if (FAILED(hr)) {
+						logger::error("[SkyrimRT] Debug dump: converting {} (format {}) failed ({})", debugImage.name, static_cast<uint32_t>(view.format), FormatHResult(hr));
+						continue;
+					}
+					if (framebuffer) {
+						uint8_t* pixels = converted.GetPixels();
+						for (size_t i = 3; i < converted.GetPixelsSize(); i += 4)
+							pixels[i] = 255;
+					}
+					toSave = converted.GetImage(0, 0, 0);
+				}
+				if (const HRESULT hr = DirectX::SaveToWICFile(*toSave, DirectX::WIC_FLAGS_NONE, DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), viewPath.c_str()); FAILED(hr))
 					logger::error("[SkyrimRT] Debug dump: writing {} failed ({})", viewPath.string(), FormatHResult(hr));
 			}
 

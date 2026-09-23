@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <winrt/base.h>
 
+#include "FrameCapture.h"
 #include "MeshCache.h"
 #include "RT.h"
 #include "Raytracer.h"
@@ -33,17 +34,28 @@ namespace RT
 		bool Init(winrt::com_ptr<ID3D12Device> a_device, ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_d3d11Context, uint32_t a_screenWidth, uint32_t a_screenHeight);
 
 		/**
-		 * @brief One interop round trip per frame (render thread): scene extraction, D3D11 → D3D12 (test pattern,
-		 * and with a_trace the BLAS/TLAS/RayQuery debug trace) → D3D11, then mesh uploads.
+		 * @brief This game frame's interop round trip (render thread; at most one per game frame): scene extraction,
+		 * D3D11 → D3D12 (test pattern; with a_debugTrace and/or a_shadows the BLAS/TLAS build, M4 debug trace and
+		 * M5 sun shadows) → D3D11, then mesh uploads. SkyrimRT::Prepass calls it before the opaque pass.
 		 */
-		void OnFrame(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_trace);
+		void Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows);
 
-		/** @brief Queues a dump; the pattern copy rides along with the next round trip and is written once it completes. */
-		void RequestDebugDump(uint32_t a_gameFrame)
-		{
-			dumpRequested = true;
-			pendingDumpGameFrame = a_gameFrame;
-		}
+		/** @brief Present time: an untraced round trip if none ran this frame (menus, loading), and the dump sequence. */
+		void OnPresent(uint32_t a_gameFrame);
+
+		/**
+		 * @brief Queues a dump. Its data rides along with the next round trip; the final frame is then captured with RT
+		 * shadows on and, kSuppressFrames later, with them off (Screen-Space Shadows in their place).
+		 */
+		void RequestDebugDump() { dumpRequested = true; }
+
+		/** @brief True while a dump is capturing its RT-off reference frame. */
+		bool IsSunShadowSuppressed() const { return dumpStage == DumpStage::kSuppressing; }
+
+		bool CanTraceSunShadows() const { return !deviceRemoved && raytracerReady && raytracer.SunShadowsReady(); }
+
+		/** @brief The RT sun-shadow mask for this frame's lighting, cleared to lit first if it wasn't traced recently. */
+		ID3D11ShaderResourceView* AcquireSunShadowMask(uint32_t a_gameFrame);
 
 		ID3D11ShaderResourceView* GetTestPatternSRV() const { return framesSubmitted > 0 ? patternSRV11.get() : nullptr; }
 		const InteropStats& GetStats() const { return stats; }
@@ -52,6 +64,7 @@ namespace RT
 		const TimingSeries& GetSceneTraversalMs() const { return sceneTraversalMs; }
 		const MeshCacheStats& GetMeshCacheStats() const { return meshCache.GetStats(); }
 		const Raytracer* GetRaytracer() const { return raytracerReady ? &raytracer : nullptr; }
+		const SunShadows* GetSunShadows() const { return (raytracerReady && raytracer.SunShadowsReady()) ? &raytracer.GetSunShadows() : nullptr; }
 		const std::string& GetFailureReason() const { return failureReason; }
 
 	private:
@@ -96,15 +109,35 @@ namespace RT
 		winrt::com_ptr<ID3D11Query> d3d11End[kFramesInFlight];
 		bool slotHasTimings[kFramesInFlight]{};
 
-		// Debug dump readback of the pattern texture.
+		// Debug dump: readback of the pattern texture, then the final-frame captures (RT shadows on, then off).
+		enum class DumpStage
+		{
+			kIdle,
+			kCaptureOn,    // the dump's round trip ran this frame; capture the final frame at Present
+			kSuppressing,  // RT shadows handed back to Screen-Space Shadows until the RT-off capture
+			kFinishing,    // waiting for the fence and the captures, then written
+		};
+		static constexpr uint32_t kSuppressFrames = 3;
 		winrt::com_ptr<ID3D12Resource> patternReadback;
 		uint32_t patternRowPitch = 0;
 		bool dumpRequested = false;
-		bool dumpInFlight = false;
+		DumpStage dumpStage = DumpStage::kIdle;
 		uint64_t dumpFenceValue = 0;
 		uint32_t dumpPatternFrame = 0;
 		uint32_t dumpGameFrame = 0;
-		uint32_t pendingDumpGameFrame = 0;
+		uint32_t suppressUntilFrame = 0;
+		bool dumpShadowsTraced = false;
+		FrameCapture captureOn;
+		FrameCapture captureOff;
+
+		// At most one round trip per game frame.
+		bool haveSubmitted = false;
+		uint32_t lastSubmitGameFrame = 0;
+
+		// M5: when the mask was last written, so a stale mask is cleared to lit instead of being reused.
+		bool shadowTracedEver = false;
+		uint32_t lastShadowGameFrame = 0;
+		bool maskClearedWhileStale = false;
 
 		LARGE_INTEGER qpcFrequency{};
 		LARGE_INTEGER startTime{};

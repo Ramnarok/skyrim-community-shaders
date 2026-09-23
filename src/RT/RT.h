@@ -15,7 +15,20 @@ namespace RT
 	struct MeshCacheStats;
 	struct TimingSeries;
 	struct TraceStats;
+	struct SunShadowStats;
 
+	/** @brief Per-frame sun-shadow settings, filled by the SkyrimRT feature (M5). */
+	struct SunShadowParams
+	{
+		float toSun[3]{ 0.0f, 0.0f, 1.0f };  ///< unit direction towards the sun (or moon), world space
+		float coneHalfAngleDegrees = 0.5f;  ///< apparent angular radius of the light: penumbra width
+		bool alphaTestedCasters = false;    ///< alpha-tested meshes cast as opaque (no alpha textures until M7)
+		float normalBias = 1.0f;            ///< ray origin offset along the surface normal (game units)
+		float distanceBias = 0.002f;        ///< extra offset per unit of view distance
+		uint32_t maxHistory = 24;           ///< temporal accumulation cap (frames); 1 disables accumulation
+		float spatialRadius = 3.0f;         ///< spatial filter radius in pixels; 0 disables the filter
+		uint32_t viewMode = 0;              ///< debug view: 0 none, 1 raw, 2 denoised
+	};
 	/** @brief What the capability probe found on the game's adapter. */
 	struct Capabilities
 	{
@@ -110,18 +123,40 @@ namespace RT
 	bool Init(ID3D11Device* a_device, ID3D11DeviceContext* a_context);
 
 	/**
-	 * @brief Records this frame's camera for the M4 trace. Call from the main deferred prepass, where CS's
+	 * @brief Records this frame's camera for tracing. Call from the main deferred prepass, where CS's
 	 * cached per-frame buffer holds the main camera.
 	 * @param a_viewProjInverse FrameBuffer::CameraViewProjInverse (16 floats, as captured)
+	 * @param a_viewProj FrameBuffer::CameraViewProj (16 floats, as captured)
 	 * @param a_posAdjust FrameBuffer::CameraPosAdjust.xyz
 	 */
-	void CaptureCamera(const float* a_viewProjInverse, const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame);
+	void CaptureCamera(const float* a_viewProjInverse, const float* a_viewProj, const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame);
 
 	/**
-	 * @brief Runs the per-frame work (interop round trip, scene extraction, uploads; with a_trace also the
-	 * BLAS/TLAS build and debug trace). Render thread only; no-op until Init succeeds.
+	 * @brief Runs this frame's round trip before the opaque pass (from Feature::Prepass, after CaptureCamera): scene
+	 * extraction, BLAS/TLAS, the M4 debug trace (a_debugTrace) and M5 sun shadows (a_shadows non-null). D3D11 waits
+	 * for the result on the GPU timeline; the CPU never waits. At most one round trip runs per frame.
 	 */
-	void OnFrame(bool a_trace);
+	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows);
+
+	/**
+	 * @brief Present-time work: an untraced round trip (uploads, test pattern) if OnPrepass didn't run this frame,
+	 * and the debug-dump sequence. Render thread only; no-op until Init succeeds.
+	 */
+	void OnFrame();
+
+	/** @brief True when the sidecar can trace sun shadows (running, pipelines built, no device removal). */
+	bool CanTraceSunShadows();
+
+	/** @brief True while a debug dump captures its RT-off reference frame; RT shadows must not be bound then. */
+	bool IsSunShadowSuppressed();
+
+	/** @brief SRV of the RT sun-shadow mask for this frame (R8, 1 = lit), cleared to lit if stale; nullptr if unavailable. */
+	ID3D11ShaderResourceView* AcquireSunShadowMask();
+
+	/** @brief SRV of the sun-shadow debug view (RGBA8) when SunShadowParams::viewMode is set, or nullptr. */
+	ID3D11ShaderResourceView* GetSunShadowViewSRV();
+
+	const SunShadowStats* GetSunShadowStats();
 
 	/** @brief Debug view (0 depth, 1 instance, 2 normal, 3 diff) written by the trace, or nullptr. */
 	ID3D11ShaderResourceView* GetDebugViewSRV(uint32_t a_view);
@@ -131,7 +166,10 @@ namespace RT
 
 	const TraceStats* GetTraceStats();
 
-	/** @brief Queues a debug dump (frame_<n>.json + debug_testpattern_<n>.png), written once the GPU copy completes. */
+	/**
+	 * @brief Queues a debug dump: frame_<n>.json plus debug_<view>_<n>.png images (test pattern, debug views, sun-shadow
+	 * masks, final frame with RT shadows on and off), written once the GPU copies complete.
+	 */
 	void RequestDebugDump();
 
 	/** @brief SRV of the D3D12-written test pattern, or nullptr before the first round trip. */

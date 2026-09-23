@@ -153,7 +153,7 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 ## Open questions for M0 sign-off
 
 - [x] Does the unmodified build load and run on **1.7.104**? **Yes** (2026-09-23): all hooks installed without errors; a save loaded and rendered with no crash.
-- [ ] Confirm in RenderDoc that `kPOST_ZPREPASS_COPY` at `Prepass()` time holds this frame's depth pre-pass, and which geometry the pre-pass skips (alpha-tested, first person?).
+- [x] Does the scene depth at `Prepass()` time hold this frame's complete depth pre-pass? **Yes** (M5, 2026-09-23). The M4 depth trace run at `Prepass()` matched 334,296 of 334,298 counted pixels against `Util::GetCurrentSceneDepthSRV(false)` (TerrainBlending active). Which geometry the pre-pass skips (first person?) is still unchecked.
 
 ## SkyrimRT feature (M1)
 
@@ -187,3 +187,17 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 - Camera capture: `SkyrimRT::Prepass()` (main deferred prepass) copies `frameBufferCached` + render size; the trace runs only if the capture's `frameCount` equals the frame being presented.
 - Grass: `GrassOptimizations::Hooks::LoadGrassType::lastGrassManager` (atomic, added for SkyrimRT) holds the game's `BGSGrassManager*`.
 - Overlay: the debug view is drawn bottom-right via `ImGui::Image` with UVs cropped to the render region.
+
+## SkyrimRT sun shadows (M5)
+
+- **The round trip now runs in `SkyrimRT::Prepass()`**, before the opaque pass. It happens at most once per game frame (`Sidecar::Submit`). `SkyrimRT::Reset()` (Present) calls `Sidecar::OnPresent`, which submits an untraced round trip only if Prepass didn't run one (menus, loading), then drives the dump. The M4 debug trace moved along with it, so it now compares against the depth *pre-pass*.
+- `Prepass()` is reached via `Main_RenderWorld_Start` → `Deferred::StartDeferred` → `PrepassPasses`. By then TerrainBlending has already blended the pre-pass depth: `TerrainBlending::Hooks::Main_RenderDepth` ends with `BlendPrepassDepths()`. So `Util::GetCurrentSceneDepthSRV(false)` holds this frame's pre-pass depth, and `kPOST_ZPREPASS_COPY` is only overwritten with the post-opaque depth later, in `Main_RenderWorld_BlendedDecals`.
+- `SkyrimRT` is last in `Feature::GetFeatureList()`, after `screenSpaceShadows` and `terrainBlending`. `ScreenSpaceShadows::Prepass()` returns early when `skyrimRT.ProvidesSunShadowMask()` is true. That decision is cached per frame, so both features agree, and `SkyrimRT::Prepass()` binds the RT mask at PS t45. This is the only edit to upstream CS code.
+- The mask is consumed only where `SCREEN_SPACE_SHADOWS` is compiled in, i.e. when the SSS feature is **loaded**. It's a CORE feature, but its runtime `Enable` toggle doesn't matter. Consumers: `Lighting.hlsl` (deferred, exteriors, `dirLightAngle >= 0`), `RunGrass.hlsl` and `DistantTree.hlsl` (`lerp(1, mask, 0.8)`). It **multiplies** the game's shadow-map term (`dirDetailedShadow`), so shadow-map shadows from actors, foliage and distant land remain.
+- Sun direction: the same source SSS uses, `currentAccumulator → activeShadowSceneNode → sunLight → light` as `NiDirectionalLight::GetWorldDirection()`. That vector points away from the light (model direction (1,0,0) is where the light shines), so the ray direction is its negation. At night this is the moon.
+- Weapons worn by actors (e.g. on the back) are non-skinned `BSTriShape`s under the actor's 3D, so the M3 walk puts them in the TLAS as static geometry with this frame's world transform. They cast and receive RT shadows; the skinned body does not until M7.
+- The game's `kSHADOW_MASK` render target is already written by `Prepass()` time. `.x` is the sun shadow-map visibility, and it matched the RT mask 98% where both see the same casters.
+- `RE::BSGraphics::RenderTargetData` members are the real `::ID3D11*` types (forward-declared globally in `RE/R/RenderTargetData.h`), unlike CommonLib's `RE::ID3D11Buffer`.
+- Code: `src/RT/SunShadows.{h,cpp}` (three DXC passes: `SunShadowTraceCS`, `SunShadowTemporalCS`, `SunShadowSpatialCS`, plus `SunShadowCommon.hlsli`); `src/RT/SharedTexture.{h,cpp}` (the D3D11-created shared-texture helper, now shared with `Raytracer`); `src/RT/FrameCapture.{h,cpp}` (D3D11 `kFRAMEBUFFER` → staging, polled with `D3D11_MAP_FLAG_DO_NOT_WAIT`).
+- `cmake/SkyrimRTShaders.cmake` now passes `-I src/RT/Shaders` and makes every `.hlsl` depend on the `.hlsli` files.
+- Dump sequence (F10): the next round trip copies the masks, and on shadow frames also the game's `kSHADOW_MASK` for a confusion matrix. The following Present captures `final_rt_on`. SSS then takes over for 3 frames (`Sidecar::IsSunShadowSuppressed`), and the Present of the third captures `final_rt_off`. The JSON is written once the fence and both captures are done.

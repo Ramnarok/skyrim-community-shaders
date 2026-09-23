@@ -23,8 +23,10 @@ namespace RT
 		SceneStats scene;
 		TimingSeries sceneTraversalMs;
 		MeshCacheStats cache;
-		bool haveTrace = false;  ///< the dump frame was traced (images are this frame's)
+		bool haveTrace = false;  ///< the dump frame ran the M4 debug trace (debug view images are this frame's)
 		TraceStats trace;
+		bool haveShadows = false;  ///< the dump frame traced M5 sun shadows (mask images and the RT on/off pair)
+		SunShadowStats shadows;
 		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
 	};
 

@@ -100,20 +100,54 @@ namespace RT
 		return true;
 	}
 
-	void CaptureCamera(const float* a_viewProjInverse, const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame)
+	void CaptureCamera(const float* a_viewProjInverse, const float* a_viewProj, const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame)
 	{
 		camera.valid = true;
 		camera.gameFrame = a_gameFrame;
 		std::memcpy(camera.viewProjInverse, a_viewProjInverse, sizeof(camera.viewProjInverse));
+		std::memcpy(camera.viewProj, a_viewProj, sizeof(camera.viewProj));
 		camera.posAdjust = { a_posAdjust[0], a_posAdjust[1], a_posAdjust[2] };
 		camera.renderWidth = a_renderWidth;
 		camera.renderHeight = a_renderHeight;
 	}
 
-	void OnFrame(bool a_trace)
+	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows)
 	{
 		if (sidecar)
-			sidecar->OnFrame(globals::state->frameCount, camera, a_trace);
+			sidecar->Submit(globals::state->frameCount, camera, a_debugTrace, a_shadows);
+	}
+
+	void OnFrame()
+	{
+		if (sidecar)
+			sidecar->OnPresent(globals::state->frameCount);
+	}
+
+	bool CanTraceSunShadows()
+	{
+		return sidecar && sidecar->CanTraceSunShadows();
+	}
+
+	bool IsSunShadowSuppressed()
+	{
+		return sidecar && sidecar->IsSunShadowSuppressed();
+	}
+
+	ID3D11ShaderResourceView* AcquireSunShadowMask()
+	{
+		return sidecar ? sidecar->AcquireSunShadowMask(globals::state->frameCount) : nullptr;
+	}
+
+	ID3D11ShaderResourceView* GetSunShadowViewSRV()
+	{
+		const auto* shadows = sidecar ? sidecar->GetSunShadows() : nullptr;
+		return (shadows && shadows->GetStats().haveResult) ? shadows->GetViewSRV() : nullptr;
+	}
+
+	const SunShadowStats* GetSunShadowStats()
+	{
+		const auto* shadows = sidecar ? sidecar->GetSunShadows() : nullptr;
+		return shadows ? &shadows->GetStats() : nullptr;
 	}
 
 	ID3D11ShaderResourceView* GetDebugViewSRV(uint32_t a_view)
@@ -145,7 +179,7 @@ namespace RT
 	void RequestDebugDump()
 	{
 		if (sidecar) {
-			sidecar->RequestDebugDump(globals::state->frameCount);
+			sidecar->RequestDebugDump();
 			logger::info("[SkyrimRT] Debug dump requested at frame {}", globals::state->frameCount);
 		}
 	}
