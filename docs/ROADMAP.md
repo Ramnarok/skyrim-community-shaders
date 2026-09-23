@@ -69,7 +69,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 - Walking between cells shows evictions happening, with no crashes.
 
 **Kickoff prompt:**
-> Implement M3: static non-skinned geometry and terrain only, with the mesh cache and budgeted copies into shared D3D12 buffers. Decode the vertex format from BSGraphics::VertexDesc, verifying the bits in the headers. No BLAS yet. Give me a test route through three locations and check the dumps.
+> Implement M3: static non-skinned geometry and terrain only, with the mesh cache and budgeted uploads into D3D12 buffers. Buffers can't be shared between the devices (M2 spike, ARCHITECTURE §2), so upload from `TriShape::rawVertexData`/`rawIndexData` when present, else from a D3D11 staging readback polled without CPU waits; report how often each path is used. Decode the vertex format from BSGraphics::VertexDesc, verifying the bits in the headers. No BLAS yet. Give me a test route through three locations and check the dumps.
 
 ## M4 — Acceleration structures + debug view
 
@@ -100,7 +100,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 ## M7 — Actors + alpha
 
 **Accept when:**
-- Skinned meshes get compute skinning into a shared buffer plus a BLAS refit each frame.
+- Skinned meshes get compute skinning plus a BLAS refit each frame. (Buffers can't be shared, so skinning runs on the D3D12 side from uploaded bind-pose data and bone matrices, or bone data travels through a shared texture; decide in M7.)
 - `BSDynamicTriShape` is updated.
 - Foliage alpha-tests using the v2 texture path, for foliage only.
 - The depth-mismatch metric now includes actors and still stays under 2%.
