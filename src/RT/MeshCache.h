@@ -72,6 +72,20 @@ namespace RT
 		std::vector<VertexFormatStats> formats;
 	};
 
+	/** @brief Location of a resident mesh's data in the mesh pool. */
+	struct ResidentMesh
+	{
+		uint32_t vertexPage = 0;
+		uint32_t vertexOffset = 0;
+		uint32_t indexPage = 0;
+		uint32_t indexOffset = 0;
+		uint32_t stride = 0;
+		uint32_t vertexCount = 0;
+		uint32_t triangleCount = 0;
+		D3D12_GPU_VIRTUAL_ADDRESS vertexAddress = 0;
+		D3D12_GPU_VIRTUAL_ADDRESS indexAddress = 0;
+	};
+
 	/** @brief One TLAS instance for this frame, resolved from a scene candidate. */
 	struct InstanceRecord
 	{
@@ -86,6 +100,7 @@ namespace RT
 		bool terrain = false;
 		bool alphaTested = false;
 		bool alphaBlended = false;
+		bool actor = false;  // M7: skinned, positions already camera-relative world space
 	};
 
 	/**
@@ -122,7 +137,10 @@ namespace RT
 		 */
 		void BuildBLASes(ID3D12GraphicsCommandList4* a_list, uint64_t a_frame, D3D12_GPU_VIRTUAL_ADDRESS a_scratch, uint64_t a_scratchBytes, uint64_t& a_scratchUsed);
 
-		/** @brief Resolves this frame's candidates to instances whose mesh has a BLAS. */
+		/** @brief Where a resident mesh's data lives (M7: skinned bind-pose source). False if not resident. */
+		bool FindResident(const GeometryCandidate& a_candidate, ResidentMesh& a_out) const;
+
+		/** @brief Resolves this frame's non-skinned candidates to instances whose mesh has a BLAS. */
 		void GatherInstances(const std::vector<GeometryCandidate>& a_candidates, std::vector<InstanceRecord>& a_out) const;
 
 		const BufferPool& GetMeshPool() const { return pool; }
@@ -178,6 +196,7 @@ namespace RT
 		{
 			State state = State::kQueued;
 			bool terrain = false;
+			bool skinned = false;
 			bool queued = false;
 			uint64_t lastSeenFrame = 0;
 			uint64_t uploadFence = 0;

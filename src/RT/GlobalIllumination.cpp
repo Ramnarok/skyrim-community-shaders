@@ -41,6 +41,7 @@ namespace RT
 
 		constexpr uint32_t kMaskStatic = 0x01;  // InstanceMask bits, as Raytracer::Record assigns them
 		constexpr uint32_t kMaskTerrain = 0x02;
+		constexpr uint32_t kMaskActor = 0x04;
 		constexpr uint32_t kMaskAlphaTested = 0x08;
 		constexpr float kNormalBias = 1.0f;
 		constexpr float kDistanceBias = 0.002f;
@@ -367,7 +368,7 @@ namespace RT
 	}
 
 	void GlobalIllumination::Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
-		const BufferPool& a_meshPool, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight,
+		const BufferPool& a_meshPool, const SkinnedMeshes* a_skinned, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight,
 		const GIParams& a_params, bool a_captureDump)
 	{
 		const bool historyValid = haveHistory && a_camera.gameFrame == historyGameFrame + 1;
@@ -391,7 +392,7 @@ namespace RT
 		c->renderSize[0] = a_renderWidth;
 		c->renderSize[1] = a_renderHeight;
 		c->frameIndex = frameIndex;
-		c->casterMask = kMaskStatic | kMaskTerrain | (a_params.alphaTestedCasters ? kMaskAlphaTested : 0u);
+		c->casterMask = kMaskStatic | kMaskTerrain | kMaskActor | (a_params.alphaTestedCasters ? kMaskAlphaTested : 0u);
 		c->normalBias = kNormalBias;
 		c->distanceBias = kDistanceBias;
 		c->skyViewZ = kSkyViewZ;
@@ -405,7 +406,11 @@ namespace RT
 		c->viewMode = a_params.viewMode;
 
 		auto first = heap->GetCPUDescriptorHandleForHeapStart();
-		UpdatePageDescriptors(device, a_meshPool, first, descriptorSize, describedPageSerials.data(), kMeshPageSlots);
+		UpdatePageDescriptors(device, a_meshPool, first, descriptorSize, describedPageSerials.data(), SkinnedMeshes::kFirstPageSlot);
+		if (a_skinned) {
+			first.ptr += static_cast<SIZE_T>(SkinnedMeshes::kFirstPageSlot) * descriptorSize;
+			UpdatePageDescriptors(device, a_skinned->GetOutputPool(), first, descriptorSize, describedPageSerials.data() + SkinnedMeshes::kFirstPageSlot, SkinnedMeshes::kPageSlots);
+		}
 
 		const D3D12_GPU_VIRTUAL_ADDRESS uploadVA = uploads[a_slot]->GetGPUVirtualAddress();
 		auto table = [&](uint32_t a_index) {

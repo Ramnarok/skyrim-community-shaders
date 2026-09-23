@@ -543,6 +543,10 @@ namespace RT
 				data.shadows = raytracer.GetSunShadows().GetStats();
 			}
 		}
+		if (const auto* skinned = raytracerReady ? raytracer.GetSkinned() : nullptr) {
+			data.haveSkinned = true;
+			data.skinned = skinned->GetStats();
+		}
 		data.giCompiledIn = IsGICompiledIn();
 		data.materials = materialTable.GetStats();
 #if defined(SKYRIMRT_NRD)
@@ -644,7 +648,7 @@ namespace RT
 #endif
 
 		// Scene first: the TLAS is built from this frame's instances.
-		inWorld = CollectScene(candidates, exclusions, loadedArea, sceneStats);
+		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);
 		// Albedos for the instance data; the candidates' texture pointers are only valid this frame.
@@ -658,18 +662,6 @@ namespace RT
 		const SunShadowParams* shadows = (buildScene && a_shadows && raytracer.SunShadowsReady()) ? a_shadows : nullptr;
 		const bool dumpThisFrame = dumpRequested && dumpStage == DumpStage::kIdle;
 		const bool compareShadowMap = dumpThisFrame && shadows;
-
-		auto* ctx = d3d11Context.get();
-
-		// D3D11 -> D3D12: everything the game queued so far (including last frame's reads of the shared textures)
-		// happens before D3D12 may touch them again.
-		ctx->Begin(d3d11Disjoint[slot].get());
-		ctx->End(d3d11Begin[slot].get());
-		if (buildScene)
-			raytracer.CopyInputs(compareShadowMap);
-		const uint64_t toD3D12 = ++fenceValue;
-		ctx->Signal(d3d11Fence.get(), toD3D12);
-		ctx->Flush();  // let the D3D12 queue start as soon as possible instead of at Present
 
 		auto* allocator = allocators[slot].get();
 		allocator->Reset();
@@ -711,9 +703,22 @@ namespace RT
 		// M4/M5: BLAS builds, TLAS, debug trace, sun shadows, all before the signal D3D11 waits on, so this frame's
 		// opaque pass lights with this frame's mask.
 		if (buildScene)
-			raytracer.Record(commandList.get(), slot, framesSubmitted, meshCache, candidates, exclusions, loadedArea, a_camera,
+			raytracer.Record(commandList.get(), slot, framesSubmitted, meshCache, candidates, skinnedScene, exclusions, loadedArea, a_camera,
 				debugTrace, shadows, compareShadowMap, dumpThisFrame);
 		commandList->Close();
+
+		// D3D11 -> D3D12: everything the game queued so far (including last frame's reads of the shared textures)
+		// happens before D3D12 may touch them again. Signalled only after recording: the D3D11 GPU waits from here
+		// until D3D12 finishes, so CPU recording time must not fall inside that window (M7: ~3,600 skinning/refit
+		// commands made it ~1 ms).
+		auto* ctx = d3d11Context.get();
+		ctx->Begin(d3d11Disjoint[slot].get());
+		ctx->End(d3d11Begin[slot].get());
+		if (buildScene)
+			raytracer.CopyInputs(compareShadowMap);
+		const uint64_t toD3D12 = ++fenceValue;
+		ctx->Signal(d3d11Fence.get(), toD3D12);
+		ctx->Flush();  // let the D3D12 queue start as soon as possible instead of at Present
 
 		queue->Wait(fence.get(), toD3D12);
 		ID3D12CommandList* lists[] = { commandList.get() };
@@ -822,23 +827,22 @@ namespace RT
 		// the TLAS and instance data GI reads are that slot's.
 		const uint32_t slot = sceneSlot;
 		auto* ctx = d3d11Context.get();
-		ctx->Begin(giDisjoint[slot].get());
-		ctx->End(giBegin[slot].get());
-		const bool inputsReady = gi->CopyInputs();
-		if (!inputsReady) {
-			ctx->End(giEnd[slot].get());
-			ctx->End(giDisjoint[slot].get());
+		// The copies are queued on D3D11 now (they also create the shared inputs on first use, which Record needs);
+		// the signal waits until the list is recorded, so CPU recording time isn't spent with the D3D11 GPU stalled.
+		if (!gi->CopyInputs())
 			return {};
-		}
-		const uint64_t toD3D12 = ++fenceValue;
-		ctx->Signal(d3d11Fence.get(), toD3D12);
-		ctx->Flush();
 
 		const bool captureDump = dumpStage == DumpStage::kCaptureOn && dumpGameFrame == a_gameFrame;
 		commandList->Reset(allocators[slot].get(), nullptr);
-		gi->Record(commandList.get(), slot, raytracer.GetTlasAddress(), raytracer.GetInstanceDataAddress(slot), meshCache.GetMeshPool(),
+		gi->Record(commandList.get(), slot, raytracer.GetTlasAddress(), raytracer.GetInstanceDataAddress(slot), meshCache.GetMeshPool(), raytracer.GetSkinned(),
 			sceneCamera, sceneRenderWidth, sceneRenderHeight, a_params, captureDump);
 		commandList->Close();
+
+		ctx->Begin(giDisjoint[slot].get());
+		ctx->End(giBegin[slot].get());
+		const uint64_t toD3D12 = ++fenceValue;
+		ctx->Signal(d3d11Fence.get(), toD3D12);
+		ctx->Flush();
 
 		queue->Wait(fence.get(), toD3D12);
 		ID3D12CommandList* lists[] = { commandList.get() };

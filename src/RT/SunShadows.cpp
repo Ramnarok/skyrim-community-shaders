@@ -41,6 +41,7 @@ namespace RT
 		constexpr uint32_t kMaskStatic = 0x01;
 		constexpr uint32_t kMaskTerrain = 0x02;
 		constexpr uint32_t kMaskAlphaTested = 0x08;
+		constexpr uint32_t kMaskActor = 0x04;  // M7 skinned
 
 		constexpr uint64_t kUploadBytes = 4096;
 		constexpr uint64_t kConstantsOffset = 0;
@@ -344,7 +345,7 @@ namespace RT
 		constants->prevRenderSize[1] = prevRenderHeight;
 		constants->frameIndex = frameIndex;
 		constants->historyValid = historyValid ? 1u : 0u;
-		constants->casterMask = kMaskStatic | kMaskTerrain | (a_params.alphaTestedCasters ? kMaskAlphaTested : 0u);
+		constants->casterMask = kMaskStatic | kMaskTerrain | kMaskActor | (a_params.alphaTestedCasters ? kMaskAlphaTested : 0u);
 		constants->flags = a_compareShadowMap ? kFlagCompareShadowMap : 0u;
 		constants->normalBias = a_params.normalBias;
 		constants->distanceBias = a_params.distanceBias;

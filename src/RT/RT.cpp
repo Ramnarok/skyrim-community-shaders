@@ -145,6 +145,13 @@ namespace RT
 		return sidecar ? sidecar->SubmitGI(globals::state->frameCount, a_params) : GIOutputs{};
 	}
 
+	const SkinnedStats* GetRaytracerSkinnedStats()
+	{
+		const auto* raytracer = sidecar ? sidecar->GetRaytracer() : nullptr;
+		const auto* skinned = raytracer ? raytracer->GetSkinned() : nullptr;
+		return skinned ? &skinned->GetStats() : nullptr;
+	}
+
 	const GIStats* GetGIStats()
 	{
 		return sidecar ? sidecar->GetGIStats() : nullptr;

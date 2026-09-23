@@ -138,7 +138,7 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	ray.TMax = maxT;
 
 	RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
-	query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskStatic | kMaskTerrain | kMaskAlphaTested, ray);
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskStatic | kMaskTerrain | kMaskAlphaTested | kMaskActor, ray);
 	query.Proceed();
 	const bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 	const float t = hit ? query.CommittedRayT() : maxT;

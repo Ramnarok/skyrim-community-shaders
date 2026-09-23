@@ -340,6 +340,7 @@ namespace RT
 				continue;
 
 			entry.terrain = candidate.terrain;
+			entry.skinned = candidate.skinned;
 			entry.vertexCount = candidate.vertexCount;
 			entry.triangleCount = candidate.triangleCount;
 
@@ -489,6 +490,8 @@ namespace RT
 			// recorded before this frame's Update() marks meshes seen, so "seen last frame" is the freshest mark.
 			if (entry.state != State::kResident || entry.blasAllocation.IsValid() || entry.blasFailed || entry.lastSeenFrame + 1 < a_frame)
 				continue;
+			if (entry.skinned)
+				continue;  // bind-pose data only: SkinnedMeshes builds per-instance BLASes from the skinned positions
 
 			// ARCHITECTURE §3/M3: positions are float3 at offset 0; stride from the VertexDesc nibble; 16-bit indices.
 			D3D12_RAYTRACING_GEOMETRY_DESC geometry{};
@@ -532,10 +535,30 @@ namespace RT
 		}
 	}
 
+	bool MeshCache::FindResident(const GeometryCandidate& a_candidate, ResidentMesh& a_out) const
+	{
+		auto it = entries.find(MakeKey(a_candidate));
+		if (it == entries.end() || it->second.state != State::kResident)
+			return false;
+		const auto& entry = it->second;
+		a_out = { .vertexPage = entry.vertexAllocation.page,
+			.vertexOffset = static_cast<uint32_t>(entry.vertexAllocation.offset),
+			.indexPage = entry.indexAllocation.page,
+			.indexOffset = static_cast<uint32_t>(entry.indexAllocation.offset),
+			.stride = entry.stride,
+			.vertexCount = entry.vertexCount,
+			.triangleCount = entry.triangleCount,
+			.vertexAddress = pool.GetAddress(entry.vertexAllocation),
+			.indexAddress = pool.GetAddress(entry.indexAllocation) };
+		return true;
+	}
+
 	void MeshCache::GatherInstances(const std::vector<GeometryCandidate>& a_candidates, std::vector<InstanceRecord>& a_out) const
 	{
 		a_out.clear();
 		for (const auto& candidate : a_candidates) {
+			if (candidate.skinned)
+				continue;
 			auto it = entries.find(MakeKey(candidate));
 			if (it == entries.end() || !it->second.blasAllocation.IsValid())
 				continue;

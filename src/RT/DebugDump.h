@@ -33,6 +33,8 @@ namespace RT
 		bool giAvailable = false;   ///< GI set up successfully
 		bool haveGI = false;        ///< the dump frame traced M6 GI
 		GIStats gi;
+		bool haveSkinned = false;
+		SkinnedStats skinned;
 		MaterialTableStats materials;
 		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
 	};

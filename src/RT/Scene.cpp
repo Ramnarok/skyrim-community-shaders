@@ -9,6 +9,8 @@ namespace RT
 		using Type = RE::BSGeometry::Type;
 		using Feature = RE::BSShaderMaterial::Feature;
 
+		void FillMaterial(RE::BSLightingShaderProperty* a_property, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& a_geometryData, GeometryCandidate& a_candidate);
+
 		GeometryCategory Classify(RE::BSGeometry* a_geometry, GeometryCandidate& a_candidate)
 		{
 			switch (a_geometry->GetType().get()) {
@@ -17,7 +19,7 @@ namespace RT
 			case Type::kParticleShaderDynamicTriShape:
 				return GeometryCategory::kParticles;
 			case Type::kDynamicTriShape:
-				return GeometryCategory::kDynamic;
+				break;  // M7b: FaceGen heads, extracted as skinned with CPU-side positions
 			case Type::kMultiStreamInstanceTriShape:
 			case Type::kInstanceGroup:
 				return GeometryCategory::kInstanced;
@@ -34,13 +36,18 @@ namespace RT
 			}
 
 			const auto& geometryData = a_geometry->GetGeometryRuntimeData();
-			if (geometryData.skinInstance)
-				return GeometryCategory::kSkinned;
-
 			auto* shaderProperty = geometryData.shaderProperty.get();
 			auto* lightingProperty = netimmerse_cast<RE::BSLightingShaderProperty*>(shaderProperty);
+			const bool dynamic = a_geometry->GetType().get() == Type::kDynamicTriShape;
 			if (!lightingProperty)
-				return shaderProperty ? GeometryCategory::kEffectOrWater : GeometryCategory::kOther;
+				return dynamic ? GeometryCategory::kDynamic : geometryData.skinInstance ? GeometryCategory::kSkinned : shaderProperty ? GeometryCategory::kEffectOrWater : GeometryCategory::kOther;
+
+			// Material first: skinned shapes need it too (M7).
+			FillMaterial(lightingProperty, geometryData, a_candidate);
+			if (dynamic)
+				return GeometryCategory::kDynamic;
+			if (geometryData.skinInstance)
+				return GeometryCategory::kSkinned;
 
 			auto* triShape = a_geometry->AsTriShape();
 			auto* rendererData = geometryData.rendererData;
@@ -58,7 +65,13 @@ namespace RT
 			a_candidate.rendererData = rendererData;
 			a_candidate.vertexCount = counts.vertexCount;
 			a_candidate.triangleCount = counts.triangleCount;
+			return a_candidate.terrain ? GeometryCategory::kTerrain : GeometryCategory::kStaticMesh;
+		}
 
+		void FillMaterial(RE::BSLightingShaderProperty* a_property, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& a_geometryData, GeometryCandidate& a_candidate)
+		{
+			auto* lightingProperty = a_property;
+			const auto& geometryData = a_geometryData;
 			// Same test CS uses for landscape (TruePBR.cpp): the lighting material's feature.
 			if (auto* material = lightingProperty->material) {
 				const auto feature = material->GetFeature();
@@ -82,16 +95,117 @@ namespace RT
 				a_candidate.alphaTested = alpha->GetAlphaTesting();
 				a_candidate.alphaBlended = alpha->GetAlphaBlending();
 			}
-
-			return a_candidate.terrain ? GeometryCategory::kTerrain : GeometryCategory::kStaticMesh;
 		}
 
 		struct WalkOutput
 		{
 			std::vector<GeometryCandidate>& candidates;
+			SkinnedScene& skinned;
 			std::vector<ExclusionBound>& exclusions;
 			SceneStats& stats;
 		};
+
+		/**
+		 * @brief M7: one candidate per skin partition (bind-pose buffers + this shape's material) and its bone palette,
+		 * boneWorld * skinToBone for each palette bone, computed now while the game's pointers are valid.
+		 * @return False if nothing usable was found; the caller then keeps an exclusion bound as before.
+		 */
+		bool CollectSkinned(RE::BSGeometry* a_geometry, const GeometryCandidate& a_material, WalkOutput& a_out)
+		{
+			auto* skin = a_geometry->GetGeometryRuntimeData().skinInstance.get();
+			auto* skinData = skin ? skin->skinData.get() : nullptr;
+			auto* partitions = skin ? skin->skinPartition.get() : nullptr;
+			if (!skinData || !partitions || !skin->boneWorldTransforms || partitions->numPartitions == 0)
+				return false;
+
+			// M7b: a dynamic shape's positions come from its CPU-side array, which the game rewrites for face morphs.
+			const uint8_t* dynamicData = nullptr;
+			uint32_t dynamicStride = 0;
+			uint32_t dynamicVertexCount = 0;
+			uint32_t dynamicVersion = 0;
+			if (auto* dynamicShape = a_geometry->AsDynamicTriShape()) {
+				const auto& dynamicRuntime = dynamicShape->GetDynamicTrishapeRuntimeData();
+				dynamicVertexCount = dynamicShape->GetTrishapeRuntimeData().vertexCount;
+				dynamicStride = dynamicVertexCount ? dynamicRuntime.dataSize / dynamicVertexCount : 0;
+				dynamicData = static_cast<const uint8_t*>(dynamicRuntime.dynamicData);
+				dynamicVersion = dynamicRuntime.frameCount;
+				if (!dynamicData || dynamicStride < 12 || (dynamicStride % 4) != 0)
+					return false;
+			}
+			const uint32_t skinBones = skinData->GetBoneCount();
+
+			uint32_t accepted = 0;
+			for (uint32_t p = 0; p < partitions->numPartitions; p++) {
+				const auto& partition = partitions->partitions[p];
+				auto* buffers = partition.buffData;
+				bool usable = buffers && buffers->vertexBuffer && buffers->indexBuffer && partition.triangles > 0 && partition.numBones > 0 && partition.bones &&
+				              buffers->vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_SKINNED);
+				uint32_t stride = 0;
+				uint32_t vertexCount = 0;
+				if (usable) {
+					stride = static_cast<uint32_t>(*reinterpret_cast<const uint64_t*>(&buffers->vertexDesc) & 0xF) * 4;
+					// The game's buffer size is authoritative for the vertex count (partitions may share one buffer).
+					D3D11_BUFFER_DESC desc{};
+					reinterpret_cast<::ID3D11Buffer*>(buffers->vertexBuffer)->GetDesc(&desc);
+					vertexCount = stride ? desc.ByteWidth / stride : 0;
+					usable = vertexCount > 0 && vertexCount <= 65536 && (!dynamicData || vertexCount <= dynamicVertexCount);
+				}
+				const uint32_t paletteOffset = static_cast<uint32_t>(a_out.skinned.palettes.size());
+				for (uint32_t k = 0; usable && k < partition.numBones; k++) {
+					const uint32_t bone = partition.bones[k];
+					const RE::NiTransform* boneWorld = bone < skinBones ? skin->boneWorldTransforms[bone] : nullptr;
+					if (!boneWorld) {
+						usable = false;
+						break;
+					}
+					const RE::NiTransform m = *boneWorld * skinData->GetBoneDataSkinToBone(bone);
+					const float translate[3] = { m.translate.x, m.translate.y, m.translate.z };
+					for (int r = 0; r < 3; r++) {
+						for (int c = 0; c < 3; c++)
+							a_out.skinned.palettes.push_back(m.rotate.entry[r][c] * m.scale);
+						a_out.skinned.palettes.push_back(translate[r]);
+					}
+				}
+				if (!usable) {
+					a_out.skinned.palettes.resize(paletteOffset);
+					a_out.stats.skinnedRejectedPartitions++;
+					continue;
+				}
+
+				GeometryCandidate candidate = a_material;
+				candidate.rendererData = buffers;
+				std::memcpy(&candidate.vertexDesc, &buffers->vertexDesc, sizeof(candidate.vertexDesc));
+				candidate.vertexCount = vertexCount;
+				candidate.triangleCount = partition.triangles;
+				candidate.skinned = true;
+				candidate.world = a_geometry->world;
+
+				const auto& desc = buffers->vertexDesc;
+				SkinnedPartition entry{};
+				entry.skinInstance = skin;
+				entry.partitionIndex = p;
+				entry.candidateIndex = static_cast<uint32_t>(a_out.candidates.size());
+				entry.paletteOffset = paletteOffset;
+				entry.boneCount = partition.numBones;
+				entry.skinningOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_SKINNING);
+				// Positions are float3 + pad (16 B) unless the next attribute starts at 8 (4 x half).
+				entry.dynamicData = dynamicData;
+				entry.dynamicStride = dynamicStride;
+				entry.dynamicVertexCount = dynamicVertexCount;
+				entry.dynamicVersion = dynamicVersion;
+				entry.halfPositions = desc.HasFlag(RE::BSGraphics::Vertex::VF_UV) ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0) == 8 :
+				                                                                      entry.skinningOffset == 8;
+				a_out.candidates.push_back(candidate);
+				a_out.skinned.partitions.push_back(entry);
+				a_out.stats.skinnedPartitions++;
+				a_out.stats.skinnedBones += partition.numBones;
+				a_out.stats.skinnedHalfPositions += entry.halfPositions;
+				accepted++;
+			}
+			if (accepted > 0)
+				a_out.stats.skinnedShapes++;
+			return accepted > 0;
+		}
 
 		void AddExclusion(RE::NiAVObject* a_object, GeometryCategory a_category, WalkOutput& a_out)
 		{
@@ -141,7 +255,19 @@ namespace RT
 					a_out.candidates.push_back(candidate);
 					break;
 				case GeometryCategory::kSkinned:
+					if (!CollectSkinned(geometry, candidate, a_out)) {
+						a_out.stats.skinnedRejectedShapes++;
+						AddExclusion(geometry, category, a_out);
+					}
+					break;
 				case GeometryCategory::kDynamic:
+					if (CollectSkinned(geometry, candidate, a_out)) {
+						a_out.stats.dynamicShapes++;
+					} else {
+						a_out.stats.dynamicRejectedShapes++;
+						AddExclusion(geometry, category, a_out);
+					}
+					break;
 				case GeometryCategory::kInstanced:
 				case GeometryCategory::kLOD:
 				case GeometryCategory::kOther:
@@ -183,15 +309,15 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats);
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats);
 
 		// Last line of defence: reading the game's scene graph can still race with cell loading in ways the
 		// loading-menu check doesn't cover. An access violation drops this frame's scene instead of the game.
 		// Kept free of C++ objects so __try is allowed.
-		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool& a_faulted)
+		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool& a_faulted)
 		{
 			__try {
-				return CollectSceneUnguarded(a_out, a_exclusions, a_area, a_stats);
+				return CollectSceneUnguarded(a_out, a_skinned, a_exclusions, a_area, a_stats);
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				a_faulted = true;
 				return false;
@@ -199,9 +325,11 @@ namespace RT
 		}
 	}
 
-	bool CollectScene(std::vector<GeometryCandidate>& a_out, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats)
+	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats)
 	{
 		a_out.clear();
+		a_skinned.partitions.clear();
+		a_skinned.palettes.clear();
 		a_exclusions.clear();
 		a_area = {};
 		a_stats = {};
@@ -213,12 +341,14 @@ namespace RT
 			return false;
 
 		bool faulted = false;
-		const bool collected = CollectSceneGuarded(a_out, a_exclusions, a_area, a_stats, faulted);
+		const bool collected = CollectSceneGuarded(a_out, a_skinned, a_exclusions, a_area, a_stats, faulted);
 		if (faulted) {
 			static uint32_t faults = 0;
 			if (++faults <= 10)
 				logger::warn("[SkyrimRT] Scene walk hit an access violation (#{}); frame skipped", faults);
 			a_out.clear();
+			a_skinned.partitions.clear();
+			a_skinned.palettes.clear();
 			a_exclusions.clear();
 			a_area = {};
 			a_stats = {};
@@ -229,7 +359,7 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats)
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats)
 		{
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes || !RE::PlayerCharacter::GetSingleton() || !RE::PlayerCharacter::GetSingleton()->Is3DLoaded())
@@ -245,7 +375,7 @@ namespace RT
 		const RE::TESObjectCELL* skyCell = worldSpace ? worldSpace->GetSkyCell() : nullptr;
 		const bool interior = tes->interiorCell != nullptr;
 
-		WalkOutput out{ a_out, a_exclusions, a_stats };
+		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats };
 		tes->ForEachCell([&](RE::TESObjectCELL* a_cell) {
 			auto* loadedData = a_cell ? a_cell->GetRuntimeData().loadedData : nullptr;
 			if (!loadedData || !loadedData->cell3D)
@@ -288,7 +418,8 @@ namespace RT
 		ankerl::unordered_dense::set<const void*> staticMeshes;
 		ankerl::unordered_dense::set<const void*> terrainMeshes;
 		for (const auto& candidate : a_out)
-			(candidate.terrain ? terrainMeshes : staticMeshes).insert(candidate.rendererData);
+			if (!candidate.skinned)
+				(candidate.terrain ? terrainMeshes : staticMeshes).insert(candidate.rendererData);
 		a_stats.uniqueStaticMeshes = static_cast<uint32_t>(staticMeshes.size());
 		a_stats.uniqueTerrainMeshes = static_cast<uint32_t>(terrainMeshes.size());
 

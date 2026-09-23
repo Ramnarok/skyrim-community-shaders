@@ -175,6 +175,26 @@ namespace RT
 			};
 		}
 
+		json SkinnedJson(const DebugDumpData& a_data)
+		{
+			const auto& k = a_data.skinned;
+			const auto& s = a_data.scene;
+			return {
+				{ "available", a_data.haveSkinned },
+				{ "scene", { { "shapes", s.skinnedShapes }, { "partitions", s.skinnedPartitions }, { "bones", s.skinnedBones }, { "half_position_partitions", s.skinnedHalfPositions },
+							   { "rejected_shapes", s.skinnedRejectedShapes }, { "rejected_partitions", s.skinnedRejectedPartitions }, { "dynamic_shapes", s.dynamicShapes }, { "dynamic_rejected_shapes", s.dynamicRejectedShapes } } },
+				{ "dynamic", { { "partitions", k.dynamicPartitions }, { "uploads_last_frame", k.dynamicUploadsLastFrame }, { "upload_kb_last_frame", k.dynamicUploadBytesLastFrame / 1024.0 }, { "waiting", k.dynamicWaiting } } },
+				{ "tlas_instances", k.instances },
+				{ "skinned_last_frame", k.skinnedLastFrame },
+				{ "vertices_last_frame", k.verticesLastFrame },
+				{ "waiting_for_mesh", k.waitingForMesh },
+				{ "blas", { { "built_last_frame", k.blasBuiltLastFrame }, { "refit_last_frame", k.blasRefitLastFrame }, { "skipped_scratch", k.blasSkippedScratch }, { "total_built", k.totalBuilt }, { "failed", k.failed } } },
+				{ "entries", k.entries },
+				{ "memory_mb", { { "output", k.outputBytes / (1024.0 * 1024.0) }, { "blas", k.blasBytes / (1024.0 * 1024.0) } } },
+				{ "timings_ms", { { "skin_and_blas", TimingJson(k.skinMs) } } },
+			};
+		}
+
 		json GlobalIlluminationJson(const DebugDumpData& a_data)
 		{
 			const auto& g = a_data.gi;
@@ -233,7 +253,8 @@ namespace RT
 			const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
 
 			return {
-				{ "milestone", "M6" },
+				{ "milestone", "M7" },
+				{ "skinned", SkinnedJson(a_data) },
 				{ "global_illumination", GlobalIlluminationJson(a_data) },
 				{ "sun_shadows", SunShadowsJson(a_data) },
 				{ "trace", TraceJson(a_data) },

@@ -20,6 +20,7 @@ namespace RT
 		constexpr uint32_t kMaskTerrain = 0x02;
 		constexpr uint32_t kMaskAlphaTested = 0x08;
 		constexpr uint32_t kMaskExclusion = 0x10;
+		constexpr uint32_t kMaskActor = 0x04;         // M7 skinned
 		constexpr uint32_t kMaskAlphaBlended = 0x20;  // not in the depth trace: drawn after the pre-water depth copy
 
 		// Descriptor heap layout.
@@ -266,6 +267,8 @@ namespace RT
 
 		// M5. A failure here only disables sun shadows; the debug trace keeps working.
 		sunShadowsReady = sunShadows.Init(device, d3d11Device, d3d11Context, width, height, rasterDepth.resource12.get(), copyDepthCS.get());
+		// M7. A failure only keeps actors out of the TLAS.
+		skinnedReady = skinned.Init(device);
 		return true;
 	}
 
@@ -273,6 +276,7 @@ namespace RT
 	{
 		timestampFrequency = a_frequency;
 		sunShadows.SetTimestampFrequency(a_frequency);
+		skinned.SetTimestampFrequency(a_frequency);
 	}
 
 	void Raytracer::CopyInputs(bool a_compareShadowMap)
@@ -309,11 +313,13 @@ namespace RT
 	{
 		auto first = heap->GetCPUDescriptorHandleForHeapStart();
 		first.ptr += static_cast<SIZE_T>(kFirstPageDescriptor) * descriptorSize;
-		RT::UpdatePageDescriptors(device, a_pool, first, descriptorSize, describedPageSerials.data(), kMeshPageSlots);
+		RT::UpdatePageDescriptors(device, a_pool, first, descriptorSize, describedPageSerials.data(), SkinnedMeshes::kFirstPageSlot);
+		first.ptr += static_cast<SIZE_T>(SkinnedMeshes::kFirstPageSlot) * descriptorSize;
+		RT::UpdatePageDescriptors(device, skinned.GetOutputPool(), first, descriptorSize, describedPageSerials.data() + SkinnedMeshes::kFirstPageSlot, SkinnedMeshes::kPageSlots);
 	}
 
 	void Raytracer::Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, uint64_t a_frame, MeshCache& a_cache,
-		const std::vector<GeometryCandidate>& a_candidates, const std::vector<ExclusionBound>& a_exclusions,
+		const std::vector<GeometryCandidate>& a_candidates, const SkinnedScene& a_skinned, const std::vector<ExclusionBound>& a_exclusions,
 		const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
 		bool a_compareShadowMap, bool a_captureDump)
 	{
@@ -327,10 +333,15 @@ namespace RT
 		// 1. BLAS builds for newly resident meshes (scratch below the TLAS / exclusion reservations).
 		uint64_t scratchUsed = 0;
 		a_cache.BuildBLASes(a_list, a_frame, scratchVA, kScratchBytes - tlasScratchBytes - exclusionScratchBytes, scratchUsed);
+		// M7: skin this frame's actors and build/refit their BLASes (same scratch range, same barrier below).
+		if (skinnedReady)
+			skinned.Record(a_list, a_slot, a_frame, a_cache, a_candidates, a_skinned, adjust, scratchVA, kScratchBytes - tlasScratchBytes - exclusionScratchBytes, scratchUsed);
 
 		// 2. Instances: row-major 3x4, camera-relative. NiTransform applies rotate * p * scale + translate
 		//    with rotate.entry[row][col] (CommonLib NiMatrix3::operator*), so rows map straight across.
 		a_cache.GatherInstances(a_candidates, instances);
+		if (skinnedReady)
+			skinned.GatherInstances(a_candidates, a_skinned, adjust, instances);
 		const uint32_t instanceCount = static_cast<uint32_t>(std::min<size_t>(instances.size(), kMaxInstances - 1));
 		auto* descs = reinterpret_cast<D3D12_RAYTRACING_INSTANCE_DESC*>(upload + kInstanceDescOffset);
 		auto* data = reinterpret_cast<InstanceGpu*>(upload + kInstanceDataOffset);
@@ -345,11 +356,11 @@ namespace RT
 				desc.Transform[row][3] = translate[row];
 			}
 			desc.InstanceID = i;
-			desc.InstanceMask = record.alphaBlended ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
+			desc.InstanceMask = record.actor ? kMaskActor : record.alphaBlended ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;
 			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride,
-				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u), record.albedo, 0 };
+				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u), record.albedo, 0 };
 		}
 
 		// 3. Exclusion AABBs (camera-relative) as one procedural BLAS, instanced with an identity transform.
@@ -505,6 +516,8 @@ namespace RT
 	{
 		if (sunShadowsReady)
 			sunShadows.CollectResults(a_slot);
+		if (skinnedReady)
+			skinned.CollectResults(a_slot);
 		if (!slotPending[a_slot])
 			return;
 		slotPending[a_slot] = false;

@@ -40,6 +40,30 @@ namespace RT
 		RE::NiTransform world;  // absolute world transform, copied this frame
 		ID3D11ShaderResourceView* diffuseSRV = nullptr;  // game-owned, valid this frame only (terrain: first layer)
 		uint32_t albedo = 0;  // M6: average diffuse colour, RGBA8 as the texture stores it (filled by MaterialTable)
+		bool skinned = false;  // M7: one skin partition; rendererData is the partition's bind-pose buffers
+	};
+
+	/** @brief M7: one skin partition of a skinned shape this frame, with its bone palette. */
+	struct SkinnedPartition
+	{
+		const void* skinInstance = nullptr;  // identity of the animated instance (with partitionIndex)
+		uint32_t partitionIndex = 0;
+		uint32_t candidateIndex = 0;  // into the frame's candidates (bind-pose mesh + material)
+		uint32_t paletteOffset = 0;   // first float in SkinnedScene::palettes (12 per bone: rows of a 3x4, absolute world)
+		uint32_t boneCount = 0;
+		uint32_t skinningOffset = 0;  // byte offset of the weights (4 x half) and bone indices (4 x uint8) in a vertex
+		bool halfPositions = false;   // positions are 4 x half instead of float3 + pad
+		// M7b BSDynamicTriShape (FaceGen heads): morphed bind-pose positions the game keeps on the CPU. Valid this frame only.
+		const uint8_t* dynamicData = nullptr;
+		uint32_t dynamicStride = 0;      // bytes per vertex (float3 at offset 0)
+		uint32_t dynamicVertexCount = 0;
+		uint32_t dynamicVersion = 0;     // BSDynamicTriShape frameCount: changes when the game rewrites the data
+	};
+
+	struct SkinnedScene
+	{
+		std::vector<SkinnedPartition> partitions;
+		std::vector<float> palettes;
 	};
 
 	/** @brief World-space bounding sphere of geometry the TLAS does not contain (actors, grass, alpha-tested, ...). */
@@ -72,12 +96,22 @@ namespace RT
 		uint32_t grassBounds = 0;           ///< exclusion bounds contributed by grass
 		uint32_t uniqueStaticMeshes = 0;
 		uint32_t uniqueTerrainMeshes = 0;
+		// M7 skinned geometry.
+		uint32_t skinnedShapes = 0;           ///< skinned shapes extracted (at least one partition)
+		uint32_t skinnedPartitions = 0;
+		uint32_t skinnedBones = 0;            ///< palette entries this frame
+		uint32_t skinnedHalfPositions = 0;    ///< partitions whose positions are 4 x half
+		uint32_t skinnedRejectedShapes = 0;   ///< no usable skin data: excluded as before
+		uint32_t skinnedRejectedPartitions = 0;
+		uint32_t dynamicShapes = 0;          ///< M7b: dynamic (FaceGen) shapes extracted as skinned
+		uint32_t dynamicRejectedShapes = 0;  ///< dynamic shapes without usable skin or position data: excluded
 		float traversalMs = 0.0f;
 	};
 
 	/**
-	 * @brief Collects static and terrain geometry from every loaded cell into a_out (cleared first).
+	 * @brief Collects static and terrain geometry, and (M7) skinned partitions with their bone palettes, from every
+	 * loaded cell into a_out / a_skinned (cleared first).
 	 * @return False when there is no world (main menu, loading), in which case a_out is empty.
 	 */
-	bool CollectScene(std::vector<GeometryCandidate>& a_out, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats);
+	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats);
 }

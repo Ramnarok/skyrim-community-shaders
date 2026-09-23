@@ -134,6 +134,21 @@ M2 measurements (RTX 4080 SUPER, ~57 fps, 13,207 frames): the D3D11→D3D12→D3
 - **Depth-mismatch metric definition** (`RayQueryDebugCS.hlsl`): relative distance difference > 1%. Pixels are counted unless sky, outside the loaded cells, or a *mismatch* that is (a) an alpha-tested hit, (b) raster-nearer inside the bounds of skinned/dynamic/LOD geometry, or (c) raster-nearer within 150 units above the terrain directly below (grass / ground clutter; this could also hide a missing object under 150 units, so it's counted separately). Matches are always counted. Coverage (counted / non-sky) was 45–95%.
 - Costs at 1280×720 (RTX 4080 SUPER): BLAS builds 0.15–0.29 ms (steady state; bursts on cell load), exclusion BLAS + TLAS 0.23–0.29 ms, trace + counters 0.23–0.50 ms. The whole M4 frame runs inside the M2 D3D11↔D3D12 round trip.
 
+### M7 as built (2026-09-24)
+
+- **M7a, skinned actors** (`src/RT/SkinnedMeshes.{h,cpp}`, `src/RT/Shaders/SkinCS.hlsl`):
+  - The scene walk (`Scene.cpp` `CollectSkinned`) emits one candidate per `NiSkinPartition` partition. Its `rendererData` is `partition.buffData`, and the vertex count comes from that buffer's D3D11 `ByteWidth / stride`.
+  - The bone palette (`*skin->boneWorldTransforms[bone] * skinData->GetBoneDataSkinToBone(bone)`, one row-major 3×4 per palette bone) is computed during the walk.
+  - The mesh cache uploads bind-pose VB/IB as usual but skips BLAS/TLAS for `skinned` entries (`FindResident` exposes their location).
+  - Per frame, per (skinInstance, partition): `SkinCS` does linear-blend skinning (4 half weights + 4 byte indices at `GetAttributeOffset(VA_SKINNING)`, partition-local palette indices) into float3 camera-relative positions in `outputPool`.
+  - The BLAS is built with `ALLOW_UPDATE | PREFER_FAST_BUILD`, refit every frame, and fully rebuilt every 60 frames. The TLAS instance uses an identity transform with mask 0x04; instance flag 8 = actor.
+  - Skinned output pages occupy mesh-page descriptor slots 48–63 (the mesh pool uses 0–47) in both the Raytracer and GI heaps, so `GeometricNormal` works on actors.
+  - Actors now cast RT sun shadows, occlude and bounce GI, and count in the M4 depth metric.
+  - Measured in the Whiterun market: 800–890 skinned shapes, 1,650–1,810 partitions, ~830k vertices, 0 rejected, 0 failed. Skinning + refit costs 0.16–0.19 ms GPU. Depth mismatch including actors: 0.001–0.03%. Positions were float3 (no half-position partitions seen).
+- **M7b, `BSDynamicTriShape` (FaceGen heads):** these are skinned too. `dynamicData` (the CPU-side morphed positions, `dataSize / vertexCount` stride) overrides the bind-pose positions in `SkinCS`. It's re-uploaded only when `DYNAMIC_TRISHAPE_RUNTIME_DATA::frameCount` changes (8 MB/frame budget). Measured: 49 heads, 0 rejected; pixels excluded as "occluder not in TLAS" dropped to 0; no re-uploads while standing (frameCount stable).
+- **Hand-off fix:** both hand-offs now record the D3D12 list **before** D3D11 signals. Recording after the signal left the D3D11 GPU waiting on CPU recording; with M7's ~3,600 commands that measured +1.1 ms. After the fix the pre-opaque hand-off is back to 0.92 ms (shadows, skinning, BLAS/TLAS all included) and GI to 0.79 ms.
+- **Open:** CPU submit is now ~3.0 ms per frame (scene walk + palettes); candidate for walking every N frames or caching per-reference. **M7c** (alpha-tested foliage via a D3D11-decoded alpha atlas + non-opaque geometry in RayQuery) is next.
+
 ## 5. Tracing: inline RayQuery first
 
 Start with **DXR 1.1 inline `RayQuery` in compute shaders**. It avoids state objects and shader binding tables, and it's a much smaller surface area to debug. Move to a full `DispatchRays` pipeline only if we need many hit shaders.

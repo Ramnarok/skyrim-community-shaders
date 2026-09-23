@@ -15,10 +15,12 @@ struct InstanceData  // mirrors InstanceGpu in Raytracer.cpp
 // InstanceData.Flags bits, mirrored in Raytracer.cpp
 static const uint kInstanceTerrain = 1;
 static const uint kInstanceAlphaTested = 2;
+static const uint kInstanceActor = 8;
 
 // InstanceMask bits, mirrored in Raytracer.cpp
 static const uint kMaskStatic = 0x01;
 static const uint kMaskTerrain = 0x02;
+static const uint kMaskActor = 0x04;  // M7 skinned
 static const uint kMaskAlphaTested = 0x08;
 static const uint kMaskExclusion = 0x10;
 

@@ -11,6 +11,7 @@
 #include "RT/RT.h"
 #include "RT/Raytracer.h"
 #include "RT/Scene.h"
+#include "RT/SkinnedMeshes.h"
 #include "RT/SunShadows.h"
 #include "State.h"
 
@@ -508,6 +509,9 @@ void SkyrimRT::DrawSettings()
 			ImGui::Text("%s: %u (%u %s)", T(TKEY("static_meshes"), "Static mesh instances"), count(C::kStaticMesh), scene->uniqueStaticMeshes, T(TKEY("unique"), "unique"));
 			ImGui::Text("%s: %u (%u %s)", T(TKEY("terrain"), "Terrain instances"), count(C::kTerrain), scene->uniqueTerrainMeshes, T(TKEY("unique"), "unique"));
 			ImGui::Text("%s: %u / %u / %u / %u", T(TKEY("skipped_types"), "Skipped: skinned / dynamic / instanced / LOD"), count(C::kSkinned), count(C::kDynamic), count(C::kInstanced), count(C::kLOD));
+			ImGui::Text("%s: %u (%u %s, %u %s)", T(TKEY("skinned_shapes"), "Skinned shapes traced"), scene->skinnedShapes, scene->skinnedPartitions, T(TKEY("partitions"), "partitions"), scene->skinnedRejectedShapes, T(TKEY("rejected"), "rejected"));
+			if (const auto* raytracer = RT::GetRaytracerSkinnedStats())
+				ImGui::Text("%s: %u / %.3f ms", T(TKEY("skinned_instances"), "Skinned TLAS instances / skinning + refit"), raytracer->instances, raytracer->skinMs.Average());
 			ImGui::Text("%s: %.3f ms", T(TKEY("traversal"), "Scene traversal"), traversal->Average());
 			ImGui::Text("%s: %u / %u (%u %s)", T(TKEY("cache_entries"), "Cache resident / entries"), cache->resident, cache->entries, cache->pending, T(TKEY("pending"), "pending"));
 			ImGui::Text("%s: %.1f MB", T(TKEY("cache_gpu"), "Cache GPU memory"), (cache->residentVertexBytes + cache->residentIndexBytes) / (1024.0 * 1024.0));

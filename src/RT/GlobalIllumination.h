@@ -45,6 +45,7 @@ namespace RT
 #if defined(SKYRIMRT_NRD)
 
 #	include "BufferPool.h"
+#	include "SkinnedMeshes.h"
 #	include "NrdDenoiser.h"
 
 namespace RT
@@ -76,7 +77,7 @@ namespace RT
 
 		/** @brief Records trace, REBLUR and resolve. The TLAS and instance data must be this frame's (Prepass round trip). */
 		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
-			const BufferPool& a_meshPool, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight,
+			const BufferPool& a_meshPool, const SkinnedMeshes* a_skinned, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight,
 			const GIParams& a_params, bool a_captureDump);
 
 		void CollectResults(uint32_t a_slot);

@@ -185,6 +185,7 @@ namespace RT
 		// M3 scene extraction.
 		MeshCache meshCache;
 		std::vector<GeometryCandidate> candidates;
+		SkinnedScene skinnedScene;
 		std::vector<ExclusionBound> exclusions;
 		LoadedArea loadedArea;
 		SceneStats sceneStats;

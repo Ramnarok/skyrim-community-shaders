@@ -183,6 +183,8 @@ namespace RT
 	GIOutputs SubmitGI(const GIParams& a_params);
 
 	const GIStats* GetGIStats();
+	/** @brief M7 skinning stats, or nullptr. */
+	const struct SkinnedStats* GetRaytracerSkinnedStats();
 	/** @brief GI debug view (RGBA8) when GIParams::viewMode is set, or nullptr. */
 	ID3D11ShaderResourceView* GetGIViewSRV();
 

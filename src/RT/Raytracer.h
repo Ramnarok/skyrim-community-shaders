@@ -10,6 +10,7 @@
 #include "RT.h"
 #include "Scene.h"
 #include "SharedTexture.h"
+#include "SkinnedMeshes.h"
 #include "SunShadows.h"
 
 namespace RT
@@ -96,7 +97,7 @@ namespace RT
 		 * (a_shadows non-null), with their result readbacks, into a_list.
 		 */
 		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, uint64_t a_frame, MeshCache& a_cache,
-			const std::vector<GeometryCandidate>& a_candidates, const std::vector<ExclusionBound>& a_exclusions,
+			const std::vector<GeometryCandidate>& a_candidates, const SkinnedScene& a_skinned, const std::vector<ExclusionBound>& a_exclusions,
 			const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
 			bool a_compareShadowMap, bool a_captureDump);
 
@@ -118,6 +119,7 @@ namespace RT
 		ID3D12Resource* GetRasterDepth() const { return rasterDepth.resource12.get(); }
 		ID3D11ComputeShader* GetCopyDepthShader() const { return copyDepthCS.get(); }
 		bool SunShadowsReady() const { return sunShadowsReady; }
+		const SkinnedMeshes* GetSkinned() const { return skinnedReady ? &skinned : nullptr; }
 		SunShadows& GetSunShadows() { return sunShadows; }
 		const SunShadows& GetSunShadows() const { return sunShadows; }
 
@@ -181,6 +183,8 @@ namespace RT
 
 		SunShadows sunShadows;
 		bool sunShadowsReady = false;
+		SkinnedMeshes skinned;
+		bool skinnedReady = false;
 
 		std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instanceDescs;
 		std::vector<InstanceRecord> instances;
