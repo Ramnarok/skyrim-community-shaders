@@ -51,7 +51,7 @@ A feature is a `struct X : Feature` (`src/Feature.h`) with:
 Registering a new feature takes **four edits**:
 1. `src/Globals.h` — forward-declare the struct and `extern X x;` in `globals::features`.
 2. `src/Globals.cpp` — include the header and define `X x{};`.
-3. `src/Feature.cpp:222` — add `&globals::features::x` to the static list in `Feature::GetFeatureList()`. List order = call order for every lifecycle hook.
+3. `src/Feature.cpp` — `#include "Features/X.h"` (the list needs the complete type) and add `&globals::features::x` to the static list in `Feature::GetFeatureList()` (~`:222`). List order = call order for every lifecycle hook.
 4. `features/<Folder Name>/Shaders/Features/<ShortName>.ini` with `[Info] Version = x-y-z`. Without the ini the feature doesn't load. An optional `CORE` marker file in the folder bundles it into the core package. Pre-release flags `Alpha`/`Beta`/`Unreleased` go in the same `[Info]` block (see `.claude/CLAUDE.md`).
 
 Template: `docs/new-feature-template/` (`NewFeature.h/.cpp`, ini, shader folder). CS's `.claude/CLAUDE.md` mentions a `template/` directory; that's stale.
@@ -154,3 +154,10 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 
 - [x] Does the unmodified build load and run on **1.7.104**? **Yes** (2026-09-23): all hooks installed without errors; a save loaded and rendered with no crash.
 - [ ] Confirm in RenderDoc that `kPOST_ZPREPASS_COPY` at `Prepass()` time holds this frame's depth pre-pass, and which geometry the pre-pass skips (alpha-tested, first person?).
+
+## SkyrimRT feature (M1)
+
+- Feature: `src/Features/SkyrimRT.{h,cpp}`; ini `features/Skyrim RT/Shaders/Features/SkyrimRT.ini` (0-1-0, `Alpha = True`). No shader defines yet.
+- D3D12 code: `src/RT/RT.{h,cpp}`. `RT::Init(globals::d3d::device)` runs from `SkyrimRT::SetupResources()`: IDXGIDevice → adapter → name + LUID → probe `D3D12CreateDevice(FL 12_0)` → `D3D12_FEATURE_D3D12_OPTIONS5.RaytracingTier`. The probe device is released; no D3D12 object stays resident until M2.
+- Below DXR 1.1 (or probe failure) the feature sets `loaded = false` + `failedLoadedMessage`, following the HorizonFix pattern.
+- Jake's machine (2026-09-23): RTX 4080 SUPER, LUID `00000000:0000D324`, driver reports a raytracing tier **above 1.1** (enum value > 11, most likely 1.2). The Windows SDK 10.0.26100 headers name only up to `TIER_1_1`, so `RT::GetTierName` derives `major.minor` from the enum value.

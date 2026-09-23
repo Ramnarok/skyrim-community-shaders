@@ -30,6 +30,7 @@
 #include "Features/Skin.h"
 #include "Features/SkySync.h"
 #include "Features/Skylighting.h"
+#include "Features/SkyrimRT.h"
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
@@ -259,7 +260,8 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::horizonFix,
 		&globals::features::exponentialHeightFog,
 		&globals::features::hdrDisplay,
-		&globals::features::skin
+		&globals::features::skin,
+		&globals::features::skyrimRT
 	};
 
 	return features;

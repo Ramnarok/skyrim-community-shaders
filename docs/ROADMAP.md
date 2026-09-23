@@ -5,7 +5,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 | # | Milestone | Status |
 |---|---|---|
 | M0 | Environment + codebase exploration | ✅ 2026-09-23 |
-| M1 | RT feature skeleton + DXR capability check | ☐ |
+| M1 | RT feature skeleton + DXR capability check | ✅ 2026-09-23 |
 | M2 | D3D12 sidecar + interop proof | ☐ |
 | M3 | Scene extraction + stats dump | ☐ |
 | M4 | BLAS/TLAS + traced debug view (depth match) | ☐ |
