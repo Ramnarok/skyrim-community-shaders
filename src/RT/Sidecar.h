@@ -5,6 +5,8 @@
 #include <winrt/base.h>
 
 #include "FrameCapture.h"
+#include "GlobalIllumination.h"
+#include "MaterialTable.h"
 #include "MeshCache.h"
 #include "RT.h"
 #include "Raytracer.h"
@@ -38,7 +40,21 @@ namespace RT
 		 * D3D11 → D3D12 (test pattern; with a_debugTrace and/or a_shadows the BLAS/TLAS build, M4 debug trace and
 		 * M5 sun shadows) → D3D11, then mesh uploads. SkyrimRT::Prepass calls it before the opaque pass.
 		 */
-		void Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows);
+		void Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows, bool a_buildForGI);
+
+		/**
+		 * @brief M6: the frame's second hand-off, from Deferred::DeferredPasses once the G-buffer is complete: GI trace,
+		 * NRD and resolve, reusing the TLAS Submit built this frame. D3D11 waits for it on the GPU timeline.
+		 * @return The composite inputs, or all null if GI couldn't run this frame (the caller falls back to SSGI's).
+		 */
+		GIOutputs SubmitGI(uint32_t a_gameFrame, const GIParams& a_params);
+
+		/** @brief GI was compiled in (SKYRIMRT_NRD) and set up, and the scene was built this frame. */
+		bool CanTraceGI(uint32_t a_gameFrame) const;
+		bool IsGICompiledIn() const;
+		const GIStats* GetGIStats() const;
+		ID3D11ShaderResourceView* GetGIViewSRV() const;
+		const MaterialTableStats& GetMaterialStats() const { return materialTable.GetStats(); }
 
 		/** @brief Present time: an untraced round trip if none ran this frame (menus, loading), and the dump sequence. */
 		void OnPresent(uint32_t a_gameFrame);
@@ -49,7 +65,7 @@ namespace RT
 		 */
 		void RequestDebugDump() { dumpRequested = true; }
 
-		/** @brief True while a dump is capturing its RT-off reference frame. */
+		/** @brief True while a dump is capturing its RT-off reference frame (sun shadows and GI both handed back). */
 		bool IsSunShadowSuppressed() const { return dumpStage == DumpStage::kSuppressing; }
 
 		bool CanTraceSunShadows() const { return !deviceRemoved && raytracerReady && raytracer.SunShadowsReady(); }
@@ -130,9 +146,30 @@ namespace RT
 		FrameCapture captureOn;
 		FrameCapture captureOff;
 
+		bool dumpGITraced = false;
+
 		// At most one round trip per game frame.
 		bool haveSubmitted = false;
 		uint32_t lastSubmitGameFrame = 0;
+
+		// The frame whose TLAS / instance data are current (M6 GI reuses them), and the slot they live in.
+		bool sceneBuilt = false;
+		uint32_t sceneGameFrame = 0;
+		uint32_t sceneSlot = 0;
+		FrameCamera sceneCamera;
+		uint32_t sceneRenderWidth = 0;
+		uint32_t sceneRenderHeight = 0;
+
+		// M6.
+		MaterialTable materialTable;
+		bool materialTableReady = false;
+#if defined(SKYRIMRT_NRD)
+		std::unique_ptr<GlobalIllumination> gi;
+#endif
+		winrt::com_ptr<ID3D11Query> giDisjoint[kFramesInFlight];
+		winrt::com_ptr<ID3D11Query> giBegin[kFramesInFlight];
+		winrt::com_ptr<ID3D11Query> giEnd[kFramesInFlight];
+		bool slotHasGITimings[kFramesInFlight]{};
 
 		// M5: when the mask was last written, so a stale mask is cleared to lit instead of being reused.
 		bool shadowTracedEver = false;
@@ -140,6 +177,7 @@ namespace RT
 		bool maskClearedWhileStale = false;
 
 		LARGE_INTEGER qpcFrequency{};
+		LARGE_INTEGER lastPresent{};
 		LARGE_INTEGER startTime{};
 		uint32_t framesSubmitted = 0;
 		bool deviceRemoved = false;

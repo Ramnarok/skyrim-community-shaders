@@ -38,6 +38,8 @@ namespace RT
 		bool alphaTested = false;
 		bool alphaBlended = false;  // drawn in the transparent pass: not in the pre-water depth
 		RE::NiTransform world;  // absolute world transform, copied this frame
+		ID3D11ShaderResourceView* diffuseSRV = nullptr;  // game-owned, valid this frame only (terrain: first layer)
+		uint32_t albedo = 0;  // M6: average diffuse colour, RGBA8 as the texture stores it (filled by MaterialTable)
 	};
 
 	/** @brief World-space bounding sphere of geometry the TLAS does not contain (actors, grass, alpha-tested, ...). */

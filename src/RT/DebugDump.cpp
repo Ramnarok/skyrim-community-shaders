@@ -175,6 +175,56 @@ namespace RT
 			};
 		}
 
+		json GlobalIlluminationJson(const DebugDumpData& a_data)
+		{
+			const auto& g = a_data.gi;
+			const auto& m = a_data.materials;
+			const auto& p = g.params;
+			json images = json::array();
+			for (const auto& image : a_data.images) {
+				if (image.name.starts_with("gi_"))
+					images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			}
+			return {
+				{ "compiled_in_nrd", a_data.giCompiledIn },
+				{ "available", a_data.giAvailable },
+				{ "traced_dump_frame", a_data.haveGI },
+				{ "have_result", g.haveResult },
+				{ "frames_traced", g.framesTraced },
+				{ "history_resets", g.historyResets },
+				{ "render_size", { g.renderWidth, g.renderHeight } },
+				{ "rays", { { "traced", g.counters[kGITraced] }, { "hit", g.counters[kGIHits] }, { "hit_sunlit", g.counters[kGISunLitHits] } } },
+				{ "hit_percent", g.HitPercent() },
+				{ "sunlit_hit_percent", g.SunLitHitPercent() },
+				{ "nrd_dispatches", g.nrdDispatches },
+				{ "params",
+					{ { "to_sun", { p.toSun[0], p.toSun[1], p.toSun[2] } },
+						{ "sun_color", { p.sunColor[0], p.sunColor[1], p.sunColor[2] } },
+						{ "ambient_sh_l0_rgb", { p.ambientSH[0][0], p.ambientSH[1][0], p.ambientSH[2][0] } },
+						{ "linear_lighting", p.linearLighting },
+						{ "intensity", p.intensity },
+						{ "ao_strength", p.aoStrength },
+						{ "ray_length_units", p.rayLength },
+						{ "alpha_tested_casters", p.alphaTestedCasters },
+						{ "max_accumulated_frames", p.maxAccumulatedFrames } } },
+				{ "material_table",
+					{ { "textures", m.textures },
+						{ "pending", m.pending },
+						{ "unsupported", m.unsupported },
+						{ "computed_last_frame", m.computedLastFrame },
+						{ "candidates_without_texture", m.candidatesWithoutTexture },
+						{ "candidates_defaulted", m.candidatesDefaulted } } },
+				{ "timings_ms",
+					{ { "trace", TimingJson(g.traceMs) },
+						{ "nrd_reblur", TimingJson(g.denoiseMs) },
+						{ "resolve", TimingJson(g.resolveMs) },
+						{ "total_gi_passes", TimingJson(g.totalMs) },
+						{ "d3d11_gi_hand_off", TimingJson(g.roundTripMs) },
+						{ "note", "the GI frame-time cost is d3d11_gi_hand_off (a second D3D11 <-> D3D12 round trip)" } } },
+				{ "images", images },
+			};
+		}
+
 		json BuildJson(const DebugDumpData& a_data, const std::string& a_pngName, bool a_pngWritten)
 		{
 			const auto& s = a_data.stats;
@@ -183,7 +233,8 @@ namespace RT
 			const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
 
 			return {
-				{ "milestone", "M5" },
+				{ "milestone", "M6" },
+				{ "global_illumination", GlobalIlluminationJson(a_data) },
 				{ "sun_shadows", SunShadowsJson(a_data) },
 				{ "trace", TraceJson(a_data) },
 				{ "scene", SceneJson(a_data) },
@@ -192,7 +243,7 @@ namespace RT
 				{ "written_utc", std::format("{:%FT%TZ}", now) },
 				{ "adapter", { { "name", a_data.caps.adapterName }, { "luid", FormatLuid(a_data.caps.adapterLuid) }, { "dxr_tier", GetTierName(a_data.caps.raytracingTier) } } },
 				{ "frames", { { "submitted", s.framesSubmitted }, { "skipped_slot_busy", s.framesSkipped }, { "last_signaled_fence", s.lastSignaledFenceValue }, { "last_completed_fence", s.lastCompletedFenceValue } } },
-				{ "timings_ms", { { "d3d11_round_trip", TimingJson(s.roundTripMs) }, { "d3d12_dispatch", TimingJson(s.d3d12DispatchMs) }, { "cpu_submit", TimingJson(s.cpuSubmitMs) } } },
+				{ "timings_ms", { { "d3d11_round_trip", TimingJson(s.roundTripMs) }, { "d3d12_dispatch", TimingJson(s.d3d12DispatchMs) }, { "cpu_submit", TimingJson(s.cpuSubmitMs) }, { "frame_present_to_present", TimingJson(s.frameMs) } } },
 				{ "cost_ms", cost },
 				{ "budget_ms", kInteropBudgetMs },
 				{ "within_budget", s.roundTripMs.count > 0 && cost < kInteropBudgetMs },

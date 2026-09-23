@@ -18,6 +18,29 @@ namespace RT
 		return a_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, a_state, nullptr, IID_PPV_ARGS(a_out));
 	}
 
+	void UpdatePageDescriptors(ID3D12Device* a_device, const BufferPool& a_pool, D3D12_CPU_DESCRIPTOR_HANDLE a_first, uint32_t a_increment,
+		uint64_t* a_describedSerials, uint32_t a_slots)
+	{
+		for (uint32_t i = 0; i < a_slots; i++) {
+			const uint64_t serial = a_pool.GetPageSerial(i);
+			if (serial == a_describedSerials[i])
+				continue;
+			a_describedSerials[i] = serial;
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.Format = DXGI_FORMAT_R32_TYPELESS;
+			srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+			auto* resource = serial ? a_pool.GetResource(i) : nullptr;
+			srv.Buffer.NumElements = resource ? static_cast<UINT>(a_pool.GetPageSize(i) / 4) : 1;
+
+			auto handle = a_first;
+			handle.ptr += static_cast<SIZE_T>(i) * a_increment;
+			a_device->CreateShaderResourceView(resource, &srv, handle);
+		}
+	}
+
 	void BufferPool::Init(ID3D12Device* a_device, uint64_t a_pageBytes, uint64_t a_budgetBytes, D3D12_RESOURCE_STATES a_initialState, D3D12_RESOURCE_FLAGS a_flags, const wchar_t* a_name)
 	{
 		device = a_device;

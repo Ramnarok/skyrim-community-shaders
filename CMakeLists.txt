@@ -1203,7 +1203,9 @@ else()
 endif()
 add_custom_target("Package-AIO-Manual" DEPENDS ${AIO_PACKAGE})
 
-# SkyrimRT: DXC-compiled Shader Model 6 shaders (included after the AIO target exists, see the file)
+# SkyrimRT: optional NRD (private builds only, see the file), then the DXC-compiled Shader Model 6 shaders
+# (included after the AIO target exists, see the file)
+include("${CMAKE_SOURCE_DIR}/cmake/SkyrimRTNRD.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/SkyrimRTShaders.cmake")
 
 message("*************************************************************")

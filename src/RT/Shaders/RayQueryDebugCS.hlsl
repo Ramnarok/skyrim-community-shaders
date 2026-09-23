@@ -16,17 +16,7 @@ struct TraceConstants
 	float ClutterHeight;      // grass / ground clutter: max height above traced terrain (game units)
 };
 
-struct InstanceData
-{
-	uint VertexPage;
-	uint VertexOffset;
-	uint IndexPage;
-	uint IndexOffset;
-	uint Stride;
-	uint Flags;
-	uint Pad0;
-	uint Pad1;
-};
+#include "MeshData.hlsli"
 
 struct ExclusionAabb  // D3D12_RAYTRACING_AABB layout, also the procedural BLAS input
 {
@@ -39,18 +29,12 @@ RaytracingAccelerationStructure Scene : register(t0);
 Texture2D<float> RasterDepth : register(t1);
 StructuredBuffer<InstanceData> Instances : register(t2);
 StructuredBuffer<ExclusionAabb> Exclusions : register(t3);
-ByteAddressBuffer MeshPages[64] : register(t0, space1);
 
 RWTexture2D<unorm float4> DepthView : register(u0);
 RWTexture2D<unorm float4> InstanceView : register(u1);
 RWTexture2D<unorm float4> NormalView : register(u2);
 RWTexture2D<unorm float4> DiffView : register(u3);
 RWByteAddressBuffer Counters : register(u4);
-
-static const uint kMaskStatic = 0x01;
-static const uint kMaskTerrain = 0x02;
-static const uint kMaskAlphaTested = 0x08;
-static const uint kMaskExclusion = 0x10;
 
 // Counter slots, mirrored in Raytracer.h
 static const uint kRenderPixels = 0;
@@ -65,10 +49,6 @@ static const uint kTracedMiss = 8;
 static const uint kExcludedAlpha = 9;
 static const uint kExcludedClutter = 10;
 
-// InstanceData.Flags bits, mirrored in Raytracer.cpp
-static const uint kInstanceTerrain = 1;
-static const uint kInstanceAlphaTested = 2;
-
 void Count(uint a_slot, bool a_condition)
 {
 	const uint n = WaveActiveCountBits(a_condition);
@@ -82,12 +62,6 @@ float3 Unproject(float2 a_ndc, float a_depth)
 	return p.xyz / p.w;
 }
 
-uint LoadIndex(ByteAddressBuffer a_buffer, uint a_byteOffset)
-{
-	const uint word = a_buffer.Load(a_byteOffset & ~3u);
-	return (a_byteOffset & 2u) ? (word >> 16) : (word & 0xFFFFu);
-}
-
 float3 HashColor(uint a_value)
 {
 	uint x = a_value + 1;
@@ -97,25 +71,6 @@ float3 HashColor(uint a_value)
 	x *= 0x846ca68bu;
 	x ^= x >> 16;
 	return float3(x & 255u, (x >> 8) & 255u, (x >> 16) & 255u) / 255.0;
-}
-
-// Geometric normal of the hit triangle from the cached mesh data (world space, facing the ray).
-// Returns 0 if the instance's pages aren't bound. Also proves the index/vertex decoding the BLAS uses.
-float3 GeometricNormal(InstanceData a_data, uint a_primitive, float3x4 a_objectToWorld, float3 a_direction)
-{
-	if (a_data.VertexPage >= 64 || a_data.IndexPage >= 64)
-		return float3(0.0, 0.0, 0.0);
-	const uint indexBase = a_data.IndexOffset + a_primitive * 6;
-	const ByteAddressBuffer indices = MeshPages[NonUniformResourceIndex(a_data.IndexPage)];
-	const uint i0 = LoadIndex(indices, indexBase);
-	const uint i1 = LoadIndex(indices, indexBase + 2);
-	const uint i2 = LoadIndex(indices, indexBase + 4);
-	const ByteAddressBuffer vertices = MeshPages[NonUniformResourceIndex(a_data.VertexPage)];
-	const float3 p0 = asfloat(vertices.Load3(a_data.VertexOffset + i0 * a_data.Stride));
-	const float3 p1 = asfloat(vertices.Load3(a_data.VertexOffset + i1 * a_data.Stride));
-	const float3 p2 = asfloat(vertices.Load3(a_data.VertexOffset + i2 * a_data.Stride));
-	const float3 normal = normalize(mul((float3x3)a_objectToWorld, cross(p1 - p0, p2 - p0)));
-	return dot(normal, a_direction) > 0.0 ? -normal : normal;
 }
 
 // True if terrain lies within a_height directly below a_point (Skyrim is Z-up; camera-relative space keeps axes).

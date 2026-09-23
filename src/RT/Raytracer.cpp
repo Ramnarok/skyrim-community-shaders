@@ -48,7 +48,7 @@ namespace RT
 		struct InstanceGpu
 		{
 			uint32_t vertexPage, vertexOffset, indexPage, indexOffset;
-			uint32_t stride, flags, pad0, pad1;
+			uint32_t stride, flags, albedo, pad;  // albedo: RGBA8 average diffuse (M6 material table)
 		};
 		static_assert(sizeof(InstanceGpu) == 32);
 
@@ -300,28 +300,16 @@ namespace RT
 		ctx->CSSetShader(nullptr, nullptr, 0);
 	}
 
+	D3D12_GPU_VIRTUAL_ADDRESS Raytracer::GetInstanceDataAddress(uint32_t a_slot) const
+	{
+		return uploads[a_slot]->GetGPUVirtualAddress() + kInstanceDataOffset;
+	}
+
 	void Raytracer::UpdatePageDescriptors(const BufferPool& a_pool)
 	{
-		// Only slots whose page changed are rewritten. A slot's previous buffer can only have been freed after
-		// 120 frames unreferenced (mesh eviction), so no in-flight frame reads a descriptor being overwritten.
-		for (uint32_t i = 0; i < kMeshPageSlots; i++) {
-			const uint64_t serial = a_pool.GetPageSerial(i);
-			if (serial == describedPageSerials[i])
-				continue;
-			describedPageSerials[i] = serial;
-
-			D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-			srv.Format = DXGI_FORMAT_R32_TYPELESS;
-			srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-			srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-			srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-			auto* resource = serial ? a_pool.GetResource(i) : nullptr;
-			srv.Buffer.NumElements = resource ? static_cast<UINT>(a_pool.GetPageSize(i) / 4) : 1;
-
-			auto handle = heap->GetCPUDescriptorHandleForHeapStart();
-			handle.ptr += static_cast<SIZE_T>(kFirstPageDescriptor + i) * descriptorSize;
-			device->CreateShaderResourceView(resource, &srv, handle);
-		}
+		auto first = heap->GetCPUDescriptorHandleForHeapStart();
+		first.ptr += static_cast<SIZE_T>(kFirstPageDescriptor) * descriptorSize;
+		RT::UpdatePageDescriptors(device, a_pool, first, descriptorSize, describedPageSerials.data(), kMeshPageSlots);
 	}
 
 	void Raytracer::Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, uint64_t a_frame, MeshCache& a_cache,
@@ -361,7 +349,7 @@ namespace RT
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;
 			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride,
-				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u), 0, 0 };
+				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u), record.albedo, 0 };
 		}
 
 		// 3. Exclusion AABBs (camera-relative) as one procedural BLAS, instanced with an identity transform.

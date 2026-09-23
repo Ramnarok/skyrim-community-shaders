@@ -188,6 +188,14 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 - Grass: `GrassOptimizations::Hooks::LoadGrassType::lastGrassManager` (atomic, added for SkyrimRT) holds the game's `BGSGrassManager*`.
 - Overlay: the debug view is drawn bottom-right via `ImGui::Image` with UVs cropped to the render region.
 
+## SkyrimRT GI (M6)
+
+- **Integration point:** `Deferred::DeferredPasses` (`src/Deferred.cpp`), the second edit to upstream CS code. `SkyrimRT::DrawGlobalIllumination` runs first; if it returns true, `DrawSSGI()` is skipped and its AO / Y / CoCg SRVs replace SSGI's in the composite's t10–t12. `ssgi_hq_spec` is forced off, so t13 stays null. The composite's `SSGI` define (both exterior and `INTERIOR` variants) depends only on the SSGI feature being loaded; its `Enabled` setting doesn't matter.
+- **What SSGI gathers:** `forwardRenderTargets[0]` = `kMAIN` at `DeferredPasses` time, through `Color::RadianceToLinear`. That's the opaque pass's output: direct sun + point lights + the vanilla DALC ambient, since the composite later subtracts `directionalAmbientColor` and re-adds it scaled by AO. The composite then adds `il * linAlbedo`, with `il = YCoCgToRGB(SHHallucinateZH3Irradiance(Y, N), CoCg)`.
+- **Lighting sources (as `State::UpdateSharedData`):** `DirLightColor` = `smState->shadowSceneNode[0]` sun `diffuse × fade × imageSpaceManager hdr.sunlightScale`. Ambient = `SphericalHarmonics::DALCToSH` of the six colours from `smState->directionalAmbientTransform` (`src/Utils/SphericalHarmonics.h`). Linear Lighting (`globals::features::linearLighting.settings`) is off by default.
+- **Conventions:** `kMOTION_VECTOR` holds `(-0.5, 0.5) × (currNDC − prevNDC)` = `prevUV − currUV` (`Common/MotionBlur.hlsli`). G-buffer normals are view-space octahedral (`GBuffer::DecodeNormal`, note the sign flips), turned into world space with `CameraViewInverse`. HLSL 2021 (the SDK's DXC) needs `select()` for vector conditionals.
+- **Materials:** `BSLightingShaderMaterialBase::diffuseTexture` (+0x48) → `NiSourceTexture::rendererTexture->resourceView`. True PBR's material classes also derive from `BSLightingShaderMaterialBase`, but its PBR landscape reports `kMultiTexLandLODBlend` with a different layout. So the vanilla landscape is detected with `skyrim_cast<BSLightingShaderMaterialLandscape*>` (the first use of that RTTI ID in this codebase; it resolves on 1.7.104 unless the test run crashes at startup).
+
 ## SkyrimRT sun shadows (M5)
 
 - **The round trip now runs in `SkyrimRT::Prepass()`**, before the opaque pass. It happens at most once per game frame (`Sidecar::Submit`). `SkyrimRT::Reset()` (Present) calls `Sidecar::OnPresent`, which submits an untraced round trip only if Prepass didn't run one (menus, loading), then drives the dump. The M4 debug trace moved along with it, so it now compares against the depth *pre-pass*.

@@ -11,7 +11,9 @@
 #include "Features/IBL.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/Skylighting.h"
+#include "Features/SkyrimRT.h"
 #include "Features/SubsurfaceScattering.h"
+#include "RT/RT.h"
 #include "Features/TerrainBlending.h"
 #include "Features/Upscaling.h"
 #include "Features/CSEditor.h"
@@ -326,10 +328,19 @@ void Deferred::DeferredPasses()
 	auto& skylighting = globals::features::skylighting;
 
 	auto& ssgi = globals::features::screenSpaceGI;
-	if (ssgi.loaded)
+	// Skyrim RT's ray-traced GI takes Screen-Space GI's place when it runs, feeding the same composite inputs.
+	RT::GIOutputs rtGI{};
+	const bool useRTGI = globals::features::skyrimRT.loaded && globals::features::skyrimRT.DrawGlobalIllumination(rtGI);
+	if (ssgi.loaded && !useRTGI)
 		ssgi.DrawSSGI();
 	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = ssgi.GetOutputTextures();
-	bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI;
+	if (useRTGI) {
+		ssgi_ao = rtGI.ao;
+		ssgi_y = rtGI.y;
+		ssgi_cocg = rtGI.coCg;
+		ssgi_gi_spec = nullptr;
+	}
+	bool ssgi_hq_spec = !useRTGI && ssgi.settings.EnableExperimentalSpecularGI;
 
 	auto dispatchCount = Util::GetScreenDispatchCount(true);
 

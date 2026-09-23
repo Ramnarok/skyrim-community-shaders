@@ -1,7 +1,12 @@
 #include "SkyrimRT.h"
 
+#include "Features/LinearLighting.h"
+#include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "I18n/I18n.h"
+#include "RT/GlobalIllumination.h"
+#include "RT/MaterialTable.h"
+#include "Utils/SphericalHarmonics.h"
 #include "RT/MeshCache.h"
 #include "RT/RT.h"
 #include "RT/Raytracer.h"
@@ -24,7 +29,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ShadowDistanceBias,
 	ShadowHistory,
 	ShadowSpatialRadius,
-	ShadowView)
+	ShadowView,
+	GlobalIllumination,
+	GIIntensity,
+	GIAOStrength,
+	GIRayLength,
+	GIAlphaTested,
+	GIHistory,
+	GIView)
 
 namespace
 {
@@ -46,6 +58,58 @@ namespace
 		a_out[0] = -direction.x / length;
 		a_out[1] = -direction.y / length;
 		a_out[2] = -direction.z / length;
+		return true;
+	}
+
+	// The lighting inputs of SharedData, computed the way State::UpdateSharedData does, so the bounce light matches the
+	// direct light and ambient CS's Lighting.hlsl applies (the light Screen-Space GI gathers from the screen).
+	bool GatherLighting(RT::GIParams& a_params)
+	{
+		const auto* smState = globals::game::smState;
+		auto* shadowSceneNode = smState ? smState->shadowSceneNode[0] : nullptr;
+		auto* sunLight = shadowSceneNode ? shadowSceneNode->GetRuntimeData().sunLight : nullptr;
+		auto* light = sunLight ? skyrim_cast<RE::NiDirectionalLight*>(sunLight->light.get()) : nullptr;
+		if (!light)
+			return false;
+
+		const auto& runtime = light->GetLightRuntimeData();
+		float scale = runtime.fade;
+		if (auto* imageSpaceManager = globals::game::imageSpaceManager)
+			scale *= imageSpaceManager->GetRuntimeData().data.baseData.hdr.sunlightScale;
+		a_params.sunColor[0] = runtime.diffuse.red * scale;
+		a_params.sunColor[1] = runtime.diffuse.green * scale;
+		a_params.sunColor[2] = runtime.diffuse.blue * scale;
+
+		const auto& direction = light->GetWorldDirection();
+		const float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+		if (!(length > 1e-6f))
+			return false;
+		a_params.toSun[0] = -direction.x / length;
+		a_params.toSun[1] = -direction.y / length;
+		a_params.toSun[2] = -direction.z / length;
+
+		const auto& m = smState->directionalAmbientTransform.rotate;
+		const auto& t = smState->directionalAmbientTransform.translate;
+		const float3 dalcColors[6] = {
+			{ m.entry[0][0] + t.x, m.entry[1][0] + t.y, m.entry[2][0] + t.z }, { -m.entry[0][0] + t.x, -m.entry[1][0] + t.y, -m.entry[2][0] + t.z },
+			{ m.entry[0][1] + t.x, m.entry[1][1] + t.y, m.entry[2][1] + t.z }, { -m.entry[0][1] + t.x, -m.entry[1][1] + t.y, -m.entry[2][1] + t.z },
+			{ m.entry[0][2] + t.x, m.entry[1][2] + t.y, m.entry[2][2] + t.z }, { -m.entry[0][2] + t.x, -m.entry[1][2] + t.y, -m.entry[2][2] + t.z }
+		};
+		const auto sh = SphericalHarmonics::DALCToSH(dalcColors);
+		const SphericalHarmonics::SH2* channels[3] = { &sh.r, &sh.g, &sh.b };
+		for (uint32_t i = 0; i < 3; i++) {
+			a_params.ambientSH[i][0] = channels[i]->c0;
+			a_params.ambientSH[i][1] = channels[i]->c1[0];
+			a_params.ambientSH[i][2] = channels[i]->c1[1];
+			a_params.ambientSH[i][3] = channels[i]->c1[2];
+		}
+
+		const auto& linearLighting = globals::features::linearLighting;
+		a_params.linearLighting = linearLighting.loaded && linearLighting.settings.enableLinearLighting;
+		a_params.colorGamma = linearLighting.settings.colorGamma;
+		a_params.lightGamma = linearLighting.settings.lightGamma;
+		a_params.ambientGamma = linearLighting.settings.ambientGamma;
+		a_params.ambientMult = linearLighting.settings.ambientMult;
 		return true;
 	}
 
@@ -106,7 +170,8 @@ void SkyrimRT::Prepass()
 	if (!settings.Enabled)
 		return;
 	const bool shadows = ProvidesSunShadowMask();
-	if (!shadows && !settings.TraceDebugView)
+	const bool gi = WantsGlobalIllumination();
+	if (!shadows && !gi && !settings.TraceDebugView)
 		return;
 
 	// Same sources ScreenSpaceShadows uses in its Prepass: CS's cached per-frame buffer and the
@@ -114,8 +179,9 @@ void SkyrimRT::Prepass()
 	const auto& frameBuffer = globals::game::frameBufferCached;
 	const auto* graphicsState = globals::game::graphicsState;
 	const float2 renderSize = Util::ConvertToDynamic(float2{ static_cast<float>(graphicsState->screenWidth), static_cast<float>(graphicsState->screenHeight) });
-	RT::CaptureCamera(reinterpret_cast<const float*>(&frameBuffer.GetCameraViewProjInverse()), reinterpret_cast<const float*>(&frameBuffer.GetCameraViewProj()),
-		&frameBuffer.GetCameraPosAdjust().x, static_cast<uint32_t>(std::lround(renderSize.x)), static_cast<uint32_t>(std::lround(renderSize.y)), globals::state->frameCount);
+	auto matrix = [](const auto& a_matrix) { return reinterpret_cast<const float*>(&a_matrix); };
+	RT::CaptureCamera(matrix(frameBuffer.GetCameraViewProjInverse()), matrix(frameBuffer.GetCameraViewProj()), matrix(frameBuffer.GetCameraView()),
+		matrix(frameBuffer.GetCameraViewInverse()), matrix(frameBuffer.GetCameraProjUnjittered()), &frameBuffer.GetCameraPosAdjust().x, static_cast<uint32_t>(std::lround(renderSize.x)), static_cast<uint32_t>(std::lround(renderSize.y)), globals::state->frameCount);
 
 	RT::SunShadowParams params;
 	const bool traceShadows = shadows && GetDirectionToSun(params.toSun);
@@ -126,7 +192,7 @@ void SkyrimRT::Prepass()
 	params.maxHistory = settings.ShadowHistory;
 	params.spatialRadius = settings.ShadowSpatialRadius;
 	params.viewMode = settings.ShadowView;
-	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr);
+	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr, gi);
 
 	// Screen-Space Shadows skipped its pass for this frame, so the slot is ours. A mask that couldn't be traced
 	// recently comes back cleared to lit.
@@ -134,6 +200,30 @@ void SkyrimRT::Prepass()
 		if (auto* mask = RT::AcquireSunShadowMask())
 			globals::d3d::context->PSSetShaderResources(45, 1, &mask);
 	}
+}
+
+bool SkyrimRT::WantsGlobalIllumination()
+{
+	// DeferredCompositeCS reads t10-t12 only when compiled with SSGI, i.e. when Screen-Space GI is loaded.
+	return loaded && settings.Enabled && settings.GlobalIllumination && globals::features::screenSpaceGI.loaded &&
+	       RT::IsGIAvailable() && !RT::IsSunShadowSuppressed();
+}
+
+bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
+{
+	if (!WantsGlobalIllumination() || !RT::CanTraceGI())
+		return false;
+	RT::GIParams params;
+	if (!GatherLighting(params))
+		return false;
+	params.intensity = settings.GIIntensity;
+	params.aoStrength = settings.GIAOStrength;
+	params.rayLength = settings.GIRayLength;
+	params.alphaTestedCasters = settings.GIAlphaTested;
+	params.maxAccumulatedFrames = settings.GIHistory;
+	params.viewMode = settings.GIView;
+	a_outputs = RT::SubmitGI(params);
+	return a_outputs.ao && a_outputs.y && a_outputs.coCg;
 }
 
 void SkyrimRT::Reset()
@@ -205,6 +295,73 @@ void SkyrimRT::DrawOverlay()
 			ImGui::Image((void*)shadowView, size, ImVec2(0.0f, 0.0f), uvMax);
 		}
 		ImGui::End();
+	}
+
+	// GI view, top-left.
+	auto* giView = settings.GIView != 0 ? RT::GetGIViewSRV() : nullptr;
+	const auto* giStats = RT::GetGIStats();
+	if (giView && giStats && giStats->renderWidth > 0 && giStats->renderHeight > 0) {
+		constexpr float kWidth = 640.0f;
+		const ImVec2 size(kWidth, kWidth * giStats->renderHeight / giStats->renderWidth);
+		const ImVec2 uvMax(static_cast<float>(giStats->renderWidth) / giStats->textureWidth, static_cast<float>(giStats->renderHeight) / giStats->textureHeight);
+		ImGui::SetNextWindowPos(ImVec2(kMargin, kMargin), ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+		ImGui::SetNextWindowBgAlpha(0.6f);
+		if (ImGui::Begin("##SkyrimRTGIView", nullptr, kFlags)) {
+			ImGui::Text("%s: %.1f%% %s (%.3f ms)", T(TKEY("gi_section"), "Global illumination"), giStats->HitPercent(), T(TKEY("gi_hit_short"), "hit"), giStats->totalMs.Average());
+			ImGui::Image((void*)giView, size, ImVec2(0.0f, 0.0f), uvMax);
+		}
+		ImGui::End();
+	}
+}
+
+void SkyrimRT::DrawGlobalIlluminationSettings()
+{
+	ImGui::Checkbox(T(TKEY("gi"), "Ray-traced global illumination"), &settings.GlobalIllumination);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_tooltip"), "Trace one bounce of sunlight and ambient light off the static scene and terrain, with ray-traced ambient occlusion, in place of Screen-Space GI."));
+
+	if (!RT::IsGICompiledIn()) {
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("gi_not_compiled"), "Not in this build: ray-traced GI needs a private build with NVIDIA NRD (SKYRIMRT_NRD)."));
+		return;
+	}
+	if (!globals::features::screenSpaceGI.loaded)
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("gi_needs_ssgi"), "Requires the Screen Space GI feature to be installed: the deferred composite reads the result through it."));
+	else if (settings.GlobalIllumination && settings.Enabled && !RT::IsGIAvailable())
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("gi_unavailable"), "Unavailable: GI could not be set up. See CommunityShaders.log."));
+
+	ImGui::SliderFloat(T(TKEY("gi_intensity"), "Bounce intensity"), &settings.GIIntensity, 0.0f, 4.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_intensity_tooltip"), "Scales the bounced light. 1 matches the direct lighting."));
+
+	ImGui::SliderFloat(T(TKEY("gi_ao_strength"), "Ambient occlusion strength"), &settings.GIAOStrength, 0.0f, 1.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_ao_strength_tooltip"), "How much nearby geometry darkens the game's ambient light."));
+
+	ImGui::SliderFloat(T(TKEY("gi_ray_length"), "Ray length"), &settings.GIRayLength, 250.0f, 10000.0f, "%.0f units");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_ray_length_tooltip"), "How far bounce rays look for surfaces. Longer rays find more distant light but cost more."));
+
+	ImGui::Checkbox(T(TKEY("gi_alpha_tested"), "Alpha-tested meshes bounce and occlude"), &settings.GIAlphaTested);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_alpha_tested_tooltip"), "Include foliage and other alpha-tested meshes. Their transparency isn't supported yet, so leaves act as solid cards."));
+
+	ImGui::SliderInt(T(TKEY("gi_history"), "Denoiser history (frames)"), reinterpret_cast<int*>(&settings.GIHistory), 1, 63);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_history_tooltip"), "How many frames the denoiser blends. Higher is smoother but reacts more slowly to change."));
+
+	const char* giViewNames[] = { T(TKEY("shadow_view_off"), "Off"), T(TKEY("gi_view_noisy"), "Bounce light, noisy"), T(TKEY("gi_view_denoised"), "Bounce light, denoised"), T(TKEY("gi_view_ao"), "Ambient occlusion") };
+	int giView = static_cast<int>(std::min<uint32_t>(settings.GIView, 3));
+	if (ImGui::Combo(T(TKEY("gi_view"), "GI debug view"), &giView, giViewNames, IM_ARRAYSIZE(giViewNames)))
+		settings.GIView = static_cast<uint32_t>(giView);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_view_tooltip"), "Show the ray-traced GI in the top-left corner."));
+
+	if (const auto* stats = RT::GetGIStats(); stats && stats->haveResult) {
+		ImGui::Text("%s: %.1f%% (%s %.1f%%)", T(TKEY("gi_hits"), "Rays hitting geometry"), stats->HitPercent(), T(TKEY("gi_sunlit"), "sunlit"), stats->SunLitHitPercent());
+		ImGui::Text("%s: %.3f / %.3f / %.3f ms", T(TKEY("gi_timings"), "Trace / denoise / resolve"), stats->traceMs.Average(), stats->denoiseMs.Average(), stats->resolveMs.Average());
+		ImGui::Text("%s: %.3f ms", T(TKEY("gi_frame_cost"), "Frame cost (GI hand-off)"), stats->roundTripMs.Average());
+		if (const auto* interop = RT::GetInteropStats())
+			ImGui::Text("%s: %.2f ms", T(TKEY("frame_time"), "Frame time (toggle a feature to compare)"), interop->frameMs.Average());
 	}
 }
 
@@ -295,6 +452,13 @@ void SkyrimRT::DrawSettings()
 
 	if (ImGui::TreeNodeEx(T(TKEY("sun_shadows_section"), "Sun shadows"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		DrawSunShadowSettings();
+		ImGui::Spacing();
+		ImGui::Spacing();
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("gi_section"), "Global illumination"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		DrawGlobalIlluminationSettings();
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();

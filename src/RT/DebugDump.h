@@ -1,5 +1,7 @@
 #pragma once
 
+#include "GlobalIllumination.h"
+#include "MaterialTable.h"
 #include "MeshCache.h"
 #include "RT.h"
 #include "Raytracer.h"
@@ -27,6 +29,11 @@ namespace RT
 		TraceStats trace;
 		bool haveShadows = false;  ///< the dump frame traced M5 sun shadows (mask images and the RT on/off pair)
 		SunShadowStats shadows;
+		bool giCompiledIn = false;  ///< built with SKYRIMRT_NRD
+		bool giAvailable = false;   ///< GI set up successfully
+		bool haveGI = false;        ///< the dump frame traced M6 GI
+		GIStats gi;
+		MaterialTableStats materials;
 		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
 	};
 

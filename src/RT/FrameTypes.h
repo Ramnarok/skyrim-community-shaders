@@ -9,6 +9,9 @@ namespace RT
 		uint32_t gameFrame = 0;
 		float viewProjInverse[16]{};  // FrameBuffer::CameraViewProjInverse, raw (HLSL row_major)
 		float viewProj[16]{};         // FrameBuffer::CameraViewProj, raw (HLSL row_major): reprojection next frame
+		float view[16]{};             // FrameBuffer::CameraView: camera-relative world -> view (M6)
+		float viewInverse[16]{};      // FrameBuffer::CameraViewInverse (M6)
+		float projUnjittered[16]{};   // FrameBuffer::CameraProjUnjittered (M6, NRD)
 		RE::NiPoint3 posAdjust;       // FrameBuffer::CameraPosAdjust: TLAS origin
 		uint32_t renderWidth = 0;
 		uint32_t renderHeight = 0;

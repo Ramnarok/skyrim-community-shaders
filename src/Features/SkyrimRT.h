@@ -2,6 +2,11 @@
 
 #include "OverlayFeature.h"
 
+namespace RT
+{
+	struct GIOutputs;
+}
+
 /**
  * @brief Hybrid ray-traced lighting on a D3D12 sidecar device (see docs/ROADMAP.md).
  *
@@ -23,7 +28,8 @@ struct SkyrimRT : OverlayFeature
 		return { T("feature.skyrim_rt.description", "Experimental hybrid ray-traced lighting using a DirectX 12 raytracing device alongside the game's renderer."),
 			{ T("feature.skyrim_rt.key_feature_1", "Requires a GPU with DirectX Raytracing tier 1.1"),
 				T("feature.skyrim_rt.key_feature_2", "Ray-traced sun and moon shadows from the static scene and terrain"),
-				T("feature.skyrim_rt.key_feature_3", "Work in progress: actors, foliage transparency and global illumination come later") } };
+				T("feature.skyrim_rt.key_feature_3", "Ray-traced one-bounce global illumination and ambient occlusion (private builds with NVIDIA NRD)"),
+				T("feature.skyrim_rt.key_feature_4", "Work in progress: actors and foliage transparency come later") } };
 	}
 
 	/** @brief Debug dump hotkey (ROADMAP verification loop). */
@@ -43,9 +49,25 @@ struct SkyrimRT : OverlayFeature
 		uint32_t ShadowHistory = 24;
 		float ShadowSpatialRadius = 3.0f;
 		uint32_t ShadowView = 0;  ///< overlay: 0 off, 1 raw, 2 denoised
+		bool GlobalIllumination = true;  ///< M6: ray-traced GI in place of Screen-Space GI (builds with NRD only)
+		float GIIntensity = 1.0f;
+		float GIAOStrength = 1.0f;
+		float GIRayLength = 3000.0f;  ///< game units
+		bool GIAlphaTested = false;
+		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames
+		uint32_t GIView = 0;      ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
 	};
 
 	Settings settings;
+
+	/** @brief Whether this frame should build the scene for, and trace, ray-traced GI (before any tracing happens). */
+	bool WantsGlobalIllumination();
+
+	/**
+	 * @brief Called by Deferred::DeferredPasses in place of Screen-Space GI's pass. Runs the GI hand-off and returns
+	 * true with the composite's t10-t12 inputs when ray-traced GI ran this frame; false to let Screen-Space GI run.
+	 */
+	bool DrawGlobalIllumination(RT::GIOutputs& a_outputs);
 
 	/**
 	 * @brief Whether Skyrim RT binds its sun-shadow mask at PS t45 this frame, in which case Screen-Space Shadows skips
@@ -73,7 +95,7 @@ struct SkyrimRT : OverlayFeature
 
 	/** @brief Composites the D3D12-written test pattern into the top-right corner. */
 	virtual void DrawOverlay() override;
-	virtual bool IsOverlayVisible() const override { return settings.Enabled && (settings.ShowTestPattern || settings.TraceDebugView || settings.ShadowView != 0); }
+	virtual bool IsOverlayVisible() const override { return settings.Enabled && (settings.ShowTestPattern || settings.TraceDebugView || settings.ShadowView != 0 || settings.GIView != 0); }
 
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
@@ -81,6 +103,7 @@ struct SkyrimRT : OverlayFeature
 
 private:
 	void DrawSunShadowSettings();
+	void DrawGlobalIlluminationSettings();
 
 	bool dumpKeyWasDown = false;
 	uint32_t providesMaskFrame = UINT32_MAX;

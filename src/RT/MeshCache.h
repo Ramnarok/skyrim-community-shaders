@@ -82,6 +82,7 @@ namespace RT
 		uint32_t indexPage = 0;
 		uint32_t indexOffset = 0;
 		uint32_t stride = 0;
+		uint32_t albedo = 0;  // RGBA8, see GeometryCandidate::albedo
 		bool terrain = false;
 		bool alphaTested = false;
 		bool alphaBlended = false;

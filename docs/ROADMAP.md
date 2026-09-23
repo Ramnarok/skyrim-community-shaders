@@ -10,7 +10,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 | M3 | Scene extraction + stats dump | ✅ 2026-09-23 (5,428 uploads, 0 failed, stride verified 5,428/5,428; see ARCHITECTURE §3) |
 | M4 | BLAS/TLAS + traced debug view (depth match) | ✅ 2026-09-23 (mismatch 0.02–0.14% in Whiterun, Bleak Falls Barrow, Solitude; see ARCHITECTURE §4) |
 | M5 | RT sun shadows | ✅ 2026-09-23 (98% agreement with the game's shadow mask at Whiterun; round trip 1.0–1.2 ms at 1280×720 on RTX 4080 SUPER, shadow passes 0.13–0.29 ms; 1440p / 3070-class cost not measured; see ARCHITECTURE §5) |
-| M6 | 1-bounce diffuse GI + NRD | ☐ |
+| M6 | 1-bounce diffuse GI + NRD | ✅ 2026-09-24 (GI hand-off 0.70 ms, passes 0.42–0.51 ms at 1280×720 on RTX 4080 SUPER; frame time unchanged within noise; NRD in private builds only, see CLAUDE.md and ARCHITECTURE §5) |
 | M7 | Actors (skinning) + alpha-tested geometry | ☐ |
 | M8 | Many lights (ReSTIR DI), reflections, LOD, multi-bounce path tracing | ☐ |
 

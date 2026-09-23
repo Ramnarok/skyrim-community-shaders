@@ -547,6 +547,7 @@ namespace RT
 				.indexPage = entry.indexAllocation.page,
 				.indexOffset = static_cast<uint32_t>(entry.indexAllocation.offset),
 				.stride = entry.stride,
+				.albedo = candidate.albedo,
 				.terrain = candidate.terrain,
 				.alphaTested = candidate.alphaTested,
 				.alphaBlended = candidate.alphaBlended });

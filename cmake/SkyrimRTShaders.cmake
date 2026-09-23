@@ -29,19 +29,34 @@ message(STATUS "SkyrimRT: using DXC ${SKYRIMRT_DXC}")
 file(GLOB SKYRIMRT_SHADER_SOURCES CONFIGURE_DEPENDS "${SKYRIMRT_SHADER_SOURCE_DIR}/*.hlsl")
 file(GLOB SKYRIMRT_SHADER_INCLUDES CONFIGURE_DEPENDS "${SKYRIMRT_SHADER_SOURCE_DIR}/*.hlsli")
 set(SKYRIMRT_SHADER_OUTPUTS)
-foreach(_source IN LISTS SKYRIMRT_SHADER_SOURCES)
-    get_filename_component(_name "${_source}" NAME_WE)
-    set(_output "${SKYRIMRT_SHADER_OUTPUT_DIR}/${_name}.cso")
-    add_custom_command(
-        OUTPUT "${_output}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${SKYRIMRT_SHADER_OUTPUT_DIR}"
-        COMMAND "${SKYRIMRT_DXC}" -nologo -T cs_6_5 -E main -O3 -I "${SKYRIMRT_SHADER_SOURCE_DIR}" -Fo "${_output}" "${_source}"
-        DEPENDS "${_source}" ${SKYRIMRT_SHADER_INCLUDES}
-        COMMENT "SkyrimRT: dxc ${_name}.hlsl"
-        VERBATIM
-    )
-    list(APPEND SKYRIMRT_SHADER_OUTPUTS "${_output}")
-endforeach()
+
+function(skyrimrt_add_shaders a_sources a_depends a_include_args)
+    foreach(_source IN LISTS a_sources)
+        get_filename_component(_name "${_source}" NAME_WE)
+        set(_output "${SKYRIMRT_SHADER_OUTPUT_DIR}/${_name}.cso")
+        add_custom_command(
+            OUTPUT "${_output}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SKYRIMRT_SHADER_OUTPUT_DIR}"
+            COMMAND "${SKYRIMRT_DXC}" -nologo -T cs_6_5 -E main -O3 -I "${SKYRIMRT_SHADER_SOURCE_DIR}" ${a_include_args} -Fo "${_output}" "${_source}"
+            DEPENDS "${_source}" ${a_depends}
+            COMMENT "SkyrimRT: dxc ${_name}.hlsl"
+            VERBATIM
+        )
+        list(APPEND SKYRIMRT_SHADER_OUTPUTS "${_output}")
+    endforeach()
+    set(SKYRIMRT_SHADER_OUTPUTS "${SKYRIMRT_SHADER_OUTPUTS}" PARENT_SCOPE)
+endfunction()
+
+skyrimrt_add_shaders("${SKYRIMRT_SHADER_SOURCES}" "${SKYRIMRT_SHADER_INCLUDES}" "")
+
+# Shaders that include NRD.hlsli contain NVIDIA RTX SDK code, so they're only built (and shipped) with SKYRIMRT_NRD.
+if(SKYRIMRT_NRD)
+    file(GLOB SKYRIMRT_NRD_SHADER_SOURCES CONFIGURE_DEPENDS "${SKYRIMRT_SHADER_SOURCE_DIR}/NRD/*.hlsl")
+    file(GLOB SKYRIMRT_NRD_SHADER_INCLUDES CONFIGURE_DEPENDS "${SKYRIMRT_SHADER_SOURCE_DIR}/NRD/*.hlsli")
+    skyrimrt_add_shaders("${SKYRIMRT_NRD_SHADER_SOURCES}"
+        "${SKYRIMRT_SHADER_INCLUDES};${SKYRIMRT_NRD_SHADER_INCLUDES};${SKYRIMRT_NRD_DIR}/Shaders/NRD.hlsli"
+        "-I;${SKYRIMRT_SHADER_SOURCE_DIR}/NRD;-I;${SKYRIMRT_NRD_DIR}/Shaders")
+endif()
 
 add_custom_target(SkyrimRTShaders ALL DEPENDS ${SKYRIMRT_SHADER_OUTPUTS})
 add_dependencies(${PROJECT_NAME} SkyrimRTShaders)

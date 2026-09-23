@@ -110,6 +110,13 @@ namespace RT
 		uint32_t GetTextureWidth() const { return width; }
 		uint32_t GetTextureHeight() const { return height; }
 		const TraceStats& GetStats() const { return stats; }
+		/** @brief This frame's TLAS (valid after Record, until the next frame's Record). */
+		D3D12_GPU_VIRTUAL_ADDRESS GetTlasAddress() const { return tlas->GetGPUVirtualAddress(); }
+		/** @brief The instance data (InstanceGpu[]) Record wrote for a_slot. */
+		D3D12_GPU_VIRTUAL_ADDRESS GetInstanceDataAddress(uint32_t a_slot) const;
+		/** @brief The shared R32 copy of the scene depth CopyInputs wrote (resting in COMMON). */
+		ID3D12Resource* GetRasterDepth() const { return rasterDepth.resource12.get(); }
+		ID3D11ComputeShader* GetCopyDepthShader() const { return copyDepthCS.get(); }
 		bool SunShadowsReady() const { return sunShadowsReady; }
 		SunShadows& GetSunShadows() { return sunShadows; }
 		const SunShadows& GetSunShadows() const { return sunShadows; }

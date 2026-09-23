@@ -51,6 +51,7 @@ We do not trace primary visibility for final output.
   - Shell setup (the agent's PowerShell may hold a stale PATH and has `NoDefaultCurrentDirectoryInExePath=1`, so call `.bat` files by full path):
     `$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); $env:VCPKG_ROOT = 'G:\DEV\vcpkg'`
   - Configure (once, or after adding/removing files): `cmake -S . --preset ALL` → `build/ALL` (confirmed 2026-09-23)
+    - Jake's local builds add **`-DSKYRIMRT_NRD=ON`** (M6 ray-traced GI; the value sticks in the cache). NRD is under the NVIDIA RTX SDKs License, which conflicts with this project's GPL-3.0, so **builds with it ON are private and must never be distributed or published**. Default OFF builds contain no NRD code and show RT GI as unavailable. See `cmake/SkyrimRTNRD.cmake`; the submodule is `extern/RayTracingDenoiser` (v4.17.3). Configure downloads ShaderMake, MathLib and DXC for it.
   - Build for testing: `cmake --build --preset Dev` → DLL + ready-to-copy folder in `build/ALL/aio` (confirmed 2026-09-23; ~3 min warm)
   - Don't use `BuildRelease.bat ALL`/`Package` locally: the packaging step picks up a broken `7z.exe` app alias in `%LOCALAPPDATA%\Microsoft\WindowsApps` and fails (the DLL is still built).
   - First cold build (vcpkg deps from source) took ~7 min; vcpkg binary cache is `%LOCALAPPDATA%\vcpkg\archives`.

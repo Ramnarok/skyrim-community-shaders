@@ -100,21 +100,60 @@ namespace RT
 		return true;
 	}
 
-	void CaptureCamera(const float* a_viewProjInverse, const float* a_viewProj, const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame)
+	void CaptureCamera(const float* a_viewProjInverse, const float* a_viewProj, const float* a_view, const float* a_viewInverse, const float* a_projUnjittered,
+		const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame)
 	{
 		camera.valid = true;
 		camera.gameFrame = a_gameFrame;
 		std::memcpy(camera.viewProjInverse, a_viewProjInverse, sizeof(camera.viewProjInverse));
 		std::memcpy(camera.viewProj, a_viewProj, sizeof(camera.viewProj));
+		std::memcpy(camera.view, a_view, sizeof(camera.view));
+		std::memcpy(camera.viewInverse, a_viewInverse, sizeof(camera.viewInverse));
+		std::memcpy(camera.projUnjittered, a_projUnjittered, sizeof(camera.projUnjittered));
 		camera.posAdjust = { a_posAdjust[0], a_posAdjust[1], a_posAdjust[2] };
 		camera.renderWidth = a_renderWidth;
 		camera.renderHeight = a_renderHeight;
 	}
 
-	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows)
+	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows, bool a_buildForGI)
 	{
 		if (sidecar)
-			sidecar->Submit(globals::state->frameCount, camera, a_debugTrace, a_shadows);
+			sidecar->Submit(globals::state->frameCount, camera, a_debugTrace, a_shadows, a_buildForGI);
+	}
+
+	bool IsGICompiledIn()
+	{
+#if defined(SKYRIMRT_NRD)
+		return true;
+#else
+		return false;
+#endif
+	}
+
+	bool IsGIAvailable()
+	{
+		return sidecar && sidecar->GetGIStats() != nullptr;
+	}
+
+	bool CanTraceGI()
+	{
+		return sidecar && sidecar->CanTraceGI(globals::state->frameCount);
+	}
+
+	GIOutputs SubmitGI(const GIParams& a_params)
+	{
+		return sidecar ? sidecar->SubmitGI(globals::state->frameCount, a_params) : GIOutputs{};
+	}
+
+	const GIStats* GetGIStats()
+	{
+		return sidecar ? sidecar->GetGIStats() : nullptr;
+	}
+
+	ID3D11ShaderResourceView* GetGIViewSRV()
+	{
+		const auto* stats = GetGIStats();
+		return (stats && stats->haveResult) ? sidecar->GetGIViewSRV() : nullptr;
 	}
 
 	void OnFrame()

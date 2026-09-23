@@ -8,3 +8,7 @@
 	path = extern/FidelityFX-SDK
 	url = https://github.com/alandtse/FidelityFX-SDK-DX11
 	branch = optiscaler-build
+[submodule "extern/RayTracingDenoiser"]
+	path = extern/RayTracingDenoiser
+	url = https://github.com/NVIDIAGameWorks/RayTracingDenoiser.git
+	ignore = dirty

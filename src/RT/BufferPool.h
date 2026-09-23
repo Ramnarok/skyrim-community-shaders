@@ -59,6 +59,14 @@ namespace RT
 		uint64_t reservedBytes = 0;
 	};
 
+	/**
+	 * @brief Rewrites raw-buffer SRVs for the pool's page slots whose buffer changed since a_describedSerials was
+	 * recorded (null SRVs for empty slots). A slot's previous buffer is only freed after mesh eviction (120 frames
+	 * unreferenced), so no in-flight frame reads a descriptor being overwritten.
+	 */
+	void UpdatePageDescriptors(ID3D12Device* a_device, const BufferPool& a_pool, D3D12_CPU_DESCRIPTOR_HANDLE a_first, uint32_t a_increment,
+		uint64_t* a_describedSerials, uint32_t a_slots);
+
 	/** @brief Creates a committed buffer; shared helper for the RT code. */
 	HRESULT CreateBufferResource(ID3D12Device* a_device, D3D12_HEAP_TYPE a_heap, uint64_t a_bytes, D3D12_RESOURCE_STATES a_state, D3D12_RESOURCE_FLAGS a_flags, ID3D12Resource** a_out);
 }

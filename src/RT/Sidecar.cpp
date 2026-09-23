@@ -116,6 +116,30 @@ namespace RT
 		raytracerReady = raytracer.Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight);
 		raytracer.SetTimestampFrequency(d3d12TimestampFrequency);
 
+		// M6. Failures only disable GI.
+		materialTableReady = materialTable.Init(d3d11Device.get(), d3d11Context.get());
+#if defined(SKYRIMRT_NRD)
+		if (raytracerReady) {
+			gi = std::make_unique<GlobalIllumination>();
+			if (gi->Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight, raytracer.GetRasterDepth()))
+				gi->SetTimestampFrequency(d3d12TimestampFrequency);
+			else
+				gi.reset();
+		}
+#else
+		logger::info("[SkyrimRT] Ray-traced GI not compiled in (build with SKYRIMRT_NRD=ON, private builds only)");
+#endif
+		{
+			D3D11_QUERY_DESC disjointDesc{ .Query = D3D11_QUERY_TIMESTAMP_DISJOINT };
+			D3D11_QUERY_DESC timestampDesc{ .Query = D3D11_QUERY_TIMESTAMP };
+			for (uint32_t i = 0; i < kFramesInFlight; i++) {
+				if (FAILED(d3d11Device->CreateQuery(&disjointDesc, giDisjoint[i].put())) ||
+					FAILED(d3d11Device->CreateQuery(&timestampDesc, giBegin[i].put())) ||
+					FAILED(d3d11Device->CreateQuery(&timestampDesc, giEnd[i].put())))
+					return fail("creating D3D11 GI timestamp queries failed");
+			}
+		}
+
 		logger::info("[SkyrimRT] Sidecar running: shared fence OK, test texture created in {} ({}x{})",
 			spike.textureCreatedInD3D12 ? "D3D12, opened in D3D11" : "D3D11, opened in D3D12", kPatternSize, kPatternSize);
 		return true;
@@ -457,6 +481,18 @@ namespace RT
 			ctx->GetData(d3d11End[a_slot].get(), &end11, sizeof(end11), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
 			end11 >= begin11)
 			stats.roundTripMs.Add(static_cast<float>(static_cast<double>(end11 - begin11) * 1000.0 / static_cast<double>(disjoint.Frequency)));
+
+#if defined(SKYRIMRT_NRD)
+		if (slotHasGITimings[a_slot] && gi) {
+			slotHasGITimings[a_slot] = false;
+			if (ctx->GetData(giDisjoint[a_slot].get(), &disjoint, sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+				!disjoint.Disjoint && disjoint.Frequency &&
+				ctx->GetData(giBegin[a_slot].get(), &begin11, sizeof(begin11), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+				ctx->GetData(giEnd[a_slot].get(), &end11, sizeof(end11), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+				end11 >= begin11)
+				gi->GetStats().roundTripMs.Add(static_cast<float>(static_cast<double>(end11 - begin11) * 1000.0 / static_cast<double>(disjoint.Frequency)));
+		}
+#endif
 	}
 
 	void Sidecar::FinishDumpIfReady()
@@ -507,6 +543,16 @@ namespace RT
 				data.shadows = raytracer.GetSunShadows().GetStats();
 			}
 		}
+		data.giCompiledIn = IsGICompiledIn();
+		data.materials = materialTable.GetStats();
+#if defined(SKYRIMRT_NRD)
+		if (gi) {
+			data.giAvailable = true;
+			data.haveGI = dumpGITraced;
+			data.gi = gi->GetStats();
+			gi->ReadDumpImages(data.images);
+		}
+#endif
 		for (auto* capture : { &captureOn, &captureOff }) {
 			if (capture->IsIdle())
 				continue;
@@ -535,18 +581,25 @@ namespace RT
 
 	void Sidecar::OnPresent(uint32_t a_gameFrame)
 	{
+		LARGE_INTEGER now;
+		QueryPerformanceCounter(&now);
+		if (lastPresent.QuadPart)
+			stats.frameMs.Add(ElapsedMs(lastPresent, now, qpcFrequency));
+		lastPresent = now;
+
 		if (deviceRemoved)
 			return;
 
 		// No-op when SkyrimRT::Prepass already ran this frame's round trip.
-		Submit(a_gameFrame, FrameCamera{}, false, nullptr);
+		Submit(a_gameFrame, FrameCamera{}, false, nullptr, false);
 		if (deviceRemoved)
 			return;
 
 		auto* ctx = d3d11Context.get();
 		if (dumpStage == DumpStage::kCaptureOn) {
-			captureOn.Begin(d3d11Device.get(), ctx, dumpShadowsTraced ? "final_rt_on" : "final");
-			if (dumpShadowsTraced) {
+			const bool anyRT = dumpShadowsTraced || dumpGITraced;
+			captureOn.Begin(d3d11Device.get(), ctx, anyRT ? "final_rt_on" : "final");
+			if (anyRT) {
 				dumpStage = DumpStage::kSuppressing;
 				suppressUntilFrame = a_gameFrame + kSuppressFrames;
 			} else {
@@ -561,7 +614,7 @@ namespace RT
 		FinishDumpIfReady();
 	}
 
-	void Sidecar::Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows)
+	void Sidecar::Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows, bool a_buildForGI)
 	{
 		if (deviceRemoved || (haveSubmitted && lastSubmitGameFrame == a_gameFrame))
 			return;
@@ -585,15 +638,22 @@ namespace RT
 		CollectTimings(slot);
 		if (raytracerReady)
 			raytracer.CollectResults(slot);
+#if defined(SKYRIMRT_NRD)
+		if (gi)
+			gi->CollectResults(slot);
+#endif
 
 		// Scene first: the TLAS is built from this frame's instances.
 		inWorld = CollectScene(candidates, exclusions, loadedArea, sceneStats);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);
+		// Albedos for the instance data; the candidates' texture pointers are only valid this frame.
+		if (inWorld && materialTableReady)
+			materialTable.Update(candidates, a_gameFrame);
 
 		// Trace only when the camera was captured for this very frame (SkyrimRT::Prepass), so matrices, depth and
 		// transforms all describe the same frame.
-		const bool buildScene = raytracerReady && inWorld && a_camera.valid && a_camera.gameFrame == a_gameFrame && (a_debugTrace || a_shadows);
+		const bool buildScene = raytracerReady && inWorld && a_camera.valid && a_camera.gameFrame == a_gameFrame && (a_debugTrace || a_shadows || a_buildForGI);
 		const bool debugTrace = buildScene && a_debugTrace;
 		const SunShadowParams* shadows = (buildScene && a_shadows && raytracer.SunShadowsReady()) ? a_shadows : nullptr;
 		const bool dumpThisFrame = dumpRequested && dumpStage == DumpStage::kIdle;
@@ -685,10 +745,19 @@ namespace RT
 			shadowTracedEver = true;
 			lastShadowGameFrame = a_gameFrame;
 		}
+		if (buildScene) {
+			sceneBuilt = true;
+			sceneGameFrame = a_gameFrame;
+			sceneSlot = slot;
+			sceneCamera = a_camera;
+			sceneRenderWidth = std::min(a_camera.renderWidth, raytracer.GetTextureWidth());
+			sceneRenderHeight = std::min(a_camera.renderHeight, raytracer.GetTextureHeight());
+		}
 
 		if (dumpThisFrame) {
 			dumpHasTrace = debugTrace;
 			dumpShadowsTraced = shadows != nullptr;
+			dumpGITraced = false;  // set by SubmitGI later this frame
 			dumpRequested = false;
 			dumpStage = DumpStage::kCaptureOn;
 			dumpFenceValue = toD3D11;
@@ -702,5 +771,98 @@ namespace RT
 		LARGE_INTEGER cpuEnd;
 		QueryPerformanceCounter(&cpuEnd);
 		stats.cpuSubmitMs.Add(ElapsedMs(cpuStart, cpuEnd, qpcFrequency));
+	}
+
+	bool Sidecar::IsGICompiledIn() const
+	{
+#if defined(SKYRIMRT_NRD)
+		return true;
+#else
+		return false;
+#endif
+	}
+
+	bool Sidecar::CanTraceGI([[maybe_unused]] uint32_t a_gameFrame) const
+	{
+#if defined(SKYRIMRT_NRD)
+		return !deviceRemoved && gi && sceneBuilt && sceneGameFrame == a_gameFrame;
+#else
+		return false;
+#endif
+	}
+
+	const GIStats* Sidecar::GetGIStats() const
+	{
+#if defined(SKYRIMRT_NRD)
+		return gi ? &gi->GetStats() : nullptr;
+#else
+		return nullptr;
+#endif
+	}
+
+	ID3D11ShaderResourceView* Sidecar::GetGIViewSRV() const
+	{
+#if defined(SKYRIMRT_NRD)
+		return gi ? gi->GetViewSRV() : nullptr;
+#else
+		return nullptr;
+#endif
+	}
+
+	GIOutputs Sidecar::SubmitGI([[maybe_unused]] uint32_t a_gameFrame, [[maybe_unused]] const GIParams& a_params)
+	{
+#if defined(SKYRIMRT_NRD)
+		if (!CanTraceGI(a_gameFrame))
+			return {};
+		CheckDeviceRemoved();
+		if (deviceRemoved)
+			return {};
+
+		// Same frame slot as this frame's Submit: its allocator already holds this frame's lists (not reset), and
+		// the TLAS and instance data GI reads are that slot's.
+		const uint32_t slot = sceneSlot;
+		auto* ctx = d3d11Context.get();
+		ctx->Begin(giDisjoint[slot].get());
+		ctx->End(giBegin[slot].get());
+		const bool inputsReady = gi->CopyInputs();
+		if (!inputsReady) {
+			ctx->End(giEnd[slot].get());
+			ctx->End(giDisjoint[slot].get());
+			return {};
+		}
+		const uint64_t toD3D12 = ++fenceValue;
+		ctx->Signal(d3d11Fence.get(), toD3D12);
+		ctx->Flush();
+
+		const bool captureDump = dumpStage == DumpStage::kCaptureOn && dumpGameFrame == a_gameFrame;
+		commandList->Reset(allocators[slot].get(), nullptr);
+		gi->Record(commandList.get(), slot, raytracer.GetTlasAddress(), raytracer.GetInstanceDataAddress(slot), meshCache.GetMeshPool(),
+			sceneCamera, sceneRenderWidth, sceneRenderHeight, a_params, captureDump);
+		commandList->Close();
+
+		queue->Wait(fence.get(), toD3D12);
+		ID3D12CommandList* lists[] = { commandList.get() };
+		queue->ExecuteCommandLists(1, lists);
+		const uint64_t toD3D11 = ++fenceValue;
+		queue->Signal(fence.get(), toD3D11);
+		slotFenceValues[slot] = toD3D11;
+
+		ctx->Wait(d3d11Fence.get(), toD3D11);
+		ctx->End(giEnd[slot].get());
+		ctx->End(giDisjoint[slot].get());
+		// Without a flush the closing timestamp waits in the D3D11 command buffer until the game's next flush, and
+		// the measured hand-off then includes GPU idle time of a CPU-bound frame (3-11 ms measured, vs 0.5 ms of work).
+		ctx->Flush();
+		slotHasGITimings[slot] = true;
+
+		if (captureDump) {
+			dumpGITraced = true;
+			dumpFenceValue = toD3D11;
+		}
+		stats.lastSignaledFenceValue = fenceValue;
+		return gi->GetOutputs();
+#else
+		return {};
+#endif
 	}
 }

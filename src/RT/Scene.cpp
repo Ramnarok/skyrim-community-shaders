@@ -63,6 +63,20 @@ namespace RT
 			if (auto* material = lightingProperty->material) {
 				const auto feature = material->GetFeature();
 				a_candidate.terrain = feature == Feature::kMultiTexLand || feature == Feature::kMultiTexLandLODBlend;
+
+				// M6 material table: the diffuse texture the lighting shader samples. Terrain blends up to five layers;
+				// the first (base) layer stands in for all of them. The landscape check is an RTTI cast because True PBR's
+				// PBR landscape also reports kMultiTexLandLODBlend with another layout; every lighting material (True
+				// PBR's included) derives from BSLightingShaderMaterialBase, so its diffuse slot is always safe to read.
+				RE::NiSourceTexture* diffuse = nullptr;
+				if (auto* landscape = skyrim_cast<RE::BSLightingShaderMaterialLandscape*>(material)) {
+					if (landscape->numLandscapeTextures > 0)
+						diffuse = landscape->landscapeDiffuseTexture[0].get();
+				} else {
+					diffuse = static_cast<RE::BSLightingShaderMaterialBase*>(material)->diffuseTexture.get();
+				}
+				if (diffuse && diffuse->rendererTexture)
+					a_candidate.diffuseSRV = diffuse->rendererTexture->resourceView;
 			}
 			if (auto* alpha = geometryData.alphaProperty.get()) {
 				a_candidate.alphaTested = alpha->GetAlphaTesting();

@@ -1,7 +1,7 @@
 # References
 
 ## Skyrim modding / base code
-- Community Shaders (base fork): https://github.com/community-shaders/skyrim-community-shaders (the old doodlum URL redirects here). Jake's fork: https://github.com/Ramnarok/skyrim-community-shaders
+- Community Shaders (base fork): https://github.com/community-shaders/skyrim-community-shaders (the old doodlum URL redirects here). Jake's fork: https://github.com/Ramnarok/skyrim-community-shaders-RT-Test (renamed 2026-09-23 from `skyrim-community-shaders`)
   - Developer wiki, covering the debugging setup (Steamless, ASLR, RenderDoc): https://github.com/community-shaders/skyrim-community-shaders/wiki/Developers
 - PIXL Renderer (CS-derived; reference for material classification and its DX11/DX12 sidecar): https://github.com/pixlmusic/PIXL-Renderer
 - CommonLibSSE-NG: use the exact submodule version CS pins. Don't mix versions.
