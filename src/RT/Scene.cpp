@@ -537,15 +537,26 @@ namespace RT
 		}
 		a_stats.exclusionBounds = static_cast<uint32_t>(a_exclusions.size());
 
-		// M7: pose skinned partitions with the matrices the renderer drew them with this frame. Trees are re-posed by
-		// culling after some of their draws, so their bones' current transforms can disagree with what was drawn.
-		// Skins not drawn this frame keep stale renderer matrices (older frameID) and use their bones instead.
+		// M7: pose trees with the matrices the renderer draws them with. Culling re-poses their swaying branches after
+		// some draws, so their bones' current transforms can disagree with what's on screen, and the game refreshes
+		// the matrices only on some frames but draws with them every frame: their age (frameID) doesn't matter, and
+		// a per-frame choice by age made trees flip between the two poses (flicker). Trees stay in place, so an
+		// off-screen tree's older copy is at most an old sway pose. Other skins (actors) move: they keep their bones
+		// unless refreshed this frame, since their stale copies were measured thousands of units off.
+		uint32_t newest = 0;
+		for (const auto& partition : a_skinned.partitions)
+			newest = std::max(newest, partition.rendererFrameID);
+		for (const auto& partition : a_skinned.partitions) {
+			if (partition.tree && partition.rendererFrameID != 0) {
+				const uint32_t lag = newest - partition.rendererFrameID;
+				auto& lags = a_stats.treePose.lagPartitions;
+				lags[lag == 0 ? 0 : lag <= 2 ? 1 : lag <= 8 ? 2 : 3]++;
+			}
+		}
 		if (a_poseFromCache) {
-			uint32_t newest = 0;
-			for (const auto& partition : a_skinned.partitions)
-				newest = std::max(newest, partition.rendererFrameID);
 			for (const auto& partition : a_skinned.partitions) {
-				if (newest == 0 || partition.rendererFrameID != newest)
+				const bool useRenderer = partition.rendererFrameID != 0 && (partition.tree || partition.rendererFrameID == newest);
+				if (!useRenderer)
 					continue;
 				const auto first = static_cast<ptrdiff_t>(partition.paletteOffset);
 				const auto count = static_cast<ptrdiff_t>(partition.boneCount) * 12;

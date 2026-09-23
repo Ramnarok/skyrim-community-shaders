@@ -131,7 +131,8 @@ namespace RT
 		float maxDelta = 0.0f;   ///< largest bone translation difference (game units)
 		uint32_t minFrameID = UINT32_MAX;  ///< NiSkinInstance::frameID range (when the renderer last refreshed the matrices)
 		uint32_t maxFrameID = 0;
-		uint32_t fromCache = 0;  ///< partitions posed from the renderer's matrices (refreshed this frame)
+		uint32_t fromCache = 0;  ///< partitions posed from the renderer's matrices
+		std::array<uint32_t, 4> lagPartitions{};  ///< trees: partitions whose matrices are 0, 1-2, 3-8, >8 frames older than the newest
 	};
 
 	struct SceneStats

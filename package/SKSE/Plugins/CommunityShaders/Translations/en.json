@@ -1465,7 +1465,7 @@
     "feature.skyrim_rt.show_test_pattern": "Show interop test pattern",
     "feature.skyrim_rt.show_test_pattern_tooltip": "Show the animated image written by DirectX 12 in the top-right corner.",
     "feature.skyrim_rt.skin_pose_from_cache": "Skinned pose from renderer matrices",
-    "feature.skyrim_rt.skin_pose_from_cache_tooltip": "Pose characters and trees that the game drew this frame from the exact bone matrices it drew them with, instead of their bones' current transforms. Trees need this: culling re-poses their swaying branches after some of their draws.",
+    "feature.skyrim_rt.skin_pose_from_cache_tooltip": "Pose trees (and characters drawn this frame) from the exact bone matrices the game draws them with, instead of their bones' current transforms. Trees need this: culling re-poses their swaying branches after some of their draws.",
     "feature.skyrim_rt.skinned_instances": "Skinned TLAS instances / skinning + refit",
     "feature.skyrim_rt.skinned_shapes": "Skinned shapes traced",
     "feature.skyrim_rt.skipped_types": "Skipped: skinned / dynamic / instanced / LOD",

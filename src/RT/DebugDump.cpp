@@ -31,7 +31,8 @@ namespace RT
 		{
 			return { { "shapes", a_pose.shapes }, { "compared", a_pose.compared }, { "differ_over_1_unit", a_pose.differ },
 				{ "max_translation_delta", a_pose.maxDelta }, { "frame_id_min", a_pose.compared ? a_pose.minFrameID : 0u },
-				{ "frame_id_max", a_pose.maxFrameID }, { "partitions_posed_from_renderer_matrices", a_pose.fromCache } };
+				{ "frame_id_max", a_pose.maxFrameID }, { "partitions_posed_from_renderer_matrices", a_pose.fromCache },
+				{ "partitions_by_matrix_age_frames", { { "0", a_pose.lagPartitions[0] }, { "1-2", a_pose.lagPartitions[1] }, { "3-8", a_pose.lagPartitions[2] }, { "over_8", a_pose.lagPartitions[3] } } } };
 		}
 
 		json SceneJson(const DebugDumpData& a_data)

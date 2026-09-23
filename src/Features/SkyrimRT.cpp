@@ -460,7 +460,7 @@ void SkyrimRT::DrawSettings()
 
 		ImGui::Checkbox(T(TKEY("skin_pose_from_cache"), "Skinned pose from renderer matrices"), &settings.SkinPoseFromCache);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("skin_pose_from_cache_tooltip"), "Pose characters and trees that the game drew this frame from the exact bone matrices it drew them with, instead of their bones' current transforms. Trees need this: culling re-poses their swaying branches after some of their draws."));
+			ImGui::Text("%s", T(TKEY("skin_pose_from_cache_tooltip"), "Pose trees (and characters drawn this frame) from the exact bone matrices the game draws them with, instead of their bones' current transforms. Trees need this: culling re-poses their swaying branches after some of their draws."));
 
 		ImGui::BeginDisabled(!settings.Enabled || !RT::IsRunning());
 		if (ImGui::Button(T(TKEY("write_dump"), "Write debug dump (F10)")))
