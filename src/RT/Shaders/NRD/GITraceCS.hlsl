@@ -98,7 +98,7 @@ float3 SamplePointLights(float3 a_position, float3 a_normal, float3 a_origin, fl
 	if (C.PointLightShadows) {
 		const float3 toLight = light.ToLight + a_position - a_origin;
 		const float distance = length(toLight);
-		const float rayLength = distance - kLightClearance;
+		const float rayLength = distance - light.Clearance;
 		const float occluder = rayLength > 0.0 ? OccluderDistance(a_origin, toLight / distance, rayLength) : -1.0;
 		if (occluder >= 0.0) {
 			a_occluded = true;

@@ -205,6 +205,11 @@ namespace RT
 				{ "pixels", { { "traced", c[kPointTraced] }, { "sampled_light", c[kPointSampled] }, { "occluded", c[kPointOccluded] }, { "in_a_lit_room", c[kPointRoomKnown] } } },
 				{ "light_filters", { { "note", "pixels with a traced light: within its radius / and facing / and applying in the pixel's room" }, { "in_range", c[kPointAnyInRange] }, { "facing", c[kPointAnyFacing] }, { "in_room", c[kPointAnyInRoom] } } },
 				{ "sampled_percent", c[kPointTraced] ? 100.0 * c[kPointSampled] / c[kPointTraced] : 0.0 },
+				// M8 ReSTIR phase-2 gate: one visibility ray per pixel stands in for all of these lights.
+				{ "lights_per_sampled_pixel", { { "note", "lights SamplePointLight picks from (in range, facing, in the pixel's room)" },
+												  { "mean", c[kPointAnyInRoom] ? static_cast<double>(c[kPointCandidateSum]) / c[kPointAnyInRoom] : 0.0 },
+												  { "max", c[kPointCandidateMax] }, { "pixels_1", c[kPointCandidates1] }, { "pixels_2_to_3", c[kPointCandidates2to3] },
+												  { "pixels_4_to_7", c[kPointCandidates4to7] }, { "pixels_8_plus", c[kPointCandidates8Plus] } } },
 				{ "occluded_percent_of_sampled", c[kPointSampled] ? 100.0 * c[kPointOccluded] / c[kPointSampled] : 0.0 },
 				{ "occluded_by_distance_to_light", { { "under_32", c[kPointOccluderNear32] }, { "32_to_64", c[kPointOccluderNear64] }, { "64_to_128", c[kPointOccluderNear128] }, { "128_and_over", farther } } },
 				{ "timings_ms",

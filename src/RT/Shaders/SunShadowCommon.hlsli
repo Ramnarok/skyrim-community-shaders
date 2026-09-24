@@ -49,6 +49,12 @@ static const uint kPointRoomKnown = 6;        // pixels whose primary ray found 
 static const uint kPointAnyInRange = 7;       // diagnostics: a traced light is within its radius
 static const uint kPointAnyFacing = 8;        // ... and in front of the surface
 static const uint kPointAnyInRoom = 9;        // ... and applies in the pixel's room
+static const uint kPointCandidateSum = 10;    // sum over pixels of the lights SamplePointLight picks from (in range, facing, in room)
+static const uint kPointCandidates1 = 11;     // pixels with exactly 1 such light
+static const uint kPointCandidates2to3 = 12;
+static const uint kPointCandidates4to7 = 13;
+static const uint kPointCandidates8Plus = 14;
+static const uint kPointCandidateMax = 15;    // most such lights at any pixel (InterlockedMax)
 
 ConstantBuffer<ShadowConstants> C : register(b0);
 

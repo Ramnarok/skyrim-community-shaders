@@ -37,6 +37,12 @@ namespace RT
 		kPointAnyInRange,       ///< diagnostics: a traced light is within its radius
 		kPointAnyFacing,        ///< ... and in front of the surface
 		kPointAnyInRoom,        ///< ... and applies in the pixel's room (= what SamplePointLight can pick from)
+		kPointCandidateSum,     ///< sum over pixels of the lights SamplePointLight picks from (ReSTIR phase-2 gate)
+		kPointCandidates1,      ///< pixels with exactly 1 such light
+		kPointCandidates2to3,
+		kPointCandidates4to7,
+		kPointCandidates8Plus,
+		kPointCandidateMax,     ///< most such lights at any pixel
 		kPointCounterCount
 	};
 	/** @brief Counter slots every SunShadows instance reads back (the 64-byte counter buffer); both variants fit. */

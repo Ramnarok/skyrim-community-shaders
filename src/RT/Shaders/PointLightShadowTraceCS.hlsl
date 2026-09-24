@@ -89,6 +89,7 @@ float Random1(uint2 a_pixel, uint a_frame)
 	float occluderToLight = -1.0;
 	int room = -1;
 	bool anyInRange = false, anyFacing = false, anyInRoom = false;
+	uint candidates = 0;  // lights SamplePointLight picks from: one visibility ray stands in for all of them
 	float3 normal = float3(0.0, 0.0, 0.0);
 	if (!sky) {
 		const float3 position = PositionAt(pixel, depth);
@@ -111,7 +112,10 @@ float Random1(uint2 a_pixel, uint a_frame)
 			if (dot(normal, toCandidate) <= 0.0)
 				continue;
 			anyFacing = true;
-			anyInRoom = anyInRoom || PointLightAppliesInRoom(candidate, room);
+			if (PointLightAppliesInRoom(candidate, room)) {
+				anyInRoom = true;
+				candidates++;
+			}
 		}
 		const PointLightSample light = SamplePointLight(PointLights, C.PointLightCount, kSkippedLights, C.InverseSquare != 0, position, normal,
 			Random1(dispatchID.xy, C.FrameIndex), room);
@@ -120,7 +124,7 @@ float Random1(uint2 a_pixel, uint a_frame)
 			const float3 origin = position + normal * (C.NormalBias + distance * C.DistanceBias);
 			const float3 toLight = light.ToLight + position - origin;
 			const float lightDistance = length(toLight);
-			const float rayLength = lightDistance - kLightClearance;
+			const float rayLength = lightDistance - light.Clearance;
 			if (rayLength > 0.0) {
 				RayDesc ray;
 				ray.Origin = origin;
@@ -153,4 +157,15 @@ float Random1(uint2 a_pixel, uint a_frame)
 	Count(kPointAnyInRange, anyInRange);
 	Count(kPointAnyFacing, anyFacing);
 	Count(kPointAnyInRoom, anyInRoom);
+	Count(kPointCandidates1, candidates == 1);
+	Count(kPointCandidates2to3, candidates >= 2 && candidates <= 3);
+	Count(kPointCandidates4to7, candidates >= 4 && candidates <= 7);
+	Count(kPointCandidates8Plus, candidates >= 8);
+	const uint candidateSum = WaveActiveSum(candidates);
+	const uint candidateMax = WaveActiveMax(candidates);
+	if (WaveIsFirstLane() && candidateSum > 0) {
+		Counters.InterlockedAdd(kPointCandidateSum * 4, candidateSum);
+		uint previous;
+		Counters.InterlockedMax(kPointCandidateMax * 4, candidateMax, previous);
+	}
 }

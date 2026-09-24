@@ -31,10 +31,19 @@ bool PointLightAppliesInRoom(PointLight a_light, int a_room)
 	return ((a_light.RoomFlags[a_room >> 5] >> (a_room & 31)) & 1u) != 0;
 }
 
-// Visibility rays stop this far short of the light: lights sit inside their own fixture (lantern frames, sconces,
-// braziers), which would otherwise shadow every surface they light. Measured in M8: under 2.5% of occluded samples
-// are blocked within 32 units of the light.
-static const float kLightClearance = 16.0;  // game units
+// Visibility rays stop short of the light: lights sit inside their own fixture (lantern frames, sconces, braziers), which
+// would otherwise shadow every surface they light. Measured in M8: 16 units covers lanterns (under 2.5% of occluded
+// samples blocked within 32 units in the Riverwood Trader), but not a hearth: Dragonsreach's fire light (radius 622)
+// sits above its log pile, and the logs 93-128 units from it shadowed the floor around the pit (0.15 x radius left an
+// arc-shaped dark band). The clearance therefore grows with the light's radius: ~47 units for a candle, ~128 for a
+// torch, ~155-200 for a hearth.
+static const float kLightClearance = 16.0;               // game units, minimum
+static const float kLightClearanceRadiusFraction = 0.25;
+
+float PointLightClearance(float a_radius)
+{
+	return max(kLightClearance, kLightClearanceRadiusFraction * a_radius);
+}
 
 // Lighting.hlsl's point-light falloff: InverseSquareLighting::GetAttenuation when that feature is loaded, else
 // 1 - (d / r)^2.
@@ -56,6 +65,7 @@ struct PointLightSample
 	bool Valid;          // some light is in range and facing the surface
 	float3 ToLight;      // from the surface position to the chosen light
 	float3 Irradiance;   // the chosen light's unshadowed irradiance, divided by its selection probability
+	float Clearance;     // how far short of the chosen light its visibility ray stops (PointLightClearance)
 };
 
 // Picks one light in proportion to its unshadowed contribution (luminance of colour x attenuation x N.L) in a single
@@ -69,6 +79,7 @@ PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_
 	result.Valid = false;
 	result.ToLight = 0.0;
 	result.Irradiance = 0.0;
+	result.Clearance = kLightClearance;
 	float total = 0.0;
 	float u = a_u;
 	float chosenWeight = 0.0;
@@ -94,6 +105,7 @@ PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_
 		if (u < p) {
 			result.Irradiance = irradiance;
 			result.ToLight = toLight;
+			result.Clearance = PointLightClearance(light.Radius);
 			chosenWeight = weight;
 			u /= p;
 		} else {
