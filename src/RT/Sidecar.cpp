@@ -833,7 +833,7 @@ namespace RT
 #endif
 
 		// Scene first: the TLAS is built from this frame's instances.
-		const SceneOptions sceneOptions{ !treeRestPose ? TreeMode::kLiveBones : staticTrees ? TreeMode::kRestStatic : TreeMode::kRestSkinned, skipMeshLOD };
+		const SceneOptions sceneOptions{ !treeRestPose ? TreeMode::kLiveBones : staticTrees ? TreeMode::kRestStatic : TreeMode::kRestSkinned, skipMeshLOD, distantLOD };
 		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats, sceneOptions);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);

@@ -70,6 +70,7 @@ namespace RT
 		void SetStaticTrees(bool a_enabled) { staticTrees = a_enabled; }
 		/** @brief M8 diagnostic: leave kMeshLOD shapes (L1_/L2_ detail levels) out of the scene. */
 		void SetSkipMeshLOD(bool a_enabled) { skipMeshLOD = a_enabled; }
+		void SetDistantLOD(bool a_enabled) { distantLOD = a_enabled; }
 		/** @brief M8: Light Limit Fix's room indices for this frame (see RT::SetRoomIndices). */
 		void SetRoomIndices(std::span<const RoomIndex> a_rooms)
 		{
@@ -211,6 +212,7 @@ namespace RT
 		bool treeRestPose = true;
 		bool staticTrees = true;
 		bool skipMeshLOD = false;
+		bool distantLOD = false;  // M8: distant land and object LOD in the traced scene
 		ankerl::unordered_dense::map<const void*, uint32_t> roomIndices;  // M8: room node -> Light Limit Fix index + 1
 #if defined(SKYRIMRT_NRD)
 		std::unique_ptr<GlobalIllumination> gi;

@@ -32,6 +32,12 @@ namespace RT
 		kAlphaTestedCounted,  ///< M7c: counted pixels whose traced hit passed the alpha test
 		kAlphaTestedMatched,
 		kExcludedWind,  ///< M7c: mismatches on wind-animated foliage (TREE_ANIM sway isn't in the TLAS)
+		kOutsideCounted,  ///< M8 distant LOD: non-sky pixels outside the loaded cells (the main metric skips them)
+		kOutsideMatched,  ///< ... traced depth within the mismatch threshold
+		kOutsideNearer,
+		kOutsideFarther,
+		kOutsideMiss,
+		kOutsideHitLOD,  ///< ... whose traced hit is a distant-LOD instance
 		kCounterCount
 	};
 
@@ -62,6 +68,7 @@ namespace RT
 		RE::NiPoint3 posAdjust;
 
 		float MismatchPercent() const { return counters[kCounted] ? 100.0f * (counters[kCounted] - counters[kMatched]) / counters[kCounted] : 0.0f; }
+		float OutsideMismatchPercent() const { return counters[kOutsideCounted] ? 100.0f * (counters[kOutsideCounted] - counters[kOutsideMatched]) / counters[kOutsideCounted] : 0.0f; }
 		float CoveragePercent() const
 		{
 			const uint32_t candidates = counters[kRenderPixels] - counters[kSky];

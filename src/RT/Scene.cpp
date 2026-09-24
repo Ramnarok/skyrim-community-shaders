@@ -68,7 +68,8 @@ namespace RT
 
 		void FillMaterial(RE::BSLightingShaderProperty* a_property, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& a_geometryData, GeometryCandidate& a_candidate);
 
-		GeometryCategory Classify(RE::BSGeometry* a_geometry, GeometryCandidate& a_candidate)
+		/** @param a_acceptLOD M8: extract LOD shape types like triangle shapes (the distant-LOD walk); else they're kLOD. */
+		GeometryCategory Classify(RE::BSGeometry* a_geometry, GeometryCandidate& a_candidate, bool a_acceptLOD = false)
 		{
 			switch (a_geometry->GetType().get()) {
 			case Type::kParticles:
@@ -82,7 +83,9 @@ namespace RT
 				return GeometryCategory::kInstanced;
 			case Type::kMeshLODTriShape:
 			case Type::kLODMultiIndexTriShape:
-				return GeometryCategory::kLOD;
+				if (!a_acceptLOD)
+					return GeometryCategory::kLOD;
+				break;
 			case Type::kTriShape:
 			case Type::kMultiIndexTriShape:
 			case Type::kSubIndexTriShape:
@@ -166,7 +169,64 @@ namespace RT
 			SceneOptions options;
 			const RE::NiNode* room = nullptr;  // M8: nearest BSMultiBoundRoom / BSPortalSharedNode above the walk position
 			const RE::NiNode* objectRoot = nullptr;  // M8: outermost BSFadeNode above the walk position (the object's root)
+			const LoadedArea* distantLOD = nullptr;  // M8: walking TES::lodLandRoot; the loaded cells, to find LOD reaching into them
 		};
+
+		// M8 distant LOD: one shape under TES::lodLandRoot. Opaque triangle geometry is traced (land and object LOD); tree
+		// billboards (instanced), alpha-tested, blended and decal LOD, water and effects aren't.
+		void CollectDistantLOD(RE::BSGeometry* a_geometry, WalkOutput& a_out)
+		{
+			auto& lod = a_out.stats.lod;
+			const auto type = static_cast<uint32_t>(a_geometry->GetType().get());
+			if (type < lod.byGeometryType.size())
+				lod.byGeometryType[type]++;
+
+			GeometryCandidate candidate;
+			const auto category = Classify(a_geometry, candidate, true);
+			if (category == GeometryCategory::kInstanced) {
+				lod.skippedTrees++;
+				return;
+			}
+			if (category != GeometryCategory::kStaticMesh && category != GeometryCategory::kTerrain) {
+				lod.skippedOther++;
+				return;
+			}
+			if (candidate.alphaTested || candidate.alphaBlended || candidate.decal) {
+				lod.skippedAlphaTested++;
+				return;
+			}
+			// The BLAS and hit lookups read float3 positions (M3: every loaded mesh). LOD buffers weren't audited then, so a
+			// half-position LOD shape is left out and counted rather than traced as garbage.
+			RE::BSGraphics::VertexDesc desc;
+			std::memcpy(&desc, &candidate.vertexDesc, sizeof(desc));
+			if (HasHalfPositions(desc)) {
+				lod.skippedHalfPositions++;
+				return;
+			}
+
+			bool landLOD = false;
+			if (auto* property = netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()); property && property->material) {
+				const auto feature = property->material->GetFeature();
+				landLOD = feature == Feature::kLODLand || feature == Feature::kLODLandNoise;
+			}
+			candidate.terrain = false;  // not the loaded terrain: its own mask, clipped to outside the loaded cells
+			candidate.distantLOD = true;
+			candidate.geometry = a_geometry;
+			candidate.world = a_geometry->world;
+
+			// Its XY bound circle against the loaded cells' rectangle: overlapping ones are clipped by the traces.
+			const auto& area = *a_out.distantLOD;
+			const auto& bound = a_geometry->worldBound;
+			if (area.bounded) {
+				const float dx = std::max({ area.min.x - bound.center.x, 0.0f, bound.center.x - area.max.x });
+				const float dy = std::max({ area.min.y - bound.center.y, 0.0f, bound.center.y - area.max.y });
+				candidate.lodClip = dx * dx + dy * dy <= bound.radius * bound.radius;
+			}
+			lod.clippedShapes += candidate.lodClip;
+			lod.triangles += candidate.triangleCount;
+			(landLOD ? lod.terrainShapes : lod.objectShapes)++;
+			a_out.candidates.push_back(candidate);
+		}
 
 		// M8: LightLimitFix.cpp's GetParentRoomNode test (same RTTI): Lighting.hlsl culls portal-strict lights by the room of
 		// the node found this way above the drawn geometry.
@@ -356,9 +416,10 @@ namespace RT
 		{
 			if (!a_object)
 				return;
-			// A hidden node hides its whole subtree (disabled references, etc.).
+			// A hidden node hides its whole subtree (disabled references, etc.; under the LOD root, blocks and cells the game
+			// has app-culled, such as a LOD-4 block's cells that are loaded).
 			if (a_object->GetFlags().any(RE::NiAVObject::Flag::kHidden)) {
-				a_out.stats.hiddenSubtrees++;
+				(a_out.distantLOD ? a_out.stats.lod.hiddenSubtrees : a_out.stats.hiddenSubtrees)++;
 				return;
 			}
 
@@ -377,6 +438,10 @@ namespace RT
 			}
 
 			if (auto* geometry = a_object->AsGeometry()) {
+				if (a_out.distantLOD) {
+					CollectDistantLOD(geometry, a_out);
+					return;
+				}
 				// M8: shapes named L1_/L2_ carry kMeshLOD (lower levels of detail in the object's own NIF). CollectScene
 				// drops the ones that are alternates of plain geometry; the diagnostic option drops them all.
 				const bool meshLOD = geometry->GetFlags().any(RE::NiAVObject::Flag::kMeshLOD);
@@ -642,6 +707,16 @@ namespace RT
 				}
 			}
 		}
+		// M8 distant LOD: land and object LOD hang under TES::lodLandRoot (a direct TES member on every runtime). The game
+		// detaches blocks it isn't drawing and app-culls (kHidden) the loaded cells of the finest blocks; what overlaps the
+		// loaded cells anyway is clipped by the traces (CollectDistantLOD). The cell walk above filled a_area.
+		if (!interior && a_options.distantLOD && a_area.bounded && tes->lodLandRoot) {
+			out.distantLOD = &a_area;
+			Walk(tes->lodLandRoot, out);
+			out.distantLOD = nullptr;
+			a_stats.lod.walked = true;
+		}
+
 		a_stats.exclusionBounds = static_cast<uint32_t>(a_exclusions.size());
 
 		// M8: an object whose NIF has other shapes draws those up close; its pure lower-detail copies (kMeshLOD, named

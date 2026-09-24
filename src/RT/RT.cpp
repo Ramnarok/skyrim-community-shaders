@@ -237,6 +237,12 @@ namespace RT
 			sidecar->SetSkipMeshLOD(a_enabled);
 	}
 
+	void SetDistantLOD(bool a_enabled)
+	{
+		if (sidecar)
+			sidecar->SetDistantLOD(a_enabled);
+	}
+
 	const AlphaAtlasStats* GetAlphaAtlasStats()
 	{
 		return sidecar ? &sidecar->GetAlphaAtlasStats() : nullptr;

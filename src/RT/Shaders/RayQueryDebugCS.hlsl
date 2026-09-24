@@ -51,6 +51,14 @@ static const uint kExcludedClutter = 10;
 static const uint kAlphaTestedCounted = 11;  // M7c: counted pixels whose traced hit passed the alpha test
 static const uint kAlphaTestedMatched = 12;
 static const uint kExcludedWind = 13;  // M7c: mismatches on wind-animated foliage
+// M8 distant LOD: the same depth test for non-sky pixels outside the loaded cells (not in the main metric: tree LOD
+// billboards and anything else the TLAS lacks out there count as mismatches).
+static const uint kOutsideCounted = 14;
+static const uint kOutsideMatched = 15;
+static const uint kOutsideNearer = 16;
+static const uint kOutsideFarther = 17;
+static const uint kOutsideMiss = 18;
+static const uint kOutsideHitLOD = 19;  // ... whose traced hit is a distant-LOD instance
 
 void Count(uint a_slot, bool a_condition)
 {
@@ -161,7 +169,7 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	ray.TMax = maxT;
 
 	RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
-	query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskStatic | kMaskTerrain | kMaskAlphaTested | kMaskActor, ray);
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskStatic | kMaskTerrain | kMaskAlphaTested | kMaskActor | kMaskDistantLOD, ray);
 	PROCEED_ALPHA_TESTED(query);
 	const bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 	const float t = hit ? query.CommittedRayT() : maxT;
@@ -211,7 +219,10 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	const bool nearer = counted && hit && !matched && t < rasterT;
 	const bool farther = counted && hit && !matched && t >= rasterT;
 	const bool miss = counted && !hit;
-	const bool alphaTestedHit = counted && hit && (hitData.Alpha & 0xFFFu) != 0;
+	const bool alphaTestedHit = counted && hit && (hitData.Flags & kInstanceLODClip) == 0 && (hitData.Alpha & 0xFFFu) != 0;
+	const bool outsideMatched = outside && hit && relative <= C.MismatchThreshold;
+	const bool outsideNearer = outside && hit && !outsideMatched && t < rasterT;
+	const bool outsideFarther = outside && hit && !outsideMatched && t >= rasterT;
 
 	Count(kRenderPixels, true);
 	Count(kSky, sky);
@@ -227,6 +238,12 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	Count(kAlphaTestedCounted, alphaTestedHit);
 	Count(kAlphaTestedMatched, alphaTestedHit && matched);
 	Count(kExcludedWind, excludedWind);
+	Count(kOutsideCounted, outside);
+	Count(kOutsideMatched, outsideMatched);
+	Count(kOutsideNearer, outsideNearer);
+	Count(kOutsideFarther, outsideFarther);
+	Count(kOutsideMiss, outside && !hit);
+	Count(kOutsideHitLOD, outside && hit && (hitData.Flags & kInstanceDistantLOD) != 0);
 
 	// Depth view: near = bright, log scaled; misses dark blue.
 	const float depthValue = 1.0 - saturate(log2(1.0 + t) / log2(1.0 + C.MaxDistance));
@@ -238,9 +255,10 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 
 	// Diff view: black sky, dark grey outside the loaded cells, grey excluded occluder, pink excluded alpha, ochre wind,
 	// green match, red traced nearer, blue traced farther, yellow traced miss.
+	// M8: outside the loaded cells the same colours, darker (dark grey where nothing was hit).
 	float3 diff = float3(0.0, 0.0, 0.0);
 	if (outside)
-		diff = float3(0.15, 0.15, 0.15);
+		diff = outsideMatched ? float3(0.0, 0.45, 0.0) : outsideNearer ? float3(0.55, 0.0, 0.0) : outsideFarther ? float3(0.0, 0.15, 0.55) : float3(0.15, 0.15, 0.15);
 	else if (excluded)
 		diff = float3(0.45, 0.45, 0.45);
 	else if (excludedAlpha)

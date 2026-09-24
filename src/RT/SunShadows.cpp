@@ -46,6 +46,7 @@ namespace RT
 		constexpr uint32_t kMaskTerrain = 0x02;
 		constexpr uint32_t kMaskAlphaTested = 0x08;
 		constexpr uint32_t kMaskActor = 0x04;  // M7 skinned
+		constexpr uint32_t kMaskDistantLOD = 0x40;  // M8: present only with "Distant LOD in the traced scene"; clipped to outside the loaded cells
 
 		constexpr uint64_t kConstantsOffset = 0;
 		constexpr uint64_t kZeroOffset = 512;
@@ -441,7 +442,7 @@ namespace RT
 		constants->prevRenderSize[1] = prevRenderHeight;
 		constants->frameIndex = frameIndex;
 		constants->historyValid = historyValid ? 1u : 0u;
-		constants->casterMask = kMaskStatic | kMaskTerrain | kMaskActor | (a_settings.alphaTestedCasters ? kMaskAlphaTested : 0u);
+		constants->casterMask = kMaskStatic | kMaskTerrain | kMaskActor | kMaskDistantLOD | (a_settings.alphaTestedCasters ? kMaskAlphaTested : 0u);
 		constants->flags = a_compareShadowMap ? kFlagCompareShadowMap : 0u;
 		constants->normalBias = a_settings.normalBias;
 		constants->distanceBias = a_settings.distanceBias;

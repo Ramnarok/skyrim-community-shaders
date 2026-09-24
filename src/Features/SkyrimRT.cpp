@@ -32,6 +32,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TreeRestPose,
 	StaticTrees,
 	SkipMeshLOD,
+	DistantLOD,
 	GPUHangDiagnostics,
 	SunShadows,
 	SunAngularRadius,
@@ -294,6 +295,7 @@ void SkyrimRT::Prepass()
 	RT::SetTreeRestPose(settings.TreeRestPose);
 	RT::SetStaticTrees(settings.StaticTrees);
 	RT::SetSkipMeshLOD(settings.SkipMeshLOD);
+	RT::SetDistantLOD(settings.DistantLOD);
 	{
 		// M8: Light Limit Fix rebuilt its room indices in its Prepass, earlier this frame; Lighting.hlsl's RoomIndex uses
 		// the same map during the opaque pass.
@@ -682,6 +684,9 @@ void SkyrimRT::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("static_trees_tooltip"), "In their rest pose a tree's bones all share one transform, so the tree can be traced like any static mesh: its acceleration structure is built once instead of being skinned and refitted every frame. Same result, less GPU work."));
+		ImGui::Checkbox(T(TKEY("distant_lod"), "Distant LOD in the traced scene"), &settings.DistantLOD);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("distant_lod_tooltip"), "Trace the distant land and object LOD beyond the loaded cells too: far mountains cast sun shadows, block the sky and show up in reflections. Where LOD overlaps the loaded cells it is ignored, as the game draws the full detail there."));
 		ImGui::Checkbox(T(TKEY("skip_mesh_lod"), "Skip all mesh LOD shapes (diagnostic)"), &settings.SkipMeshLOD);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("skip_mesh_lod_tooltip"), "Leave out every lower-detail shape (named L1_ / L2_), including shrubs and ferns that have no other geometry. Normally only the ones whose object also has full-detail geometry are left out, since the game draws the full-detail version up close."));

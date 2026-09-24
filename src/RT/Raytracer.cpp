@@ -15,7 +15,7 @@ namespace RT
 		constexpr uint64_t kAabbOffset = 7ull << 20;                        // kMaxExclusions * 24 B
 		constexpr uint64_t kConstantsOffset = 8ull << 20;                   // TraceConstants
 		constexpr uint64_t kZeroOffset = kConstantsOffset + 256;            // zeros for the counter clear
-		constexpr uint64_t kCounterBytes = 64;                              // 16 uints, kCounterCount used
+		constexpr uint64_t kCounterBytes = 128;                             // 32 uints, kCounterCount used
 		static_assert(kCounterCount * sizeof(uint32_t) <= kCounterBytes);
 		constexpr uint32_t kTimestampsPerSlot = 4;
 
@@ -25,6 +25,19 @@ namespace RT
 		constexpr uint32_t kMaskExclusion = 0x10;
 		constexpr uint32_t kMaskActor = 0x04;         // M7 skinned
 		constexpr uint32_t kMaskAlphaBlended = 0x20;  // in no trace: alpha-blended (drawn after the pre-water depth copy) and decals
+		constexpr uint32_t kMaskDistantLOD = 0x40;    // M8: distant land and object LOD (TES::lodLandRoot)
+
+		// InstanceData.Flags bits 5-6 (M8 distant LOD); bits 0-4 are the older flags, 8-31 the albedo word.
+		constexpr uint32_t kInstanceDataDistantLOD = 32;
+		constexpr uint32_t kInstanceDataLODClip = 64;  // Room / Alpha hold the loaded cells' rectangle: hits inside are rejected
+
+		// M8: a camera-relative XY pair as two int16 in units of 2 game units (±65,534 around the camera), for the LOD clip
+		// rectangle. The loaded cells lie within a few cells of the camera, so this never clamps in practice.
+		uint32_t PackClipCorner(float a_x, float a_y)
+		{
+			auto pack = [](float a_value) { return static_cast<uint32_t>(static_cast<uint16_t>(static_cast<int16_t>(std::clamp(std::round(a_value * 0.5f), -32768.0f, 32767.0f)))); };
+			return pack(a_x) | (pack(a_y) << 16);
+		}
 
 		// Descriptor heap layout.
 		constexpr uint32_t kDepthDescriptor = 0;
@@ -378,13 +391,27 @@ namespace RT
 				desc.Transform[row][3] = translate[row];
 			}
 			desc.InstanceID = i;
-			desc.InstanceMask = record.actor ? kMaskActor : record.alphaBlended || record.decal ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
-			desc.Flags = record.alpha ? kInstanceFlagForceNonOpaque : 0u;
+			desc.InstanceMask = record.distantLOD ? kMaskDistantLOD : record.actor ? kMaskActor : record.alphaBlended || record.decal ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
+			uint32_t flags = (record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u) | (record.albedoWord << 8);
+			uint32_t alpha = record.alpha;
+			uint32_t room = record.room;
+			// M8: distant LOD reaching into the loaded cells is non-opaque; every trace rejects its hits inside them
+			// (PROCEED_ALPHA_TESTED), where the game draws the loaded cells instead. LOD isn't alpha-tested or in a room.
+			if (record.distantLOD) {
+				flags |= kInstanceDataDistantLOD;
+				alpha = 0;
+				room = 0;
+				if (record.lodClip && a_area.bounded) {
+					flags |= kInstanceDataLODClip;
+					room = PackClipCorner(a_area.min.x - adjust.x, a_area.min.y - adjust.y);
+					alpha = PackClipCorner(a_area.max.x - adjust.x, a_area.max.y - adjust.y);
+				}
+			}
+			desc.Flags = (record.distantLOD ? (flags & kInstanceDataLODClip) != 0 : alpha != 0) ? kInstanceFlagForceNonOpaque : 0u;
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;
-			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride,
-				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u) | (record.albedoWord << 8), record.albedo, record.alpha,
-				record.uvPage, record.uvOffset, record.uvStride, record.room };
+			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride, flags, record.albedo, alpha,
+				record.uvPage, record.uvOffset, record.uvStride, room };
 		}
 
 		SetPassMarker(a_list, L"SkyrimRT: exclusion BLAS");

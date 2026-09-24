@@ -27,6 +27,27 @@ namespace RT
 			return names;
 		}
 
+		// M8: what the walk of TES::lodLandRoot found (BSGeometry::Type names as CommonLib's enum).
+		json DistantLODJson(const SceneStats::DistantLOD& a_lod)
+		{
+			constexpr const char* kTypeNames[] = { "geometry", "particles", "strip_particles", "tri_shape", "dynamic_tri_shape", "mesh_lod_tri_shape",
+				"lod_multi_index_tri_shape", "multi_index_tri_shape", "sub_index_tri_shape", "sub_index_land_tri_shape", "multi_stream_instance_tri_shape",
+				"particle_shader_dynamic_tri_shape", "lines", "dynamic_lines", "instance_group" };
+			json types = json::object();
+			for (size_t i = 0; i < a_lod.byGeometryType.size(); i++) {
+				if (a_lod.byGeometryType[i])
+					types[i < std::size(kTypeNames) ? kTypeNames[i] : std::format("type_{}", i)] = a_lod.byGeometryType[i];
+			}
+			return {
+				{ "walked", a_lod.walked },
+				{ "traced", { { "land_shapes", a_lod.terrainShapes }, { "object_shapes", a_lod.objectShapes }, { "clipped_to_outside_loaded_cells", a_lod.clippedShapes },
+								{ "triangles", a_lod.triangles } } },
+				{ "skipped", { { "tree_billboards", a_lod.skippedTrees }, { "alpha_tested_blended_decal", a_lod.skippedAlphaTested }, { "water_effects_other", a_lod.skippedOther }, { "half_positions", a_lod.skippedHalfPositions },
+								 { "hidden_subtrees", a_lod.hiddenSubtrees } } },
+				{ "shapes_by_type", types },
+			};
+		}
+
 		json SceneJson(const DebugDumpData& a_data)
 		{
 			const auto& s = a_data.scene;
@@ -55,6 +76,7 @@ namespace RT
 							   { "static_partitions", s.treeStaticPartitions }, { "static_unique_meshes", s.uniqueTreeMeshes },
 							   { "half_position_partitions_skinned", s.treeHalfPositionPartitions } } },
 				{ "instances_in_lit_rooms", s.instancesInRooms }, { "lit_room_nodes", s.roomNodes },
+				{ "distant_lod", DistantLODJson(s.lod) },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
 		}
@@ -135,6 +157,16 @@ namespace RT
 				{ "target_percent", kTargetPercent },
 				{ "within_target", t.haveResult && t.counters[kCounted] > 0 && t.MismatchPercent() < kTargetPercent },
 				{ "window", { { "depth_mismatch_percent", TimingJson(t.mismatchPercent) }, { "coverage_percent", TimingJson(t.coveragePercent) } } },
+				// M8 distant LOD: the same depth test outside the loaded cells (tree LOD billboards aren't traced: they count as
+				// traced farther / miss here).
+				{ "outside_loaded_cells",
+					{ { "pixels", t.counters[kOutsideCounted] },
+						{ "matched", t.counters[kOutsideMatched] },
+						{ "traced_nearer", t.counters[kOutsideNearer] },
+						{ "traced_farther", t.counters[kOutsideFarther] },
+						{ "traced_miss", t.counters[kOutsideMiss] },
+						{ "hit_distant_lod", t.counters[kOutsideHitLOD] },
+						{ "mismatch_percent", t.OutsideMismatchPercent() } } },
 				{ "timings_ms", { { "blas_builds", TimingJson(t.blasBuildMs) }, { "tlas_build", TimingJson(t.tlasBuildMs) }, { "trace", TimingJson(t.traceMs) } } },
 				{ "blas", { { "built", c.blasBuilt }, { "pending", c.blasPending }, { "built_last_frame", c.blasBuiltLastFrame }, { "total_built", c.blasTotalBuilt }, { "failed", c.blasFailed }, { "blas_mb", c.blasBytes / kMB }, { "as_pool_reserved_mb", c.asPoolBytes / kMB } } },
 				{ "loaded_area", { { "bounded", t.area.bounded }, { "min_xy", { t.area.min.x, t.area.min.y } }, { "max_xy", { t.area.max.x, t.area.max.y } } } },

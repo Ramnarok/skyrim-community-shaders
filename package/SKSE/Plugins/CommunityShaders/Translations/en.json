@@ -1395,6 +1395,8 @@
     "feature.skyrim_rt.description": "Experimental hybrid ray-traced lighting using a DirectX 12 raytracing device alongside the game's renderer.",
     "feature.skyrim_rt.device": "Device",
     "feature.skyrim_rt.device_removed": "Device removed: interop stopped. See CommunityShaders.log.",
+    "feature.skyrim_rt.distant_lod": "Distant LOD in the traced scene",
+    "feature.skyrim_rt.distant_lod_tooltip": "Trace the distant land and object LOD beyond the loaded cells too: far mountains cast sun shadows, block the sky and show up in reflections. Where LOD overlaps the loaded cells it is ignored, as the game draws the full detail there.",
     "feature.skyrim_rt.enable": "Enable",
     "feature.skyrim_rt.enable_tooltip": "Run the DirectX 12 device each frame. When off, Skyrim RT does no work at all.",
     "feature.skyrim_rt.frame_cost": "Frame cost (whole ray tracing round trip)",

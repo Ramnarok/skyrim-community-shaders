@@ -55,6 +55,7 @@ namespace RT
 		constexpr uint32_t kMaskTerrain = 0x02;
 		constexpr uint32_t kMaskActor = 0x04;
 		constexpr uint32_t kMaskAlphaTested = 0x08;
+		constexpr uint32_t kMaskDistantLOD = 0x40;  // M8: present only with "Distant LOD in the traced scene"; clipped to outside the loaded cells
 		constexpr float kNormalBias = 1.0f;
 		constexpr float kDistanceBias = 0.002f;
 
@@ -515,7 +516,7 @@ namespace RT
 		c->renderSize[0] = a_renderWidth;
 		c->renderSize[1] = a_renderHeight;
 		c->frameIndex = frameIndex;
-		c->casterMask = kMaskStatic | kMaskTerrain | kMaskActor | (a_params.alphaTestedCasters ? kMaskAlphaTested : 0u);
+		c->casterMask = kMaskStatic | kMaskTerrain | kMaskActor | kMaskDistantLOD | (a_params.alphaTestedCasters ? kMaskAlphaTested : 0u);
 		c->normalBias = kNormalBias;
 		c->distanceBias = kDistanceBias;
 		c->skyViewZ = kSkyViewZ;

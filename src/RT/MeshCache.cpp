@@ -585,7 +585,9 @@ namespace RT
 				.alphaTested = candidate.alphaTested,
 				.alphaBlended = candidate.alphaBlended,
 				.decal = candidate.decal,
-				.windAnimated = candidate.windAnimated });
+				.windAnimated = candidate.windAnimated,
+				.distantLOD = candidate.distantLOD,
+				.lodClip = candidate.lodClip });
 		}
 	}
 }

@@ -35,7 +35,7 @@ int PixelRoom(float3 a_nearPoint, float3 a_position, float a_distance)
 	PROCEED_ALPHA_TESTED(query);
 	if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
 		return -1;
-	return int(Instances[query.CommittedInstanceID()].Room) - 1;
+	return InstanceRoom(Instances[query.CommittedInstanceID()]);
 }
 
 void Count(uint a_slot, bool a_condition)

@@ -204,7 +204,7 @@ PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycent
 	a_sunLit = false;
 	if (dot(normal, C.ToSun.xyz) > 0.0 && any(C.SunColor.rgb > 0.0))
 		a_sunLit = C.Interior || !Occluded(vertex.origin, C.ToSun.xyz, kSunRayLength);
-	const float3 pointLights = SamplePointLights(position, normal, vertex.origin, RandomLight(a_pixel, C.FrameIndex, a_bounce), int(a_instance.Room) - 1,
+	const float3 pointLights = SamplePointLights(position, normal, vertex.origin, RandomLight(a_pixel, C.FrameIndex, a_bounce), InstanceRoom(a_instance),
 		a_lightSampled, a_lightOccluded, a_occluderToLight);
 	const float sun = saturate(dot(normal, C.ToSun.xyz)) * (a_sunLit ? 1.0 : 0.0);
 	const float3 albedo = HitAlbedo(a_instance, a_primitive, a_barycentrics);

@@ -268,6 +268,8 @@ namespace RT
 	void SetStaticTrees(bool a_enabled);
 	/** @brief M8 diagnostic: leave shapes flagged kMeshLOD (their mesh's L1_/L2_ detail levels) out of the traced scene. */
 	void SetSkipMeshLOD(bool a_enabled);
+	/** @brief M8: add distant land and object LOD (TES::lodLandRoot) to the traced scene, clipped to outside the loaded cells. */
+	void SetDistantLOD(bool a_enabled);
 	/** @brief M7c alpha-atlas stats, or nullptr. */
 	const struct AlphaAtlasStats* GetAlphaAtlasStats();
 	/** @brief M8 albedo-atlas stats, or nullptr. */

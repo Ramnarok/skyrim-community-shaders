@@ -40,6 +40,7 @@ namespace RT
 	{
 		TreeMode treeMode = TreeMode::kRestStatic;
 		bool skipMeshLOD = false;  // M8 diagnostic: leave out every kMeshLOD shape, not only the alternates (see CollectScene)
+		bool distantLOD = false;   // M8: walk TES::lodLandRoot too (distant terrain and object LOD), exteriors only
 	};
 
 	/** @brief One extractable (static or terrain) geometry instance this frame. */
@@ -71,6 +72,10 @@ namespace RT
 		// M8: kDecal / kDynamicDecal: an overlay drawn just above another surface without writing depth (road dirt and grass
 		// strips). Traced, it shadowed the surface under it (Whiterun gate), so it stays out of every trace.
 		bool decal = false;
+		// M8 distant LOD: a shape under TES::lodLandRoot. It's traced only outside the loaded cells, where the game draws it;
+		// lodClip marks one whose bound reaches into them, so the traces reject its hits inside (InstanceData LOD clip).
+		bool distantLOD = false;
+		bool lodClip = false;
 	};
 
 	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
@@ -182,6 +187,21 @@ namespace RT
 		uint32_t treeStaticPartitions = 0;        ///< M8: static tree instances (one per partition)
 		uint32_t treeHalfPositionPartitions = 0;  ///< M8: rest-pose tree partitions with half positions, left on the skinned path
 		uint32_t uniqueTreeMeshes = 0;            ///< M8: distinct bind-pose buffers among the static tree instances (BLASes needed)
+		// M8 distant LOD (TES::lodLandRoot), exteriors with SceneOptions::distantLOD.
+		struct DistantLOD
+		{
+			bool walked = false;
+			uint32_t hiddenSubtrees = 0;      ///< kHidden (app-culled) nodes under the LOD root: blocks and cells the game isn't drawing
+			uint32_t terrainShapes = 0;       ///< traced: LOD land (material kLODLand / kLODLandNoise)
+			uint32_t objectShapes = 0;        ///< traced: other LOD geometry (object LOD)
+			uint32_t clippedShapes = 0;       ///< of the traced, bound reaching into the loaded cells (hits there rejected)
+			uint64_t triangles = 0;           ///< of the traced
+			uint32_t skippedTrees = 0;        ///< tree LOD billboards (instanced), not traced
+			uint32_t skippedAlphaTested = 0;  ///< alpha-tested, blended or decal LOD, not traced
+			uint32_t skippedOther = 0;        ///< water, effects, no renderer data, skinned
+			uint32_t skippedHalfPositions = 0;  ///< positions stored as 4 x half (the BLAS reads float3), not traced
+			std::array<uint32_t, 32> byGeometryType{};  ///< every LOD shape seen, by BSGeometry::Type
+		} lod;
 		float traversalMs = 0.0f;
 	};
 
