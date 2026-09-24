@@ -172,6 +172,7 @@ namespace RT
 			const RE::NiNode* room = nullptr;  // M8: nearest BSMultiBoundRoom / BSPortalSharedNode above the walk position
 			const RE::NiNode* objectRoot = nullptr;  // M8: outermost BSFadeNode above the walk position (the object's root)
 			const LoadedArea* distantLOD = nullptr;  // M8: walking TES::lodLandRoot; the loaded cells, to find LOD reaching into them
+			std::vector<const RE::BSGeometry*>* waterShapes = nullptr;  // M8 water census: water shapes met by the cell walk
 		};
 
 		// M8 distant LOD: one shape under TES::lodLandRoot. Opaque triangle geometry is traced (land and object LOD); tree
@@ -784,6 +785,155 @@ namespace RT
 			}
 		}
 
+		// M8 water census: one water object's shape, with its planes, placement and the extent of its raw positions.
+		void SampleWater(const RE::TESWaterObject& a_object, RE::BSTriShape& a_shape, SceneStats::WaterSample& a_out, float& a_worldZMin, float& a_worldZMax)
+		{
+			a_out.objectFlags = a_object.flags;
+			a_out.multiBounds = a_object.multiBounds.size();
+			a_out.objectPlane[0] = a_object.plane.normal.x;
+			a_out.objectPlane[1] = a_object.plane.normal.y;
+			a_out.objectPlane[2] = a_object.plane.normal.z;
+			a_out.objectPlane[3] = a_object.plane.constant;
+			a_out.geometryName = a_shape.name.c_str() ? a_shape.name.c_str() : "";
+			if (const auto* rtti = a_shape.GetRTTI(); rtti && rtti->GetName())
+				a_out.geometryRTTI = rtti->GetName();
+			a_out.ancestorFlags = a_shape.GetFlags().underlying();
+			int depth = 0;
+			for (const RE::NiNode* node = a_shape.parent; node; node = node->parent) {
+				a_out.ancestorFlags |= node->GetFlags().underlying();
+				if (depth++ < 5) {
+					if (!a_out.parents.empty())
+						a_out.parents += " < ";
+					a_out.parents += node->name.c_str() ? node->name.c_str() : "";
+					if (const auto* rtti = node->GetRTTI(); rtti && rtti->GetName())
+						a_out.parents += std::format(" ({})", rtti->GetName());
+				}
+			}
+			const auto& world = a_shape.world;
+			a_out.worldTranslate[0] = world.translate.x;
+			a_out.worldTranslate[1] = world.translate.y;
+			a_out.worldTranslate[2] = world.translate.z;
+			a_out.worldScale = world.scale;
+			for (int c = 0; c < 3; c++)
+				a_out.worldRotateZRow[c] = world.rotate.entry[2][c];
+			a_out.boundCenter[0] = a_shape.worldBound.center.x;
+			a_out.boundCenter[1] = a_shape.worldBound.center.y;
+			a_out.boundCenter[2] = a_shape.worldBound.center.z;
+			a_out.boundRadius = a_shape.worldBound.radius;
+
+			const auto& geometryData = a_shape.GetGeometryRuntimeData();
+			if (auto* property = geometryData.shaderProperty.get()) {
+				if (const auto* rtti = property->GetRTTI(); rtti && rtti->GetName())
+					a_out.propertyRTTI = rtti->GetName();
+				if (auto* water = netimmerse_cast<RE::BSWaterShaderProperty*>(property)) {
+					a_out.waterFlags = water->waterFlags.underlying();
+					a_out.propertyPlane[0] = water->plane.normal.x;
+					a_out.propertyPlane[1] = water->plane.normal.y;
+					a_out.propertyPlane[2] = water->plane.normal.z;
+					a_out.propertyPlane[3] = water->plane.constant;
+				}
+			}
+			a_out.vertexCount = a_shape.GetTrishapeRuntimeData().vertexCount;
+			a_out.triangleCount = a_shape.GetTrishapeRuntimeData().triangleCount;
+			auto* rendererData = geometryData.rendererData;
+			if (!rendererData)
+				return;
+			std::memcpy(&a_out.vertexDesc, &rendererData->vertexDesc, sizeof(a_out.vertexDesc));
+			a_out.stride = static_cast<uint32_t>(a_out.vertexDesc & 0xF) * 4;
+			a_out.rawVertices = rendererData->rawVertexData != nullptr;
+			a_out.rawIndices = rendererData->rawIndexData != nullptr;
+			if (!rendererData->rawVertexData || a_out.stride < 12 || a_out.vertexCount == 0)
+				return;
+			// Positions are float3 at offset 0 (M3).
+			const auto* bytes = static_cast<const uint8_t*>(static_cast<const void*>(rendererData->rawVertexData));
+			a_worldZMin = FLT_MAX;
+			a_worldZMax = -FLT_MAX;
+			for (int c = 0; c < 3; c++) {
+				a_out.localMin[c] = FLT_MAX;
+				a_out.localMax[c] = -FLT_MAX;
+			}
+			for (uint32_t v = 0; v < a_out.vertexCount; v++) {
+				float p[3];
+				std::memcpy(p, bytes + static_cast<size_t>(v) * a_out.stride, sizeof(p));
+				for (int c = 0; c < 3; c++) {
+					a_out.localMin[c] = std::min(a_out.localMin[c], p[c]);
+					a_out.localMax[c] = std::max(a_out.localMax[c], p[c]);
+				}
+				const float z = world.translate.z + world.scale * (world.rotate.entry[2][0] * p[0] + world.rotate.entry[2][1] * p[1] + world.rotate.entry[2][2] * p[2]);
+				a_worldZMin = std::min(a_worldZMin, z);
+				a_worldZMax = std::max(a_worldZMax, z);
+			}
+			a_out.worldZMin = a_worldZMin;
+			a_out.worldZMax = a_worldZMax;
+		}
+
+		void CensusWater(RE::TES* a_tes, const std::vector<const RE::BSGeometry*>& a_cellWalkShapes, SceneStats::Water& a_out)
+		{
+			a_out.walked = true;
+			a_out.stage = 1;
+			auto* system = RE::TESWaterSystem::GetSingleton();
+			if (!system)
+				return;
+			a_out.haveSystem = true;
+			a_out.enabled = system->enabled;
+			a_out.playerUnderwater = system->playerUnderwater;
+			a_out.underwaterHeight = system->underwaterHeight;
+			a_out.reflections = system->waterReflections.size();
+			a_out.displacements = system->waterDisplacement.size();
+			a_out.normals = system->waterNormals.size();
+
+			a_out.stage = 2;
+			ankerl::unordered_dense::set<const RE::BSGeometry*> systemShapes;
+			for (const auto& objectPtr : system->waterObjects) {
+				const auto* object = objectPtr.get();
+				if (!object)
+					continue;
+				a_out.objects++;
+				auto* shape = object->shape.get();
+				if (!shape)
+					continue;
+				a_out.withShape++;
+				systemShapes.insert(shape);
+				SceneStats::WaterSample sample;
+				float zMin = 0.0f, zMax = 0.0f;
+				SampleWater(*object, *shape, sample, zMin, zMax);
+				sample.inCellWalk = std::find(a_cellWalkShapes.begin(), a_cellWalkShapes.end(), shape) != a_cellWalkShapes.end();
+				a_out.inCellWalk += sample.inCellWalk;
+				a_out.visible += (sample.ancestorFlags & static_cast<uint32_t>(RE::NiAVObject::Flag::kHidden)) == 0;
+				a_out.rawBoth += sample.rawVertices && sample.rawIndices;
+				a_out.flat += sample.rawVertices && zMax - zMin < 1.0f;
+				a_out.triangles += sample.triangleCount;
+				if (a_out.samples.size() < 12)
+					a_out.samples.push_back(std::move(sample));
+			}
+			a_out.cellWalkShapes = static_cast<uint32_t>(a_cellWalkShapes.size());
+			for (const auto* shape : a_cellWalkShapes)
+				a_out.cellWalkUnmatched += !systemShapes.contains(shape);
+
+			a_out.stage = 3;
+			if (auto* lodWater = a_tes->objLODWaterRoot) {
+				RE::BSVisit::TraverseScenegraphGeometries(lodWater, [&](RE::BSGeometry* a_geometry) {
+					a_out.lodWaterShapes++;
+					bool hidden = false;
+					for (const RE::NiAVObject* object = a_geometry; object; object = object->parent)
+						hidden |= object->GetFlags().any(RE::NiAVObject::Flag::kHidden);
+					a_out.lodWaterVisible += !hidden;
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
+			}
+		}
+
+		// Its own guard, as the tree census: UnifiedWater adds water objects from other threads.
+		bool CensusWaterGuarded(RE::TES* a_tes, const std::vector<const RE::BSGeometry*>& a_cellWalkShapes, SceneStats::Water& a_out)
+		{
+			__try {
+				CensusWater(a_tes, a_cellWalkShapes, a_out);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
 		void AddExclusion(RE::NiAVObject* a_object, GeometryCategory a_category, WalkOutput& a_out)
 		{
 			// Geometry the TLAS doesn't contain but which writes depth: the M4 depth metric must not count
@@ -879,8 +1029,12 @@ namespace RT
 				case GeometryCategory::kOther:
 					AddExclusion(geometry, category, a_out);
 					break;
+				case GeometryCategory::kEffectOrWater:
+					if (a_out.waterShapes && netimmerse_cast<RE::BSWaterShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get()))
+						a_out.waterShapes->push_back(geometry);
+					break;  // effects, water and sky don't write the pre-water depth we compare against
 				default:
-					// Particles, effects, water and sky don't write the pre-water depth we compare against.
+					// Particles don't write the pre-water depth either.
 					break;
 				}
 			}
@@ -1060,6 +1214,8 @@ namespace RT
 		const bool interior = tes->interiorCell != nullptr;
 
 		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats, a_options };
+		std::vector<const RE::BSGeometry*> waterShapes;
+		out.waterShapes = &waterShapes;
 		tes->ForEachCell([&](RE::TESObjectCELL* a_cell) {
 			auto* loadedData = a_cell ? a_cell->GetRuntimeData().loadedData : nullptr;
 			if (!loadedData || !loadedData->cell3D)
@@ -1082,6 +1238,21 @@ namespace RT
 			}
 			Walk(cell3D, out);
 		});
+
+		// M8 water census (diagnostic): stops for the session after a fault and keeps what it had reached then.
+		{
+			static bool waterCensusFaulted = false;
+			static SceneStats::Water faultedWater;
+			if (!waterCensusFaulted && !CensusWaterGuarded(tes, waterShapes, a_stats.water)) {
+				waterCensusFaulted = true;
+				a_stats.water.faulted = true;
+				faultedWater = a_stats.water;
+				logger::warn("[SkyrimRT] Water census faulted at stage {} after {} water objects; disabled for this session", faultedWater.stage, faultedWater.objects);
+			}
+			if (waterCensusFaulted)
+				a_stats.water = faultedWater;
+		}
+		out.waterShapes = nullptr;
 
 		// Grass lives under BGSGrassManager::grassNode, outside the cells. The manager pointer comes from CS's
 		// GrassOptimizations LoadGrassType hook (the game passes it in), not from a singleton ID, so no Address

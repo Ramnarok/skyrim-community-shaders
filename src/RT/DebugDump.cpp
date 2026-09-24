@@ -82,6 +82,31 @@ namespace RT
 				{ "instances", a_tree.instances }, { "hidden_instances", a_tree.hiddenInstances }, { "samples", samples } };
 		}
 
+		// M8: TESWaterSystem's water objects and where water shapes live (diagnostic, before water is traced).
+		json WaterJson(const SceneStats::Water& a_water)
+		{
+			auto f3 = [](const float* a_v) { return json{ a_v[0], a_v[1], a_v[2] }; };
+			json samples = json::array();
+			for (const auto& s : a_water.samples)
+				samples.push_back({ { "name", s.geometryName }, { "rtti", s.geometryRTTI }, { "property_rtti", s.propertyRTTI }, { "parents", s.parents },
+					{ "ancestor_flags", std::format("{:08x}", s.ancestorFlags) }, { "water_flags", std::format("{:08x}", s.waterFlags) }, { "object_flags", s.objectFlags },
+					{ "multi_bounds", s.multiBounds }, { "in_cell_walk", s.inCellWalk },
+					{ "object_plane", { s.objectPlane[0], s.objectPlane[1], s.objectPlane[2], s.objectPlane[3] } },
+					{ "property_plane", { s.propertyPlane[0], s.propertyPlane[1], s.propertyPlane[2], s.propertyPlane[3] } },
+					{ "world_translate", f3(s.worldTranslate) }, { "world_scale", s.worldScale }, { "world_rotate_z_row", f3(s.worldRotateZRow) },
+					{ "bound", { s.boundCenter[0], s.boundCenter[1], s.boundCenter[2], s.boundRadius } },
+					{ "vertex_desc", std::format("{:016x}", s.vertexDesc) }, { "stride", s.stride }, { "vertices", s.vertexCount }, { "triangles", s.triangleCount },
+					{ "raw_vertices", s.rawVertices }, { "raw_indices", s.rawIndices }, { "local_min", f3(s.localMin) }, { "local_max", f3(s.localMax) },
+					{ "world_z_range", { s.worldZMin, s.worldZMax } } });
+			return { { "walked", a_water.walked }, { "water_system", a_water.haveSystem }, { "faulted", a_water.faulted }, { "stage_reached", a_water.stage },
+				{ "enabled", a_water.enabled }, { "player_underwater", a_water.playerUnderwater }, { "underwater_height", a_water.underwaterHeight },
+				{ "objects", { { "total", a_water.objects }, { "with_shape", a_water.withShape }, { "visible", a_water.visible }, { "flat_under_1_unit", a_water.flat },
+								 { "raw_vertices_and_indices", a_water.rawBoth }, { "in_cell_walk", a_water.inCellWalk }, { "triangles", a_water.triangles } } },
+				{ "reflections", a_water.reflections }, { "displacements", a_water.displacements }, { "normals", a_water.normals },
+				{ "cell_walk_water_shapes", { { "total", a_water.cellWalkShapes }, { "not_in_water_system", a_water.cellWalkUnmatched } } },
+				{ "lod_water", { { "shapes", a_water.lodWaterShapes }, { "visible", a_water.lodWaterVisible } } }, { "samples", samples } };
+		}
+
 		json SceneJson(const DebugDumpData& a_data)
 		{
 			const auto& s = a_data.scene;
@@ -112,6 +137,7 @@ namespace RT
 				{ "instances_in_lit_rooms", s.instancesInRooms }, { "lit_room_nodes", s.roomNodes },
 				{ "distant_lod", DistantLODJson(s.lod) },
 				{ "tree_lod_census", TreeLODJson(s.treeLOD) },
+				{ "water_census", WaterJson(s.water) },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
 		}

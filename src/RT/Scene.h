@@ -253,6 +253,38 @@ namespace RT
 			uint64_t instances = 0, hiddenInstances = 0;
 			std::vector<TreeLODSample> samples;  // first attached groups, up to 4
 		} treeLOD;
+		// M8 water census (diagnostic, before water is traced): TESWaterSystem's water objects, the water shapes the cell
+		// walk meets and LOD water, to learn where water lives, whether it's flat and how its buffers look.
+		struct WaterSample
+		{
+			std::string geometryName, geometryRTTI, propertyRTTI, parents;
+			uint32_t ancestorFlags = 0;  // OR of the geometry's and its ancestors' NiAVObject flags
+			uint32_t waterFlags = 0;     // BSWaterShaderProperty::waterFlags
+			uint32_t objectFlags = 0;    // TESWaterObject::flags
+			uint32_t multiBounds = 0;
+			bool inCellWalk = false;     // the cell walk met this shape
+			float objectPlane[4]{}, propertyPlane[4]{};  // normal xyz, constant
+			float worldTranslate[3]{}, worldScale = 0.0f, worldRotateZRow[3]{};
+			float boundCenter[3]{}, boundRadius = 0.0f;
+			uint64_t vertexDesc = 0;
+			uint32_t vertexCount = 0, triangleCount = 0, stride = 0;
+			bool rawVertices = false, rawIndices = false;
+			float localMin[3]{}, localMax[3]{};  // over the raw float3 positions
+			float worldZMin = 0.0f, worldZMax = 0.0f;
+		};
+		struct Water
+		{
+			bool walked = false, haveSystem = false, faulted = false, enabled = false, playerUnderwater = false;
+			uint32_t stage = 0;  ///< 1 system, 2 objects, 3 LOD water root
+			float underwaterHeight = 0.0f;
+			uint32_t objects = 0, withShape = 0, visible = 0, flat = 0, rawBoth = 0, inCellWalk = 0;
+			uint32_t reflections = 0, displacements = 0, normals = 0;
+			uint64_t triangles = 0;
+			uint32_t cellWalkShapes = 0;     ///< BSWaterShaderProperty shapes met by the cell walk
+			uint32_t cellWalkUnmatched = 0;  ///< of those, not among the water system's objects
+			uint32_t lodWaterShapes = 0, lodWaterVisible = 0;  ///< under TES::objLODWaterRoot
+			std::vector<WaterSample> samples;  // first water objects with a shape, up to 12
+		} water;
 		float traversalMs = 0.0f;
 	};
 
