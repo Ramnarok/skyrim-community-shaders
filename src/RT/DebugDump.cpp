@@ -48,6 +48,39 @@ namespace RT
 			};
 		}
 
+		// M8: the terrain quadtree's distant-tree blocks, with raw samples (diagnostic, before tree LOD is traced).
+		json TreeLODJson(const SceneStats::TreeLOD& a_tree)
+		{
+			json samples = json::array();
+			for (const auto& s : a_tree.samples) {
+				json instances = json::array();
+				for (const auto& i : s.firstInstances)
+					instances.push_back({ { "id", std::format("{:08x}", i[0]) }, { "x", i[1] }, { "y", i[2] }, { "z", i[3] }, { "rot_z", i[4] }, { "scale", i[5] }, { "hidden", i[6] != 0 } });
+				samples.push_back({ { "base_cell", { s.baseCellX, s.baseCellY } }, { "lod_level", s.lodLevel }, { "block_attached", s.blockAttached }, { "block_all_visible", s.blockAllVisible },
+					{ "tree_type", s.treeType }, { "group_num", s.groupNum }, { "instance_array_size", s.instanceArraySize }, { "first_instances", instances },
+					{ "geometry", { { "name", s.geometryName }, { "rtti", s.geometryRTTI }, { "property_rtti", s.propertyRTTI }, { "parents", s.parents },
+									  { "ancestor_flags", std::format("{:08x}", s.ancestorFlags) }, { "world_translate", { s.worldTranslate[0], s.worldTranslate[1], s.worldTranslate[2] } },
+									  { "world_scale", s.worldScale }, { "bound", { s.boundCenter[0], s.boundCenter[1], s.boundCenter[2], s.boundRadius } },
+									  { "vertex_desc", std::format("{:016x}", s.vertexDesc) }, { "stride", s.stride }, { "vertices", s.vertexCount }, { "triangles", s.triangleCount },
+									  { "raw_vertices", s.rawVertices }, { "raw_indices", s.rawIndices }, { "first_vertices_6_floats_each", s.firstVertices } } },
+					{ "multi_stream", { { "instance_groups", s.instanceGroups }, { "mesh_tri_count", s.meshTriCount }, { "max_instances_per_group", s.maxInstancesPerGroup },
+										  { "instance_count", s.instanceCount }, { "instance_size", s.instanceSize }, { "active_group_count", s.activeGroupCount },
+										  { "render_distance", s.renderDistance }, { "group0_tri_count", s.group0TriCount }, { "group0_instance_count", s.group0InstanceCount },
+										  { "group0_visible", s.group0Visible }, { "group0_cpu_data", s.group0CpuData }, { "group0_byte_width", s.group0ByteWidth },
+										  { "group0_first_two_instances_hex", s.group0FirstBytes } } } });
+			}
+			return { { "walked", a_tree.walked }, { "terrain_manager", a_tree.haveManager }, { "faulted", a_tree.faulted }, { "stage_reached", a_tree.stage },
+				{ "manager_address", std::format("{:016x}", a_tree.managerAddress) }, { "manager_hex", a_tree.managerHex },
+				{ "root_node_address", std::format("{:016x}", a_tree.rootNodeAddress) }, { "root_node_hex", a_tree.rootNodeHex }, { "quadtree_nodes", a_tree.nodes }, { "child_mismatches", a_tree.childMismatches },
+				{ "traced", { { "trees", a_tree.traced }, { "clipped", a_tree.clipped } } },
+				{ "skipped", { { "hidden", a_tree.skippedHidden }, { "inside_loaded_cells", a_tree.skippedInsideLoaded }, { "beyond_60000_units", a_tree.skippedFar },
+								 { "invalid_instance_data", a_tree.skippedInvalid } } },
+				{ "groups_without_texture", a_tree.groupsWithoutTexture }, { "textures_from_visitor", a_tree.texturesFromVisitor }, { "texture_name", a_tree.textureName },
+				{ "atlas", { { "path", a_tree.atlasPath }, { "loaded", a_tree.atlasLoaded } } }, { "tree_layers", a_tree.treeLayers },
+				{ "blocks", a_tree.blocks }, { "blocks_attached", a_tree.blocksAttached }, { "groups", a_tree.groups }, { "groups_with_geometry", a_tree.groupsWithGeometry },
+				{ "instances", a_tree.instances }, { "hidden_instances", a_tree.hiddenInstances }, { "samples", samples } };
+		}
+
 		json SceneJson(const DebugDumpData& a_data)
 		{
 			const auto& s = a_data.scene;
@@ -77,6 +110,7 @@ namespace RT
 							   { "half_position_partitions_skinned", s.treeHalfPositionPartitions } } },
 				{ "instances_in_lit_rooms", s.instancesInRooms }, { "lit_room_nodes", s.roomNodes },
 				{ "distant_lod", DistantLODJson(s.lod) },
+				{ "tree_lod_census", TreeLODJson(s.treeLOD) },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
 		}

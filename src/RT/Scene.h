@@ -76,6 +76,7 @@ namespace RT
 		// lodClip marks one whose bound reaches into them, so the traces reject its hits inside (InstanceData LOD clip).
 		bool distantLOD = false;
 		bool lodClip = false;
+		bool treeLOD = false;  // M8: one distant tree (a BGSDistantTreeBlock instance of its group's crossed-quad card)
 	};
 
 	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
@@ -203,6 +204,53 @@ namespace RT
 			uint32_t skippedHalfPositions = 0;  ///< positions stored as 4 x half (the BLAS reads float3), not traced
 			std::array<uint32_t, 32> byGeometryType{};  ///< every LOD shape seen, by BSGeometry::Type
 		} lod;
+		// M8 tree LOD census (diagnostic, before tracing it): the terrain quadtree's BGSDistantTreeBlocks, which aren't under
+		// TES::lodLandRoot. Raw samples of the first groups, to learn the instance formats from real data.
+		struct TreeLODSample
+		{
+			int32_t baseCellX = 0, baseCellY = 0;
+			uint32_t lodLevel = 0;
+			std::string geometryName, geometryRTTI, propertyRTTI, parents;
+			uint32_t ancestorFlags = 0;  // OR of the geometry's and its ancestors' NiAVObject flags
+			bool blockAttached = false, blockAllVisible = false;
+			int32_t treeType = 0;
+			uint32_t groupNum = 0, instanceArraySize = 0;
+			float worldTranslate[3]{}, worldScale = 0.0f;
+			float boundCenter[3]{}, boundRadius = 0.0f;
+			uint64_t vertexDesc = 0;
+			uint32_t vertexCount = 0, triangleCount = 0, stride = 0;
+			bool rawVertices = false, rawIndices = false;
+			std::vector<float> firstVertices;  // up to 4 vertices: the first 6 floats of each (raw, if present)
+			// BSMultiStreamInstanceTriShape runtime data
+			uint32_t instanceGroups = 0, meshTriCount = 0, maxInstancesPerGroup = 0, instanceCount = 0, instanceSize = 0, activeGroupCount = 0;
+			float renderDistance = 0.0f;
+			uint32_t group0TriCount = 0, group0InstanceCount = 0;
+			bool group0Visible = false, group0CpuData = false;
+			uint64_t group0ByteWidth = 0;
+			std::string group0FirstBytes;  // hex of the first two instances (instanceSize bytes each), from the CPU copy
+			std::vector<std::array<uint32_t, 7>> firstInstances;  // BGSDistantTreeBlock::InstanceData: id, x, y, z, rotZ, scale, hidden
+		};
+		struct TreeLOD
+		{
+			bool walked = false;
+			bool haveManager = false;
+			// The census faulted every frame in its first run (CommonLib's quadtree layouts vs 1.7.104). It now runs under its
+			// own guard, stops for the session after a fault, and keeps what it had reached, to locate the mismatch.
+			bool faulted = false;
+			uint32_t stage = 0;  ///< 1 worldspace, 2 manager read, 3 root node read, 4 walking nodes, 5 sampling a group
+			std::string managerHex, rootNodeHex;  ///< raw bytes: BGSTerrainManager (0xD0), root BGSTerrainNode (0x50)
+			uint64_t managerAddress = 0, rootNodeAddress = 0;
+			uint32_t childMismatches = 0;  ///< child nodes whose manager / parent didn't check out (skipped)
+			// Traced trees (one candidate each) and why the others weren't.
+			uint32_t traced = 0, clipped = 0, skippedHidden = 0, skippedInsideLoaded = 0, skippedFar = 0, skippedInvalid = 0, groupsWithoutTexture = 0;
+			uint32_t texturesFromVisitor = 0;  ///< groups whose billboard texture came from ForEachTexture
+			std::string textureName;           ///< the first billboard texture found
+			std::string atlasPath;             ///< the worldspace's tree billboard atlas, loaded by path
+			bool atlasLoaded = false;
+			uint32_t nodes = 0, treeLayers = 0, blocks = 0, blocksAttached = 0, groups = 0, groupsWithGeometry = 0;
+			uint64_t instances = 0, hiddenInstances = 0;
+			std::vector<TreeLODSample> samples;  // first attached groups, up to 4
+		} treeLOD;
 		float traversalMs = 0.0f;
 	};
 

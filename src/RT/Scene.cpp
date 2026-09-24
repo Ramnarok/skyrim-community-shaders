@@ -2,6 +2,8 @@
 
 #include "Features/GrassOptimizations.h"
 
+#include <DirectXPackedVector.h>
+
 namespace RT
 {
 	namespace
@@ -397,6 +399,341 @@ namespace RT
 			return accepted > 0;
 		}
 
+		// M8 tree LOD census: one tree group, sampled raw (formats unknown until measured).
+		void SampleTreeGroup(const RE::BGSTerrainNode& a_node, const RE::BGSDistantTreeBlock& a_block, const RE::BGSDistantTreeBlock::TreeGroup& a_group, SceneStats::TreeLODSample& a_out)
+		{
+			a_out.baseCellX = a_node.baseCellX;
+			a_out.baseCellY = a_node.baseCellY;
+			a_out.lodLevel = a_node.GetLODLevel();
+			a_out.blockAttached = a_block.attached;
+			a_out.blockAllVisible = a_block.allVisible;
+			a_out.treeType = a_group.treeType;
+			a_out.groupNum = a_group.num;
+			a_out.instanceArraySize = a_group.instances.size();
+			for (uint32_t i = 0; i < a_group.instances.size() && i < 3; i++) {
+				const auto& instance = a_group.instances[i];
+				a_out.firstInstances.push_back({ instance.id, instance.x, instance.y, instance.z, instance.rotZ, instance.scale, instance.hidden ? 1u : 0u });
+			}
+
+			auto* geometry = a_group.geometry.get();
+			if (!geometry)
+				return;
+			a_out.geometryName = geometry->name.c_str() ? geometry->name.c_str() : "";
+			if (const auto* rtti = geometry->GetRTTI())
+				a_out.geometryRTTI = rtti->GetName() ? rtti->GetName() : "";
+			a_out.ancestorFlags = geometry->GetFlags().underlying();
+			int depth = 0;
+			for (const RE::NiNode* node = geometry->parent; node; node = node->parent) {
+				a_out.ancestorFlags |= node->GetFlags().underlying();
+				if (depth++ < 5) {
+					if (!a_out.parents.empty())
+						a_out.parents += " < ";
+					a_out.parents += node->name.c_str() ? node->name.c_str() : "";
+					if (const auto* rtti = node->GetRTTI(); rtti && rtti->GetName())
+						a_out.parents += std::format(" ({})", rtti->GetName());
+				}
+			}
+			a_out.worldTranslate[0] = geometry->world.translate.x;
+			a_out.worldTranslate[1] = geometry->world.translate.y;
+			a_out.worldTranslate[2] = geometry->world.translate.z;
+			a_out.worldScale = geometry->world.scale;
+			a_out.boundCenter[0] = geometry->worldBound.center.x;
+			a_out.boundCenter[1] = geometry->worldBound.center.y;
+			a_out.boundCenter[2] = geometry->worldBound.center.z;
+			a_out.boundRadius = geometry->worldBound.radius;
+			const auto& geometryData = geometry->GetGeometryRuntimeData();
+			if (const auto* property = geometryData.shaderProperty.get(); property && property->GetRTTI() && property->GetRTTI()->GetName())
+				a_out.propertyRTTI = property->GetRTTI()->GetName();
+			if (auto* rendererData = geometryData.rendererData) {
+				std::memcpy(&a_out.vertexDesc, &rendererData->vertexDesc, sizeof(a_out.vertexDesc));
+				a_out.stride = static_cast<uint32_t>(a_out.vertexDesc & 0xF) * 4;
+				a_out.rawVertices = rendererData->rawVertexData != nullptr;
+				a_out.rawIndices = rendererData->rawIndexData != nullptr;
+				if (auto* triShape = geometry->AsTriShape()) {
+					a_out.vertexCount = triShape->GetTrishapeRuntimeData().vertexCount;
+					a_out.triangleCount = triShape->GetTrishapeRuntimeData().triangleCount;
+				}
+				if (rendererData->rawVertexData && a_out.stride >= 24) {
+					const auto* bytes = static_cast<const uint8_t*>(static_cast<const void*>(rendererData->rawVertexData));
+					for (uint32_t v = 0; v < std::min(a_out.vertexCount, 4u); v++) {
+						float values[6];
+						std::memcpy(values, bytes + static_cast<size_t>(v) * a_out.stride, sizeof(values));
+						a_out.firstVertices.insert(a_out.firstVertices.end(), values, values + 6);
+					}
+				}
+			}
+
+			if (auto* multiStream = geometry) {  // TreeGroup::geometry is typed BSMultiStreamInstanceTriShape
+				auto& runtime = multiStream->GetMultiStreamTrishapeRuntimeData();
+				a_out.instanceGroups = runtime.instanceGroups.size();
+				a_out.meshTriCount = runtime.meshTriCount;
+				a_out.maxInstancesPerGroup = runtime.maxInstancesPerGroup;
+				a_out.instanceCount = runtime.instanceCount;
+				a_out.instanceSize = runtime.instanceSize;
+				a_out.activeGroupCount = runtime.activeGroupCount;
+				a_out.renderDistance = runtime.renderDistance;
+				if (!runtime.instanceGroups.empty() && runtime.instanceGroups[0]) {
+					const auto* group = runtime.instanceGroups[0];
+					a_out.group0TriCount = group->triCount;
+					a_out.group0InstanceCount = group->instanceCount;
+					a_out.group0Visible = group->isVisible;
+					if (const auto* buffer = group->vertexBuffer) {
+						a_out.group0ByteWidth = buffer->byteWidth;
+						a_out.group0CpuData = buffer->m_data != nullptr;
+						const size_t bytes = std::min<size_t>({ static_cast<size_t>(runtime.instanceSize) * 2, buffer->byteWidth, 128 });
+						if (buffer->m_data && runtime.instanceSize > 0) {
+							const auto* data = static_cast<const uint8_t*>(buffer->m_data);
+							for (size_t b = 0; b < bytes; b++)
+								a_out.group0FirstBytes += std::format("{:02x}{}", data[b], (b + 1) % runtime.instanceSize == 0 ? " | " : "");
+						}
+					}
+				}
+			}
+		}
+
+		std::string HexBytes(const void* a_data, size_t a_size)
+		{
+			std::string out;
+			const auto* bytes = static_cast<const uint8_t*>(a_data);
+			for (size_t i = 0; i < a_size; i++)
+				out += std::format("{:02x}{}", bytes[i], (i + 1) % 8 == 0 ? " " : "");
+			return out;
+		}
+
+		// M8: BSDistantTreeShaderProperty::GetBaseTexture() returns null (measured: 803 of 803 groups), so the billboard texture
+		// comes from ForEachTexture. CommonLib declares BSShaderProperty::ForEachVisitor's destructor without defining it, so it
+		// can't be derived from here; this class has the same vtable shape (slot 0 destructor, slot 1 Accept), and the game
+		// only calls Accept.
+		class FirstTextureVisitor
+		{
+		public:
+			virtual ~FirstTextureVisitor() = default;
+			virtual uint32_t Accept(RE::NiSourceTexture* a_texture)
+			{
+				count++;
+				if (!first && a_texture)
+					first = a_texture;
+				return 1;
+			}
+			RE::NiSourceTexture* first = nullptr;
+			uint32_t count = 0;
+		};
+
+		// M8 tree LOD tracing: where the census's candidates go.
+		struct TreeLODTarget
+		{
+			std::vector<GeometryCandidate>* candidates = nullptr;  // null: census only
+			const LoadedArea* area = nullptr;
+			float cameraX = 0.0f, cameraY = 0.0f;
+			ID3D11ShaderResourceView* atlasSRV = nullptr;  // the worldspace's tree billboard atlas (TreeLODAtlas)
+		};
+
+		// M8: the tree billboard atlas. Neither GetBaseTexture() nor ForEachTexture of BSDistantTreeShaderProperty returns it
+		// (measured: 0 of 803 groups), so it's loaded by its conventional path, textures\terrain\<ws>\trees\<ws>treelod.dds
+		// of the worldspace owning the LOD, through BSShaderManager::GetTexture (CommonLib; its AE ID 105640 resolves in the
+		// 1.7.104 Address Library, checked 2026-09-25). Loaded once per worldspace and kept.
+		ID3D11ShaderResourceView* TreeLODAtlas(RE::TESWorldSpace* a_worldSpace, SceneStats::TreeLOD& a_stats)
+		{
+			static std::string loadedPath;
+			static RE::NiPointer<RE::NiTexture> texture;
+			const char* editorID = a_worldSpace ? a_worldSpace->GetFormEditorID() : nullptr;
+			if (!editorID || !*editorID)
+				return nullptr;
+			const std::string path = std::format(R"(textures\terrain\{0}\trees\{0}treelod.dds)", editorID);
+			if (path != loadedPath) {
+				loadedPath = path;
+				texture.reset();
+				RE::BSShaderManager::GetTexture(path.c_str(), true, texture, false);
+				logger::info("[SkyrimRT] Tree LOD atlas {}: {}", path, texture ? "loaded" : "not found");
+			}
+			a_stats.atlasPath = loadedPath;
+			auto* source = texture ? netimmerse_cast<RE::NiSourceTexture*>(texture.get()) : nullptr;
+			a_stats.atlasLoaded = source && source->rendererTexture && source->rendererTexture->resourceView;
+			return a_stats.atlasLoaded ? source->rendererTexture->resourceView : nullptr;
+		}
+
+		constexpr float kTreeLODMaxDistance = 60000.0f;    // beyond the traces' 50,000-unit rays, plus a margin
+		constexpr float kTreeLODRadiusPerScale = 1500.0f;  // bound radius per unit of instance scale (billboards ~1,000-1,400 tall)
+
+		// M8: one distant-tree group (a tree type's crossed-quad card, instanced) as one alpha-tested candidate per tree.
+		// Measured (census, 2026-09-25): BGSDistantTreeBlock::InstanceData x/y/z, rotZ and scale are half floats, the
+		// position relative to the group shape's world transform (the block origin), rotZ in radians. The DistantTree vertex
+		// shader places a vertex at position + Rz(rotZ) x (scale x model position), so the world transform is
+		// geometry->world * (Rz(rotZ) scale, position).
+		void CollectTreeGroup(const RE::BGSDistantTreeBlock::TreeGroup& a_group, SceneStats::TreeLOD& a_stats, const TreeLODTarget& a_target)
+		{
+			auto* geometry = a_group.geometry.get();
+			if (!geometry || geometry->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+				return;
+			const auto& geometryData = geometry->GetGeometryRuntimeData();
+			auto* rendererData = geometryData.rendererData;
+			if (!rendererData || !rendererData->vertexBuffer || !rendererData->indexBuffer)
+				return;
+			const auto& counts = geometry->GetTrishapeRuntimeData();
+			if (counts.vertexCount == 0 || counts.triangleCount == 0)
+				return;
+
+			GeometryCandidate base;
+			base.rendererData = rendererData;
+			std::memcpy(&base.vertexDesc, &rendererData->vertexDesc, sizeof(base.vertexDesc));
+			base.vertexCount = counts.vertexCount;
+			base.triangleCount = counts.triangleCount;
+			base.geometry = geometry;
+			base.distantLOD = true;
+			base.treeLOD = true;
+			base.alphaTested = true;
+			base.alphaThreshold = 128;
+			if (auto* alpha = geometryData.alphaProperty.get(); alpha && alpha->alphaThreshold > 0)
+				base.alphaThreshold = alpha->alphaThreshold;
+			if (auto* property = netimmerse_cast<RE::BSDistantTreeShaderProperty*>(geometryData.shaderProperty.get())) {
+				RE::NiSourceTexture* texture = property->GetBaseTexture();
+				if (!texture) {
+					FirstTextureVisitor visitor;
+					property->ForEachTexture(*reinterpret_cast<RE::BSShaderProperty::ForEachVisitor*>(&visitor));
+					texture = visitor.first;
+					a_stats.texturesFromVisitor += texture != nullptr;
+				}
+				if (texture && texture->rendererTexture) {
+					base.diffuseSRV = texture->rendererTexture->resourceView;
+					if (a_stats.textureName.empty() && texture->name.c_str())
+						a_stats.textureName = texture->name.c_str();
+				}
+			}
+			if (!base.diffuseSRV)
+				base.diffuseSRV = a_target.atlasSRV;
+			// Without the billboard's alpha a tree would be traced as a solid crossed card (blocky shadows): skip the group.
+			if (!base.diffuseSRV) {
+				a_stats.groupsWithoutTexture++;
+				return;
+			}
+
+			const auto& area = *a_target.area;
+			for (const auto& instance : a_group.instances) {
+				if (instance.hidden) {
+					a_stats.skippedHidden++;
+					continue;
+				}
+				using DirectX::PackedVector::XMConvertHalfToFloat;
+				const RE::NiPoint3 local(XMConvertHalfToFloat(instance.x), XMConvertHalfToFloat(instance.y), XMConvertHalfToFloat(instance.z));
+				const float rotZ = XMConvertHalfToFloat(instance.rotZ);
+				const float scale = XMConvertHalfToFloat(instance.scale);
+				if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || !std::isfinite(rotZ) || !(scale > 0.0f) || scale > 100.0f) {
+					a_stats.skippedInvalid++;
+					continue;
+				}
+				RE::NiTransform localTransform;
+				const float c = std::cos(rotZ), s = std::sin(rotZ);
+				localTransform.rotate = RE::NiMatrix3(RE::NiPoint3(c, -s, 0.0f), RE::NiPoint3(s, c, 0.0f), RE::NiPoint3(0.0f, 0.0f, 1.0f));
+				localTransform.scale = scale;
+				localTransform.translate = local;
+				const RE::NiTransform world = geometry->world * localTransform;
+
+				// Inside the loaded cells the game draws the full tree; beyond the rays' reach nothing can hit it.
+				const float radius = kTreeLODRadiusPerScale * scale;
+				const auto& p = world.translate;
+				const bool insideLoaded = area.bounded && p.x >= area.min.x + radius && p.x <= area.max.x - radius && p.y >= area.min.y + radius && p.y <= area.max.y - radius;
+				if (insideLoaded) {
+					a_stats.skippedInsideLoaded++;
+					continue;
+				}
+				const float cx = p.x - a_target.cameraX, cy = p.y - a_target.cameraY;
+				if (cx * cx + cy * cy > kTreeLODMaxDistance * kTreeLODMaxDistance) {
+					a_stats.skippedFar++;
+					continue;
+				}
+				const float dx = std::max({ area.min.x - p.x, 0.0f, p.x - area.max.x });
+				const float dy = std::max({ area.min.y - p.y, 0.0f, p.y - area.max.y });
+				GeometryCandidate candidate = base;
+				candidate.world = world;
+				candidate.lodClip = area.bounded && dx * dx + dy * dy <= radius * radius;
+				a_stats.clipped += candidate.lodClip;
+				a_stats.traced++;
+				a_target.candidates->push_back(candidate);
+			}
+		}
+
+		// M8 tree LOD: walks the worldspace's terrain quadtree (BGSTerrainManager, CommonLib-defined) for its distant-tree
+		// blocks, counts them with raw samples (census) and, with a target, adds each visible tree as a candidate.
+		void CensusTreeLOD(RE::TESWorldSpace* a_worldSpace, SceneStats::TreeLOD& a_out, const TreeLODTarget& a_target)
+		{
+			a_out.walked = true;
+			a_out.stage = 1;
+			auto* manager = a_worldSpace ? a_worldSpace->GetTerrainManager() : nullptr;
+			a_out.haveManager = manager != nullptr;
+			if (!manager)
+				return;
+			a_out.stage = 2;
+			a_out.managerAddress = reinterpret_cast<uint64_t>(manager);
+			a_out.managerHex = HexBytes(manager, sizeof(RE::BGSTerrainManager));
+			if (!manager->rootNode)
+				return;
+			a_out.stage = 3;
+			a_out.rootNodeAddress = reinterpret_cast<uint64_t>(manager->rootNode);
+			a_out.rootNodeHex = HexBytes(manager->rootNode, sizeof(RE::BGSTerrainNode));
+			// The atlas belongs to the worldspace that owns the LOD (a child worldspace may use its parent's).
+			TreeLODTarget target = a_target;
+			if (target.candidates)
+				target.atlasSRV = TreeLODAtlas(manager->worldSpace, a_out);
+			a_out.stage = 4;
+			std::vector<const RE::BGSTerrainNode*> stack{ manager->rootNode };
+			while (!stack.empty() && a_out.nodes < 50000) {
+				const auto* node = stack.back();
+				stack.pop_back();
+				a_out.nodes++;
+				// BGSTerrainNode::children points at the four child nodes themselves, stored contiguously (measured on 1.7.104:
+				// root + 0x50), not at four pointers as CommonLib types it. Each child must name this manager and node.
+				if (node->children) {
+					const auto* first = reinterpret_cast<const RE::BGSTerrainNode*>(node->children);
+					for (uint32_t i = 0; i < 4; i++) {
+						const auto* child = first + i;
+						if (child->manager == manager && child->parent == node)
+							stack.push_back(child);
+						else
+							a_out.childMismatches++;
+					}
+				}
+				const auto* layer = node->trees;
+				if (!layer)
+					continue;
+				a_out.treeLayers++;
+				const auto* block = layer->block;
+				if (!block)
+					continue;
+				a_out.blocks++;
+				a_out.blocksAttached += block->attached;
+				for (const auto* group : block->treeGroups) {
+					if (!group)
+						continue;
+					a_out.groups++;
+					a_out.groupsWithGeometry += group->geometry != nullptr;
+					a_out.instances += group->instances.size();
+					for (const auto& instance : group->instances)
+						a_out.hiddenInstances += instance.hidden;
+					if (block->attached && group->geometry && a_out.samples.size() < 4) {
+						a_out.stage = 5;
+						SampleTreeGroup(*node, *block, *group, a_out.samples.emplace_back());
+						a_out.stage = 4;
+					}
+					if (block->attached && a_target.candidates) {
+						a_out.stage = 6;
+						CollectTreeGroup(*group, a_out, target);
+						a_out.stage = 4;
+					}
+				}
+			}
+		}
+
+		// Its own guard: a fault here (layout mismatch) must not drop the frame's scene. Kept free of C++ objects for __try.
+		bool CensusTreeLODGuarded(RE::TESWorldSpace* a_worldSpace, SceneStats::TreeLOD& a_out, const TreeLODTarget& a_target)
+		{
+			__try {
+				CensusTreeLOD(a_worldSpace, a_out, a_target);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
 		void AddExclusion(RE::NiAVObject* a_object, GeometryCategory a_category, WalkOutput& a_out)
 		{
 			// Geometry the TLAS doesn't contain but which writes depth: the M4 depth metric must not count
@@ -717,6 +1054,26 @@ namespace RT
 			Walk(tes->lodLandRoot, out);
 			out.distantLOD = nullptr;
 			a_stats.lod.walked = true;
+			// The census stops for the session after a fault and reports what it had reached then.
+			static bool treeCensusFaulted = false;
+			static SceneStats::TreeLOD faultedCensus;
+			TreeLODTarget treeTarget;
+			treeTarget.candidates = &a_out;
+			treeTarget.area = &a_area;
+			if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+				treeTarget.cameraX = player->GetPosition().x;
+				treeTarget.cameraY = player->GetPosition().y;
+			}
+			const size_t candidatesBefore = a_out.size();
+			if (!treeCensusFaulted && !CensusTreeLODGuarded(worldSpace, a_stats.treeLOD, treeTarget)) {
+				a_out.resize(candidatesBefore);  // a partial group: drop what this walk added
+				treeCensusFaulted = true;
+				a_stats.treeLOD.faulted = true;
+				faultedCensus = a_stats.treeLOD;
+				logger::warn("[SkyrimRT] Tree LOD census faulted at stage {} after {} quadtree nodes; disabled for this session", faultedCensus.stage, faultedCensus.nodes);
+			}
+			if (treeCensusFaulted)
+				a_stats.treeLOD = faultedCensus;
 		}
 
 		a_stats.exclusionBounds = static_cast<uint32_t>(a_exclusions.size());
