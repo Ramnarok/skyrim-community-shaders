@@ -263,6 +263,12 @@ namespace RT
 		return shadows ? &shadows->GetStats() : nullptr;
 	}
 
+	void SetRoomIndices(std::span<const RoomIndex> a_rooms)
+	{
+		if (sidecar)
+			sidecar->SetRoomIndices(a_rooms);
+	}
+
 	void SimulateGpuHang()
 	{
 		if (sidecar)

@@ -50,6 +50,7 @@ namespace RT
 				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
 				{ "trees", { { "skinned_shapes", s.treeShapes }, { "rest_pose_shapes", s.treeRestPoseShapes } } },
+				{ "instances_in_lit_rooms", s.instancesInRooms }, { "lit_room_nodes", s.roomNodes },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
 		}
@@ -197,9 +198,10 @@ namespace RT
 				{ "frames_traced", s.framesTraced },
 				{ "history_resets", s.historyResets },
 				{ "lights_uploaded", s.pointLights },
-			{ "lights_by_kind", { { "traced", s.pointLightsTraced }, { "shadow_mapped", s.pointLightsShadowMapped }, { "portal_strict", s.pointLightsPortalStrict } } },
-				{ "note", "lights without the Shadow, PortalStrict or Disabled flag are ray-traced; raw = visibility of one light picked by unshadowed contribution" },
-				{ "pixels", { { "traced", c[kPointTraced] }, { "sampled_light", c[kPointSampled] }, { "occluded", c[kPointOccluded] } } },
+			{ "lights_by_kind", { { "traced", s.pointLightsTraced }, { "traced_room_limited", s.pointLightsPortalStrict }, { "shadow_mapped_not_traced", s.pointLightsShadowMapped } } },
+				{ "note", "lights without the Shadow or Disabled flag are ray-traced, portal-strict ones only for pixels in their rooms (primary-ray instance); raw = visibility of one light picked by unshadowed contribution" },
+				{ "pixels", { { "traced", c[kPointTraced] }, { "sampled_light", c[kPointSampled] }, { "occluded", c[kPointOccluded] }, { "in_a_lit_room", c[kPointRoomKnown] } } },
+				{ "light_filters", { { "note", "pixels with a traced light: within its radius / and facing / and applying in the pixel's room" }, { "in_range", c[kPointAnyInRange] }, { "facing", c[kPointAnyFacing] }, { "in_room", c[kPointAnyInRoom] } } },
 				{ "sampled_percent", c[kPointTraced] ? 100.0 * c[kPointSampled] / c[kPointTraced] : 0.0 },
 				{ "occluded_percent_of_sampled", c[kPointSampled] ? 100.0 * c[kPointOccluded] / c[kPointSampled] : 0.0 },
 				{ "occluded_by_distance_to_light", { { "under_32", c[kPointOccluderNear32] }, { "32_to_64", c[kPointOccluderNear64] }, { "64_to_128", c[kPointOccluderNear128] }, { "128_and_over", farther } } },
@@ -246,7 +248,8 @@ namespace RT
 			json lights = json::array();
 			for (const auto& light : g.lastPointLights) {
 				lights.push_back({ { "position", { light.position[0], light.position[1], light.position[2] } }, { "radius", light.radius },
-					{ "color", { light.color[0], light.color[1], light.color[2] } }, { "flags", light.flags } });
+					{ "color", { light.color[0], light.color[1], light.color[2] } }, { "flags", light.flags },
+					{ "room_flags", std::format("{:08x}{:08x}{:08x}{:08x}", light.roomFlags[3], light.roomFlags[2], light.roomFlags[1], light.roomFlags[0]) } });
 			}
 			return {
 				{ "compiled_in_nrd", a_data.giCompiledIn },

@@ -85,12 +85,12 @@ bool Occluded(float3 a_origin, float3 a_direction, float a_length)
 
 // Point-light irradiance at a hit (N.L x colour x attenuation, as Lighting.hlsl sums it), estimated with one light
 // (SamplePointLight) and one visibility ray to it.
-float3 SamplePointLights(float3 a_position, float3 a_normal, float3 a_origin, float a_u, out bool a_sampled, out bool a_occluded, out float a_occluderToLight)
+float3 SamplePointLights(float3 a_position, float3 a_normal, float3 a_origin, float a_u, int a_room, out bool a_sampled, out bool a_occluded, out float a_occluderToLight)
 {
 	a_sampled = false;
 	a_occluded = false;
 	a_occluderToLight = -1.0;
-	const PointLightSample light = SamplePointLight(PointLights, C.PointLightCount, 0u, C.InverseSquare != 0, a_position, a_normal, a_u);
+	const PointLightSample light = SamplePointLight(PointLights, C.PointLightCount, 0u, C.InverseSquare != 0, a_position, a_normal, a_u, a_room);
 	if (!light.Valid)
 		return 0.0;
 
@@ -186,7 +186,8 @@ float3 HitRadiance(float3 a_albedo, float3 a_normal, float a_sunVisibility, floa
 		const float3 hitOrigin = hitPosition + hitNormal * (C.NormalBias + hitDistance * C.DistanceBias);
 		if (dot(hitNormal, C.ToSun.xyz) > 0.0 && any(C.SunColor.rgb > 0.0))
 			sunLit = C.Interior || !Occluded(hitOrigin, C.ToSun.xyz, kSunRayLength);
-		const float3 pointLights = SamplePointLights(hitPosition, hitNormal, hitOrigin, Random1(dispatchID.xy, C.FrameIndex), lightSampled, lightOccluded, occluderToLight);
+		const float3 pointLights = SamplePointLights(hitPosition, hitNormal, hitOrigin, Random1(dispatchID.xy, C.FrameIndex),
+			int(instance.Room) - 1, lightSampled, lightOccluded, occluderToLight);
 		radiance = HitRadiance(UnpackRGBA8(instance.Albedo).rgb, hitNormal, sunLit ? 1.0 : 0.0, pointLights);
 	}
 

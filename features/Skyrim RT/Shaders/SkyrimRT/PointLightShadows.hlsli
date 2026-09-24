@@ -1,7 +1,7 @@
 // SkyrimRT M8: ray-traced visibility of the game's unshadowed point lights, traced before the opaque pass from the
 // depth pre-pass (src/RT/Shaders/PointLightShadowTraceCS.hlsl). One ratio per pixel over the lights without the Shadow
-// or PortalStrict flag; 1 where no such light is in range. SkyrimRT unbinds t46 whenever it isn't tracing, and an
-// unbound slot reads as fully lit.
+// flag that apply to the pixel's room; 1 where no such light is in range. SkyrimRT unbinds t46 whenever it isn't
+// tracing, and an unbound slot reads as fully lit.
 
 namespace SkyrimRT
 {
@@ -17,10 +17,11 @@ namespace SkyrimRT
 		return PointLightShadowTexture.Load(int3(int2(a_position.xy), 0)).x;
 	}
 
-	// Lights the ray-traced ratio covers: the game shadow-maps Shadow lights and culls PortalStrict ones by room.
-	// Included after LightLimitFix.hlsli.
+	// Lights the ray-traced ratio covers: all but the shadow-mapped ones (the game's shadow map shadows those).
+	// Portal-strict lights are included: the trace applies them per pixel by room exactly where IsLightIgnored lets
+	// them through, and ignored ones never reach this multiply. Included after LightLimitFix.hlsli.
 	bool IsPointLightRayTraced(uint a_lightFlags)
 	{
-		return (a_lightFlags & (LightLimitFix::LightFlags::Shadow | LightLimitFix::LightFlags::PortalStrict)) == 0;
+		return (a_lightFlags & LightLimitFix::LightFlags::Shadow) == 0;
 	}
 }

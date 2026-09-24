@@ -33,9 +33,15 @@ namespace RT
 		kPointOccluderNear32,   ///< occluded by something within 32 units of the light
 		kPointOccluderNear64,   ///< 32-64 units from it
 		kPointOccluderNear128,  ///< 64-128 units from it (the rest is farther)
+		kPointRoomKnown,        ///< pixels whose primary ray found an instance in a Light Limit Fix room (room test frames)
+		kPointAnyInRange,       ///< diagnostics: a traced light is within its radius
+		kPointAnyFacing,        ///< ... and in front of the surface
+		kPointAnyInRoom,        ///< ... and applies in the pixel's room (= what SamplePointLight can pick from)
 		kPointCounterCount
 	};
-	static_assert(static_cast<uint32_t>(kPointCounterCount) <= static_cast<uint32_t>(kShadowCounterCount));
+	/** @brief Counter slots every SunShadows instance reads back (the 64-byte counter buffer); both variants fit. */
+	inline constexpr uint32_t kShadowCounterSlots = 16;
+	static_assert(static_cast<uint32_t>(kPointCounterCount) <= kShadowCounterSlots && static_cast<uint32_t>(kShadowCounterCount) <= kShadowCounterSlots);
 
 	/** @brief What a SunShadows instance traces: the M5 sun, or the M8 unshadowed point lights (same denoise passes). */
 	enum class ShadowKind
@@ -49,15 +55,15 @@ namespace RT
 		bool haveResult = false;
 		uint64_t framesTraced = 0;
 		uint64_t historyResets = 0;  ///< traced frames that started without usable history (first frame, gaps, resize)
-		std::array<uint32_t, kShadowCounterCount> counters{};
-		std::array<uint32_t, kShadowCounterCount> comparedCounters{};  ///< counters of the last frame that compared against the game's shadow mask
+		std::array<uint32_t, kShadowCounterSlots> counters{};
+		std::array<uint32_t, kShadowCounterSlots> comparedCounters{};  ///< counters of the last frame that compared against the game's shadow mask
 		bool haveComparison = false;
 		float toSun[3]{};
 		float coneHalfAngleDegrees = 0.0f;
 		uint32_t pointLights = 0;  ///< M8 point-light variant: lights uploaded last traced frame
 		uint32_t pointLightsShadowMapped = 0;  ///< ... of which the game shadow-maps (not traced)
-		uint32_t pointLightsPortalStrict = 0;  ///< ... culled by room, unshadowed (not traced)
-		uint32_t pointLightsTraced = 0;        ///< ... the rest: the lights the mask covers
+		uint32_t pointLightsPortalStrict = 0;  ///< ... of the traced, room-limited (portal-strict): traced where their rooms are
+		uint32_t pointLightsTraced = 0;        ///< ... all but the shadow-mapped: the lights the mask covers
 		uint32_t textureWidth = 0;
 		uint32_t textureHeight = 0;
 		uint32_t renderWidth = 0;  ///< region of the mask written by the last traced frame
@@ -152,6 +158,7 @@ namespace RT
 			uint32_t viewMode = 0;
 			uint32_t pointLightCount = 0;
 			bool inverseSquare = false;
+			bool roomTest = false;  // some traced light is portal-strict: the trace finds each pixel's room
 		};
 
 		void RecordPasses(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,

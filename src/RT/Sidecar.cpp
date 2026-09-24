@@ -830,6 +830,14 @@ namespace RT
 		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats, treeRestPose);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);
+		// M8: each instance's Light Limit Fix room (its RoomIndex in Lighting.hlsl) for the portal-strict light test.
+		sceneStats.instancesInRooms = 0;
+		sceneStats.roomNodes = static_cast<uint32_t>(roomIndices.size());
+		for (auto& candidate : candidates) {
+			const auto it = candidate.room ? roomIndices.find(candidate.room) : roomIndices.end();
+			candidate.roomWord = it != roomIndices.end() ? it->second : 0u;
+			sceneStats.instancesInRooms += candidate.roomWord != 0;
+		}
 		// Albedos for the instance data; the candidates' texture pointers are only valid this frame.
 		if (inWorld && materialTableReady)
 			materialTable.Update(candidates, a_gameFrame);

@@ -119,12 +119,26 @@ namespace RT
 		float sizeBias = 0.0f;
 		uint32_t flags = 0;  ///< LightLimitFix::LightFlags
 		float pad = 0.0f;
+		uint32_t roomFlags[4]{};  ///< LightData::roomFlags: bit n = Light Limit Fix room n (portal-strict lights only apply there)
 	};
-	static_assert(sizeof(PointLight) == 48);
+	static_assert(sizeof(PointLight) == 64);
+
+	/** @brief M8: a room or portal node and its Light Limit Fix room index (LightLimitFix::roomNodes, rebuilt every frame). */
+	struct RoomIndex
+	{
+		const void* node = nullptr;
+		uint32_t index = 0;
+	};
 
 	/**
-	 * @brief Per-frame M8 point-light shadow settings: ray-traced visibility for the game's unshadowed, non-portal-strict
-	 * point lights, as a ratio mask Lighting.hlsl reads at PS t46.
+	 * @brief M8: this frame's room indices, before OnPrepass. The scene walk tags each instance with the index of its
+	 * nearest room/portal ancestor, which the traces use to apply portal-strict lights only where Lighting.hlsl does.
+	 */
+	void SetRoomIndices(std::span<const RoomIndex> a_rooms);
+
+	/**
+	 * @brief Per-frame M8 point-light shadow settings: ray-traced visibility for the game's unshadowed point lights
+	 * (portal-strict ones where their rooms are), as a ratio mask Lighting.hlsl reads at PS t46.
 	 */
 	struct PointShadowParams
 	{

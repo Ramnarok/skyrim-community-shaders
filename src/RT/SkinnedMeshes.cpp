@@ -426,6 +426,7 @@ namespace RT
 			record.uvPage = entry.source.vertexPage;
 			record.uvOffset = entry.source.vertexOffset;
 			record.uvStride = entry.source.stride;
+			record.room = candidate.roomWord;
 			record.alphaTested = candidate.alphaTested;
 			record.alphaBlended = candidate.alphaBlended;
 			record.actor = true;

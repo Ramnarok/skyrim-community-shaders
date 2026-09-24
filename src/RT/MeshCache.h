@@ -101,6 +101,7 @@ namespace RT
 		uint32_t uvPage = 0;  // M7c: vertex data holding the texture coordinates (skinned: the bind-pose source)
 		uint32_t uvOffset = 0;
 		uint32_t uvStride = 0;
+		uint32_t room = 0;  // M8: Light Limit Fix room index + 1 of the nearest room/portal ancestor (0 = none), see GeometryCandidate::roomWord
 		bool terrain = false;
 		bool alphaTested = false;
 		bool alphaBlended = false;

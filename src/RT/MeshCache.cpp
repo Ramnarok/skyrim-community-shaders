@@ -575,6 +575,7 @@ namespace RT
 				.uvPage = entry.vertexAllocation.page,
 				.uvOffset = static_cast<uint32_t>(entry.vertexAllocation.offset),
 				.uvStride = entry.stride,
+				.room = candidate.roomWord,
 				.terrain = candidate.terrain,
 				.alphaTested = candidate.alphaTested,
 				.alphaBlended = candidate.alphaBlended,

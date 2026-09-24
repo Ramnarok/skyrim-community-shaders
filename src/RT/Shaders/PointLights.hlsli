@@ -14,12 +14,22 @@ struct PointLight
 	float SizeBias;
 	uint Flags;  // LightLimitFix::LightFlags
 	float Pad;
+	uint4 RoomFlags;  // bit n of word n / 32: Light Limit Fix room n (portal-strict lights only light those rooms)
 };
 
 static const uint kLightFlagPortalStrict = 1u << 0;  // LightLimitFix::LightFlags
 static const uint kLightFlagShadow = 1u << 1;
 static const uint kLightFlagDisabled = 1u << 9;
 static const uint kLightFlagInverseSquare = 1u << 10;
+
+// LightLimitFix::IsLightIgnored for a portal-strict light: it applies only to geometry in one of its rooms, except that
+// geometry without a known room (a_room < 0) gets every light, as Lighting.hlsl's RoomIndex = -1.
+bool PointLightAppliesInRoom(PointLight a_light, int a_room)
+{
+	if (!(a_light.Flags & kLightFlagPortalStrict) || a_room < 0 || a_room >= 128)
+		return true;
+	return ((a_light.RoomFlags[a_room >> 5] >> (a_room & 31)) & 1u) != 0;
+}
 
 // Visibility rays stop this far short of the light: lights sit inside their own fixture (lantern frames, sconces,
 // braziers), which would otherwise shadow every surface they light. Measured in M8: under 2.5% of occluded samples
@@ -49,10 +59,11 @@ struct PointLightSample
 };
 
 // Picks one light in proportion to its unshadowed contribution (luminance of colour x attenuation x N.L) in a single
-// streaming pass (weighted reservoir with one random number), skipping lights with any of a_skipFlags. With the
-// estimate Irradiance x V, the result is exact wherever every light is visible; visibility is the only noise.
+// streaming pass (weighted reservoir with one random number), skipping lights with any of a_skipFlags and portal-strict
+// lights of other rooms (a_room: the surface's Light Limit Fix room, -1 if none). With the estimate Irradiance x V, the
+// result is exact wherever every light is visible; visibility is the only noise.
 PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_count, uint a_skipFlags, bool a_inverseSquare,
-	float3 a_position, float3 a_normal, float a_u)
+	float3 a_position, float3 a_normal, float a_u, int a_room)
 {
 	PointLightSample result;
 	result.Valid = false;
@@ -64,7 +75,7 @@ PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_
 	[loop] for (uint i = 0; i < a_count; i++)
 	{
 		const PointLight light = a_lights[i];
-		if (light.Flags & a_skipFlags)
+		if ((light.Flags & a_skipFlags) || !PointLightAppliesInRoom(light, a_room))
 			continue;
 		const float3 toLight = light.Position - a_position;
 		const float distanceSq = dot(toLight, toLight);

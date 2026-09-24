@@ -139,7 +139,18 @@ namespace RT
 			std::vector<ExclusionBound>& exclusions;
 			SceneStats& stats;
 			bool treeRestPose = true;  // M7: trees in their rest pose (see CollectSkinned)
+			const RE::NiNode* room = nullptr;  // M8: nearest BSMultiBoundRoom / BSPortalSharedNode above the walk position
 		};
+
+		// M8: LightLimitFix.cpp's GetParentRoomNode test (same RTTI): Lighting.hlsl culls portal-strict lights by the room of
+		// the node found this way above the drawn geometry.
+		bool IsRoomNode(const RE::NiAVObject* a_object)
+		{
+			static const auto* roomRtti = REL::Relocation<const RE::NiRTTI*>{ RE::NiRTTI_BSMultiBoundRoom }.get();
+			static const auto* portalRtti = REL::Relocation<const RE::NiRTTI*>{ RE::NiRTTI_BSPortalSharedNode }.get();
+			const auto* rtti = a_object->GetRTTI();
+			return rtti == roomRtti || rtti == portalRtti;
+		}
 
 		/**
 		 * @brief M7: one candidate per skin partition (bind-pose buffers + this shape's material) and its bone palette,
@@ -291,14 +302,19 @@ namespace RT
 			}
 
 			if (auto* node = a_object->AsNode()) {
+				const auto* outerRoom = a_out.room;
+				if (IsRoomNode(node))
+					a_out.room = node;
 				for (auto& child : node->GetChildren())
 					Walk(child.get(), a_out);
+				a_out.room = outerRoom;
 				return;
 			}
 
 			if (auto* geometry = a_object->AsGeometry()) {
 				GeometryCandidate candidate;
 				const auto category = Classify(geometry, candidate);
+				candidate.room = a_out.room;
 				a_out.stats.instances[static_cast<size_t>(category)]++;
 				switch (category) {
 				case GeometryCategory::kStaticMesh:

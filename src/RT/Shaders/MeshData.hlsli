@@ -15,7 +15,7 @@ struct InstanceData  // mirrors InstanceGpu in Raytracer.cpp
 	uint UVPage;
 	uint UVOffset;
 	uint UVStride;
-	uint Pad;
+	uint Room;  // M8: Light Limit Fix room index + 1 of the instance (0 = none), as Lighting.hlsl's RoomIndex
 };
 
 // InstanceData.Flags bits, mirrored in Raytracer.cpp

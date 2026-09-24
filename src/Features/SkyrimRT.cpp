@@ -153,6 +153,10 @@ namespace
 			light.fadeZone = source.fadeZone;
 			light.sizeBias = source.sizeBias;
 			light.flags = source.lightFlags.underlying();
+			// Light Limit Fix uploads LightData as-is and its HLSL reads roomFlags as a uint4 (word n = rooms 32n..32n+31):
+			// copy the same 16 bytes (EASTL uint128_t, low 64 bits first on x64).
+			static_assert(sizeof(source.roomFlags) == sizeof(light.roomFlags));
+			std::memcpy(light.roomFlags, &source.roomFlags, sizeof(light.roomFlags));
 			const float color[3] = { source.color.x, source.color.y, source.color.z };
 			for (uint32_t c = 0; c < 3; c++) {
 				float value = std::max(color[c], 0.0f);
@@ -276,6 +280,17 @@ void SkyrimRT::Prepass()
 	}
 	RT::SetAlphaTest(settings.AlphaTest);
 	RT::SetTreeRestPose(settings.TreeRestPose);
+	{
+		// M8: Light Limit Fix rebuilt its room indices in its Prepass, earlier this frame; Lighting.hlsl's RoomIndex uses
+		// the same map during the opaque pass.
+		static std::vector<RT::RoomIndex> rooms;
+		rooms.clear();
+		if (globals::features::lightLimitFix.loaded) {
+			for (const auto& [node, index] : globals::features::lightLimitFix.roomNodes)
+				rooms.push_back({ node, index });
+		}
+		RT::SetRoomIndices(rooms);
+	}
 	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr, pointShadows ? &pointParams : nullptr, gi);
 
 	// Screen-Space Shadows skipped its pass for this frame, so the slot is ours. A mask that couldn't be traced

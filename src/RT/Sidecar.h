@@ -62,6 +62,13 @@ namespace RT
 		void SetAlphaTest(bool a_enabled) { alphaTestEnabled = a_enabled; }
 		/** @brief M7: trace trees in their rest pose (their swaying bones hold whichever culling camera's pose came last). */
 		void SetTreeRestPose(bool a_enabled) { treeRestPose = a_enabled; }
+		/** @brief M8: Light Limit Fix's room indices for this frame (see RT::SetRoomIndices). */
+		void SetRoomIndices(std::span<const RoomIndex> a_rooms)
+		{
+			roomIndices.clear();
+			for (const auto& room : a_rooms)
+				roomIndices.emplace(room.node, room.index + 1);
+		}
 
 		/** @brief Present time: an untraced round trip if none ran this frame (menus, loading), and the dump sequence. */
 		void OnPresent(uint32_t a_gameFrame);
@@ -188,6 +195,7 @@ namespace RT
 		bool alphaAtlasReady = false;
 		bool alphaTestEnabled = true;
 		bool treeRestPose = true;
+		ankerl::unordered_dense::map<const void*, uint32_t> roomIndices;  // M8: room node -> Light Limit Fix index + 1
 #if defined(SKYRIMRT_NRD)
 		std::unique_ptr<GlobalIllumination> gi;
 #endif

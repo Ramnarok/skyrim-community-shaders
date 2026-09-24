@@ -24,7 +24,7 @@ struct ShadowConstants
 	uint ViewMode;  // 0 none, 1 raw, 2 denoised
 	uint PointLightCount;  // M8 point-light shadows only
 	uint InverseSquare;    // M8: Inverse Square Lighting loaded
-	uint Pad;
+	uint RoomTest;         // M8: some traced light is portal-strict: find each pixel's room with a primary ray
 };
 
 static const uint kFlagCompareShadowMap = 1;
@@ -45,6 +45,10 @@ static const uint kPointSampled = 2;      // pixels with an RT-shadowed light in
 static const uint kPointOccluderNear32 = 3;   // occluded, by the blocker's distance from the light (game units)
 static const uint kPointOccluderNear64 = 4;
 static const uint kPointOccluderNear128 = 5;
+static const uint kPointRoomKnown = 6;        // pixels whose primary ray found an instance in a Light Limit Fix room
+static const uint kPointAnyInRange = 7;       // diagnostics: a traced light is within its radius
+static const uint kPointAnyFacing = 8;        // ... and in front of the surface
+static const uint kPointAnyInRoom = 9;        // ... and applies in the pixel's room
 
 ConstantBuffer<ShadowConstants> C : register(b0);
 

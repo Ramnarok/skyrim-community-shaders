@@ -44,6 +44,10 @@ namespace RT
 		uint8_t alphaThreshold = 0;  // M7c: NiAlphaProperty::alphaThreshold (the game discards alpha below threshold / 255)
 		uint32_t alphaWord = 0;      // M7c: InstanceData::Alpha (atlas tile, threshold, UV offset), filled by AlphaAtlas; 0 = opaque
 		bool windAnimated = false;   // M7c: kTreeAnim; the game's vertex shader sways it along its normals (Lighting.hlsl TREE_ANIM)
+		// M8: nearest BSMultiBoundRoom / BSPortalSharedNode ancestor (LightLimitFix GetParentRoomNode), valid this frame only,
+		// and its Light Limit Fix room index + 1 (0 = none or no light uses it), filled by the sidecar.
+		const RE::NiNode* room = nullptr;
+		uint32_t roomWord = 0;
 	};
 
 	/** @brief M7: one skin partition of a skinned shape this frame, with its bone palette. */
@@ -108,6 +112,8 @@ namespace RT
 		uint32_t skinnedRejectedShapes = 0;   ///< no usable skin data: excluded as before
 		uint32_t skinnedRejectedPartitions = 0;
 		uint32_t skinnedInvalidPoses = 0;  ///< partitions skipped for a non-finite or absurd bone this frame (refit safety)
+		uint32_t instancesInRooms = 0;  ///< M8: candidates whose room/portal ancestor has a Light Limit Fix room index
+		uint32_t roomNodes = 0;         ///< M8: rooms/portals Light Limit Fix indexed this frame (referenced by its lights)
 		uint32_t dynamicShapes = 0;          ///< M7b: dynamic (FaceGen) shapes extracted as skinned
 		uint32_t dynamicRejectedShapes = 0;  ///< dynamic shapes without usable skin or position data: excluded
 		uint32_t treeShapes = 0;          ///< skinned shapes under a BSTreeNode (their branches sway on bones)

@@ -57,7 +57,7 @@ namespace RT
 		{
 			uint32_t vertexPage, vertexOffset, indexPage, indexOffset;
 			uint32_t stride, flags, albedo, alpha;  // albedo: RGBA8 average diffuse (M6 material table); alpha: M7c alpha test
-			uint32_t uvPage, uvOffset, uvStride, pad;  // M7c: texture-coordinate source (bind pose for skinned)
+			uint32_t uvPage, uvOffset, uvStride, room;  // M7c: texture-coordinate source (bind pose for skinned); M8 room index + 1
 		};
 		static_assert(sizeof(InstanceGpu) == 48);
 		static_assert(kInstanceDataOffset + Raytracer::kMaxInstances * sizeof(InstanceGpu) <= kAabbOffset);
@@ -384,7 +384,7 @@ namespace RT
 			descs[i] = desc;
 			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride,
 				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u), record.albedo, record.alpha,
-				record.uvPage, record.uvOffset, record.uvStride, 0 };
+				record.uvPage, record.uvOffset, record.uvStride, record.room };
 		}
 
 		SetPassMarker(a_list, L"SkyrimRT: exclusion BLAS");

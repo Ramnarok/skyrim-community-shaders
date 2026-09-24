@@ -16,9 +16,27 @@ RWTexture2D<unorm float> RawVisibility : register(u0);
 RWTexture2D<float4> Geometry : register(u1);  // xyz: reconstructed normal (camera-relative world space)
 RWByteAddressBuffer Counters : register(u4);
 
-// The game shadow-maps Shadow lights; PortalStrict lights are culled per geometry by room, which isn't known per
-// pixel here, so counting them could darken the lights that do apply.
-static const uint kSkippedLights = kLightFlagShadow | kLightFlagPortalStrict | kLightFlagDisabled;
+// The game shadow-maps Shadow lights. Portal-strict lights are traced where Lighting.hlsl applies them: the pixel's
+// room comes from the instance a primary ray finds (PixelRoom), tested as LightLimitFix::IsLightIgnored does.
+static const uint kSkippedLights = kLightFlagShadow | kLightFlagDisabled;
+static const uint kPrimaryMask = 0x0F;  // static | terrain | actor | alpha-tested: what the depth pre-pass draws
+
+// Light Limit Fix room of the instance drawn at the pixel (Lighting.hlsl's RoomIndex for that draw), or -1. The primary
+// ray matches the raster to ~0.1% of pixels (M4 depth metric); a miss or a room-less instance gives every light.
+int PixelRoom(float3 a_nearPoint, float3 a_position, float a_distance)
+{
+	RayDesc ray;
+	ray.Origin = a_nearPoint;
+	ray.Direction = (a_position - a_nearPoint) / max(a_distance, 1e-4);
+	ray.TMin = 0.0;
+	ray.TMax = a_distance * 1.02 + 2.0;  // just past the raster surface: the depth metric's 1% tolerance, doubled
+	RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, kPrimaryMask, ray);
+	PROCEED_ALPHA_TESTED(query);
+	if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+		return -1;
+	return int(Instances[query.CommittedInstanceID()].Room) - 1;
+}
 
 void Count(uint a_slot, bool a_condition)
 {
@@ -69,6 +87,8 @@ float Random1(uint2 a_pixel, uint a_frame)
 	bool sampled = false;
 	bool occluded = false;
 	float occluderToLight = -1.0;
+	int room = -1;
+	bool anyInRange = false, anyFacing = false, anyInRoom = false;
 	float3 normal = float3(0.0, 0.0, 0.0);
 	if (!sky) {
 		const float3 position = PositionAt(pixel, depth);
@@ -77,8 +97,24 @@ float Random1(uint2 a_pixel, uint a_frame)
 		const float3 toViewer = (nearPoint - position) / max(distance, 1e-4);
 		normal = ReconstructNormal(pixel, position, toViewer);
 
+		room = C.RoomTest ? PixelRoom(nearPoint, position, distance) : -1;
+		// Diagnostics (a few lights, cheap): which of SamplePointLight's filters leaves a pixel without a light.
+		[loop] for (uint i = 0; i < C.PointLightCount; i++)
+		{
+			const PointLight candidate = PointLights[i];
+			if (candidate.Flags & kSkippedLights)
+				continue;
+			const float3 toCandidate = candidate.Position - position;
+			if (dot(toCandidate, toCandidate) >= candidate.Radius * candidate.Radius)
+				continue;
+			anyInRange = true;
+			if (dot(normal, toCandidate) <= 0.0)
+				continue;
+			anyFacing = true;
+			anyInRoom = anyInRoom || PointLightAppliesInRoom(candidate, room);
+		}
 		const PointLightSample light = SamplePointLight(PointLights, C.PointLightCount, kSkippedLights, C.InverseSquare != 0, position, normal,
-			Random1(dispatchID.xy, C.FrameIndex));
+			Random1(dispatchID.xy, C.FrameIndex), room);
 		if (light.Valid) {
 			sampled = true;
 			const float3 origin = position + normal * (C.NormalBias + distance * C.DistanceBias);
@@ -113,4 +149,8 @@ float Random1(uint2 a_pixel, uint a_frame)
 	Count(kPointOccluderNear32, occluded && occluderToLight < 32.0);
 	Count(kPointOccluderNear64, occluded && occluderToLight >= 32.0 && occluderToLight < 64.0);
 	Count(kPointOccluderNear128, occluded && occluderToLight >= 64.0 && occluderToLight < 128.0);
+	Count(kPointRoomKnown, room >= 0);
+	Count(kPointAnyInRange, anyInRange);
+	Count(kPointAnyFacing, anyFacing);
+	Count(kPointAnyInRoom, anyInRoom);
 }
