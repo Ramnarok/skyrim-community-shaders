@@ -22,9 +22,10 @@ struct SkyrimRT : OverlayFeature
 	virtual inline std::string GetShortName() override { return "SkyrimRT"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
 
-	/** @brief M8: Lighting.hlsl reads the point-light shadow mask at PS t46 (SkyrimRT/PointLightShadows.hlsli). */
+	/** @brief M8: Lighting.hlsl reads the point-light shadow mask at PS t46 (SkyrimRT/PointLightShadows.hlsli). M8 water: Water.hlsl reads
+	 * the traced water reflections at PS t47. */
 	virtual inline std::string_view GetShaderDefineName() override { return "SKYRIM_RT"; }
-	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Lighting; }
+	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Lighting || a_type == RE::BSShader::Type::Water; }
 
 	/** @brief Returns a localized description and list of key features for the UI summary panel. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
@@ -78,6 +79,7 @@ struct SkyrimRT : OverlayFeature
 		bool GIReflections = true;              ///< M8: ray-traced reflections in place of the cubemaps (needs Dynamic Cubemaps)
 		float GIReflectionMaxRoughness = 1.0f;  ///< rougher surfaces keep the cubemap reflection
 		bool GIReflectionHalfResolution = true;  ///< one reflection ray per 2x2 block (measured +1.2-1.5 ms at full resolution in rain)
+		bool WaterReflections = false;  ///< M8: water planes reflect the traced scene (Water.hlsl t47; needs GIReflections)
 	};
 
 	Settings settings;

@@ -37,6 +37,10 @@ struct GIConstants
 	uint Reflections;              // M8 reflections: trace a glossy ray from every pixel with a reflection term
 	float ReflectionMaxRoughness;  // ... whose G-buffer roughness is at most this
 	uint ReflectionHalfResolution; // ... one ray per 2x2 block (ReflectionTraceCS)
+	uint Water;                    // M8 water: water planes (kMaskWater) in front of the G-buffer reflect too (Water.hlsl t47)
+	float WaterRoughness;          // ... with this roughness (the waves are Water.hlsl's normal maps)
+	row_major float4x4 ViewProjUnjittered;  // M8 water: camera-relative world -> this frame's unjittered clip
+	row_major float4x4 PrevViewProj;        // ... -> the previous frame's (its view folded into this origin)
 };
 
 // Counter slots, mirrored in GlobalIllumination.h
@@ -55,6 +59,7 @@ static const uint kGIReflectionTraced = 11;  // M8 reflections: pixels with a re
 static const uint kGIReflectionHits = 12;    // ... rays that hit geometry (the rest see the sky)
 static const uint kGIReflectionDeeperHits = 13;  // ... hits of the reflected surface's continuation rays
 static const uint kGIReflectionRays = 14;        // ... reflection rays traced (a quarter or so at half resolution)
+static const uint kGIWaterPixels = 15;            // M8 water: pixels whose reflecting surface is a water plane (in kGIReflectionTraced too)
 
 ConstantBuffer<GIConstants> C : register(b0);
 

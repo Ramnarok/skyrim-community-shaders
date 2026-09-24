@@ -60,7 +60,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIView,
 	GIReflections,
 	GIReflectionMaxRoughness,
-	GIReflectionHalfResolution)
+	GIReflectionHalfResolution,
+	WaterReflections)
 
 namespace
 {
@@ -251,6 +252,11 @@ void SkyrimRT::Prepass()
 		ID3D11ShaderResourceView*& srv;
 		~BindPointMask() { globals::d3d::context->PSSetShaderResources(46, 1, &srv); }
 	} bindPointMask{ pointMask };
+	// M8 water: Water.hlsl reads t47 when it's bound; DrawGlobalIllumination binds it once this frame's trace is done.
+	{
+		ID3D11ShaderResourceView* noWater = nullptr;
+		globals::d3d::context->PSSetShaderResources(47, 1, &noWater);
+	}
 
 	if (!settings.Enabled)
 		return;
@@ -351,12 +357,18 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.reflections = settings.GIReflections && globals::features::dynamicCubemaps.loaded;
 	params.reflectionMaxRoughness = settings.GIReflectionMaxRoughness;
 	params.reflectionHalfResolution = settings.GIReflectionHalfResolution;
+	params.water = settings.WaterReflections;
 	a_outputs = RT::SubmitGI(params);
 	const bool traced = a_outputs.ao && a_outputs.y && a_outputs.coCg;
 	// The flag SRV tells the composite the GI carries the sky: any bound view works, only its presence is read.
 	a_outputs.skyLight = traced && params.skyLight ? a_outputs.ao : nullptr;
-	if (!traced)
+	if (!traced) {
 		a_outputs.reflections = nullptr;
+		a_outputs.waterReflections = nullptr;
+	}
+	// Water draws after the composite; Prepass unbound t47 earlier this frame, so a frame without it keeps the vanilla path.
+	if (a_outputs.waterReflections)
+		globals::d3d::context->PSSetShaderResources(47, 1, &a_outputs.waterReflections);
 	return traced;
 }
 
@@ -542,6 +554,9 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("gi_reflection_half_resolution"), "Half-resolution reflections"), &settings.GIReflectionHalfResolution);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_reflection_half_resolution_tooltip"), "Trace one reflection ray per 2x2 pixels and let the denoiser fill in the rest: about a quarter of the cost, slightly softer reflections. In rain almost every surface reflects."));
+	ImGui::Checkbox(T(TKEY("water_reflections"), "Ray-traced water reflections"), &settings.WaterReflections);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("water_reflections_tooltip"), "Rivers and lakes reflect the traced scene (and distant land) instead of the game's cubemap and screen-space reflections. Needs ray-traced reflections."));
 
 	const char* giViewNames[] = { T(TKEY("shadow_view_off"), "Off"), T(TKEY("gi_view_noisy"), "Bounce light, noisy"), T(TKEY("gi_view_denoised"), "Bounce light, denoised"), T(TKEY("gi_view_ao"), "Ambient occlusion"),
 		T(TKEY("gi_view_reflections_noisy"), "Reflections, noisy"), T(TKEY("gi_view_reflections_denoised"), "Reflections, denoised") };

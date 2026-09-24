@@ -340,6 +340,13 @@ Texture2D<float4> FlowMapNormalsTex : register(t9);
 Texture2D<float4> SSRReflectionTex : register(t10);
 Texture2D<float4> RawSSRReflectionTex : register(t11);
 
+#	if defined(SKYRIM_RT) && !defined(LOD) && !defined(UNDERWATER)
+// Skyrim RT water reflections: rgb the ray-traced light along the water's mirror direction (linear, denoised), a = the view Z
+// of the water surface it was traced from (0 = not water). Bound only when traced this frame; where it matches this
+// fragment it takes the place of the cubemap and screen-space reflections below.
+Texture2D<float4> SkyrimRTWaterReflections : register(t47);
+#	endif
+
 cbuffer PerTechnique : register(b0)
 {
 	float4 VPOSOffset : packoffset(c0);  // inverse main render target width and height in xy, 0 in zw
@@ -838,6 +845,38 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	float3 finalSsrReflectionColor = max(0, ssrReflectionColor.xyz);
 	float ssrFraction = saturate(ssrReflectionColor.w * distanceFactor * ssrAmount);
 	reflectionColor = lerp(reflectionColor, finalSsrReflectionColor, ssrFraction);
+#			endif
+
+#			if defined(SKYRIM_RT) && !defined(LOD) && !defined(UNDERWATER)
+	// Skyrim RT: the traced reflection of this water surface, at the screen-space reflection's wave-distorted position. The
+	// undistorted texel must be this fragment's surface (another water layer or a missed pixel keeps the vanilla path);
+	// the distorted one falls back to it when it isn't water.
+	uint rtWaterWidth, rtWaterHeight;
+	SkyrimRTWaterReflections.GetDimensions(rtWaterWidth, rtWaterHeight);
+	if (rtWaterWidth > 0) {
+		const float2 rtWaterSize = float2(rtWaterWidth, rtWaterHeight);
+		const int2 rtWaterPixel = int2(clamp(input.HPosition.xy, 0.0, rtWaterSize - 1.0));
+		const float4 rtWater = SkyrimRTWaterReflections.Load(int3(rtWaterPixel, 0));
+		const float fragmentViewZ = mul(FrameBuffer::CameraView, float4(input.WPosition.xyz, 1.0)).z;
+		if (rtWater.a > 0.0 && abs(rtWater.a - fragmentViewZ) <= 0.02 * fragmentViewZ + 2.0) {
+			// Bilinear over the water texels only: point samples at a wave-distorted position crawl as the camera moves,
+			// and plain bilinear would blend in the black of the non-water texels at the banks.
+			const float2 rtWaterPosition = clamp(input.HPosition.xy + 0.05 * normal.xy * rtWaterSize, 0.5, rtWaterSize - 0.5) - 0.5;
+			const int2 rtWaterBase = int2(floor(rtWaterPosition));
+			const float2 rtWaterFraction = rtWaterPosition - rtWaterBase;
+			float3 rtWaterSum = 0.0;
+			float rtWaterWeight = 0.0;
+			[unroll] for (int rtWaterTap = 0; rtWaterTap < 4; rtWaterTap++) {
+				const int2 offset = int2(rtWaterTap & 1, rtWaterTap >> 1);
+				const float4 texel = SkyrimRTWaterReflections.Load(int3(min(rtWaterBase + offset, int2(rtWaterSize) - 1), 0));
+				const float2 bilinear = lerp(1.0 - rtWaterFraction, rtWaterFraction, float2(offset));
+				const float weight = texel.a > 0.0 ? bilinear.x * bilinear.y : 0.0;
+				rtWaterSum += texel.rgb * weight;
+				rtWaterWeight += weight;
+			}
+			reflectionColor = Color::IrradianceToGamma(rtWaterWeight > 1e-4 ? rtWaterSum / rtWaterWeight : rtWater.rgb);
+		}
+	}
 #			endif
 
 	return reflectionColor;

@@ -417,6 +417,9 @@ namespace RT
 						{ "rays_per_reflective_pixel", g.counters[kGIReflectionTraced] ? static_cast<double>(g.counters[kGIReflectionRays]) / g.counters[kGIReflectionTraced] : 0.0 },
 						{ "hit_percent", g.ReflectionHitPercent() },
 						{ "deeper_hits", g.counters[kGIReflectionDeeperHits] },
+						// M8 water: pixels whose reflecting surface is a water plane (part of pixels_traced), for Water.hlsl t47.
+						{ "water", { { "enabled", p.water }, { "roughness", p.waterRoughness }, { "pixels", g.counters[kGIWaterPixels] },
+									   { "percent_of_render", g.renderWidth && g.renderHeight ? 100.0 * g.counters[kGIWaterPixels] / (static_cast<double>(g.renderWidth) * g.renderHeight) : 0.0 } } },
 						{ "frames_traced", g.reflectionFramesTraced },
 						{ "history_resets", g.reflectionHistoryResets },
 						{ "nrd_dispatches", g.reflectionDispatches } } },

@@ -181,6 +181,10 @@ namespace RT
 		bool reflections = false;
 		float reflectionMaxRoughness = 1.0f;  ///< rougher pixels keep the cubemaps
 		bool reflectionHalfResolution = true;  ///< one ray per 2x2 block, REBLUR reconstructs the rest
+		/// M8 water: water planes in front of the G-buffer are reflecting pixels too (with reflections on), resolved into
+		/// GIOutputs::waterReflections for Water.hlsl instead of the composite's t17.
+		bool water = false;
+		float waterRoughness = 0.05f;  ///< the traced lobe; the waves come from Water.hlsl's normal maps
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 extras. */
@@ -195,6 +199,9 @@ namespace RT
 		/// M8 reflections (RGBA16F), bound at composite t17 when traced this frame: rgb the light along the reflection lobe,
 		/// a = 1 where traced. The composite uses it in place of its cubemap reflection there.
 		ID3D11ShaderResourceView* reflections = nullptr;
+		/// M8 water (RGBA16F), bound at Water.hlsl PS t47 when traced this frame: rgb the light along the water's mirror
+		/// direction (linear), a = the traced water surface's view Z (0 = not water).
+		ID3D11ShaderResourceView* waterReflections = nullptr;
 	};
 
 	/** @brief Minimum tier we require: DXR 1.1 for inline RayQuery in compute shaders. */

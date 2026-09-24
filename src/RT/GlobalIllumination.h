@@ -28,6 +28,7 @@ namespace RT
 		kGIReflectionHits,        ///< ... rays that hit geometry (the rest see the sky)
 		kGIReflectionDeeperHits,  ///< ... hits of the reflected surfaces' continuation rays
 		kGIReflectionRays,        ///< ... reflection rays traced (one per 2x2 block at half resolution)
+		kGIWaterPixels,           ///< M8 water: pixels whose reflecting surface is a water plane (counted in kGIReflectionTraced too)
 		kGICounterCount
 	};
 
@@ -122,6 +123,7 @@ namespace RT
 		{
 			GIOutputs outputs{ ao.srv11.get(), y.srv11.get(), coCg.srv11.get() };
 			outputs.reflections = reflectionsRecorded ? reflections.srv11.get() : nullptr;
+			outputs.waterReflections = reflectionsRecorded && waterRecorded ? waterReflections.srv11.get() : nullptr;
 			return outputs;
 		}
 		ID3D11ShaderResourceView* GetViewSRV() const { return view.srv11.get(); }
@@ -171,6 +173,12 @@ namespace RT
 		winrt::com_ptr<ID3D12Resource> specularNoisy;
 		winrt::com_ptr<ID3D12Resource> specularDenoised;
 		SharedTexture reflections;  // composite input (t17), resting in COMMON
+		// M8 water: the traced water surface's view Z per pixel (0 = not water; D3D12 only, resting like the specular
+		// textures), and Water.hlsl's input (t47): the water pixels' reflections, resting in COMMON.
+		winrt::com_ptr<ID3D12Resource> waterViewZ;
+		winrt::com_ptr<ID3D12Resource> specularMotionVectors;  // REBLUR_SPECULAR's IN_MV: GI's, with the water surface's own at water pixels
+		SharedTexture waterReflections;
+		bool waterRecorded = false;  // this frame's Record traced water too
 		NrdDenoiser specularDenoiser;
 		winrt::com_ptr<ID3D12PipelineState> reflectionTracePipeline;
 		winrt::com_ptr<ID3D12PipelineState> reflectionResolvePipeline;

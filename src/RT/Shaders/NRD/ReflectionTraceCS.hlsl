@@ -18,10 +18,23 @@
 #include "GIPath.hlsli"
 
 Texture2D<float4> GBufferNormal : register(t2);  // CS's NORMALROUGHNESS: xy octahedral view-space normal, z glossiness
+Texture2D<float2> GIMotionVectors : register(t3);  // GI's NRD motion vectors (the G-buffer surface's)
 Texture2D<float3> Reflectance : register(t4);    // Deferred's REFLECTANCE: the composite's weight for its reflection term
 RWTexture2D<float> OutViewZ : register(u0);
 RWTexture2D<float4> OutNormalRoughness : register(u1);
+RWTexture2D<float> OutWaterViewZ : register(u2);  // M8 water: the traced water surface's view Z, 0 where the pixel isn't water
 RWTexture2D<float4> OutRadianceHitDist : register(u3);
+RWTexture2D<float2> OutMotionVectors : register(u5);  // REBLUR_SPECULAR's: GI's, the water surface's at water pixels (M8)
+
+// prevUV - currUV of a static camera-relative point, unjittered (the game's kMOTION_VECTOR convention).
+float2 StaticMotionVector(float3 a_position)
+{
+	const float4 current = mul(C.ViewProjUnjittered, float4(a_position, 1.0));
+	const float4 previous = mul(C.PrevViewProj, float4(a_position, 1.0));
+	const float2 currentUv = float2(current.x, -current.y) / current.w * 0.5 + 0.5;
+	const float2 previousUv = float2(previous.x, -previous.y) / previous.w * 0.5 + 0.5;
+	return previousUv - currentUv;
+}
 
 static const uint kReflectionSalt = 0x68E31DA4u;  // independent of the GI ray's Random2
 
@@ -54,6 +67,8 @@ struct ReflectionPixel
 	float distance;
 	float viewZ;
 	float roughness;
+	bool water;             // M8: the surface is a water plane in front of the G-buffer (Water.hlsl draws it later)
+	float3 geometricNormal;  // ... its plane normal (else reconstructed from the depth buffer)
 };
 
 // Writes REBLUR_SPECULAR's guides for a pixel. True when it has a reflection term within the roughness limit: then its
@@ -63,6 +78,45 @@ bool PrepareReflectionPixel(int2 a_pixel, out ReflectionPixel a_out)
 	a_out = (ReflectionPixel)0;
 	const float depth = Depth[a_pixel];
 	const float4 gbuffer = GBufferNormal[a_pixel];
+	OutWaterViewZ[a_pixel] = 0.0;
+	OutMotionVectors[a_pixel] = GIMotionVectors[a_pixel];
+
+	// M8 water: a water plane in front of the opaque surface (the planes cover whole cells, under the land too) is the
+	// pixel's reflecting surface: a mirror with a little roughness, whatever the G-buffer below it holds.
+	if (C.Water) {
+		const float3 nearPoint = NearPointAt(a_pixel);
+		const float3 farPoint = PositionAt(a_pixel, depth >= 1.0 ? 1.0 : depth);
+		const float toFar = length(farPoint - nearPoint);
+		RayDesc ray;
+		ray.Origin = nearPoint;
+		ray.Direction = (farPoint - nearPoint) / max(toFar, 1e-4);
+		ray.TMin = 0.0;
+		ray.TMax = depth >= 1.0 ? toFar : toFar * 0.999;
+		RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+		query.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskWater, ray);
+		query.Proceed();
+		if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+			const float3 planeNormal = GeometricNormal(Instances[query.CommittedInstanceID()], query.CommittedPrimitiveIndex(), query.CommittedObjectToWorld3x4(), ray.Direction);
+			// Seen from above only: from below (the camera underwater) the game draws its underwater variant.
+			if (planeNormal.z > 0.5) {
+				a_out.water = true;
+				a_out.distance = query.CommittedRayT();
+				a_out.position = nearPoint + ray.Direction * a_out.distance;
+				a_out.toViewer = -ray.Direction;
+				a_out.normal = planeNormal;
+				a_out.geometricNormal = planeNormal;
+				a_out.roughness = C.WaterRoughness;
+				a_out.viewZ = mul(C.View, float4(a_out.position, 1.0)).z;
+				OutViewZ[a_pixel] = a_out.viewZ;
+				OutNormalRoughness[a_pixel] = NRD_FrontEnd_PackNormalAndRoughness(a_out.normal, a_out.roughness, 0.0);
+				OutWaterViewZ[a_pixel] = a_out.viewZ;
+				OutMotionVectors[a_pixel] = StaticMotionVector(a_out.position);
+				Count(kGIWaterPixels, true);
+				return true;
+			}
+		}
+	}
+
 	a_out.roughness = saturate(1.0 - gbuffer.z);
 	if (depth >= 1.0 || !any(Reflectance[a_pixel] > 0.0) || a_out.roughness > C.ReflectionMaxRoughness) {
 		OutViewZ[a_pixel] = C.SkyViewZ;
@@ -94,7 +148,7 @@ void NoReflectionData(int2 a_pixel)
 // Traces one reflection ray from a prepared pixel and writes its radiance x a_scale with the hit distance.
 void TraceReflection(int2 a_pixel, ReflectionPixel a_p, float a_scale, uint2 a_seedPixel)
 {
-	const float3 geometricNormal = ReconstructNormal(a_pixel, a_p.position, a_p.toViewer);
+	const float3 geometricNormal = a_p.water ? a_p.geometricNormal : ReconstructNormal(a_pixel, a_p.position, a_p.toViewer);
 	const float3 tangent = normalize(cross(a_p.normal, abs(a_p.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0)));
 	const float3 bitangent = cross(a_p.normal, tangent);
 	const float3 viewTS = float3(dot(a_p.toViewer, tangent), dot(a_p.toViewer, bitangent), max(dot(a_p.toViewer, a_p.normal), 1e-4));

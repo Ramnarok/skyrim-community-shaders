@@ -47,9 +47,13 @@ namespace RT
 			uint32_t reflections;          // M8 reflections
 			float reflectionMaxRoughness;  // ... traced up to this G-buffer roughness
 			uint32_t reflectionHalfResolution;  // ... one ray per 2x2 block
-			uint32_t pad[3];
+			uint32_t water;         // M8 water: water planes in front of the G-buffer reflect too
+			float waterRoughness;  // ... with this roughness
+			uint32_t pad;
+			float viewProjUnjittered[16];  // M8 water: camera-relative world -> this frame's unjittered clip
+			float prevViewProj[16];        // ... -> the previous frame's unjittered clip (its view folded into this origin)
 		};
-		static_assert(sizeof(GIConstants) == 400);
+		static_assert(sizeof(GIConstants) == 528);
 
 		constexpr uint32_t kMaskStatic = 0x01;  // InstanceMask bits, as Raytracer::Record assigns them
 		constexpr uint32_t kMaskTerrain = 0x02;
@@ -60,18 +64,19 @@ namespace RT
 		constexpr float kDistanceBias = 0.002f;
 
 		constexpr uint64_t kConstantsOffset = 0;
-		constexpr uint64_t kZeroOffset = 512;
+		constexpr uint64_t kZeroOffset = 768;
 		constexpr uint64_t kPointLightsOffset = 1024;
 		constexpr uint64_t kUploadBytes = kPointLightsOffset + sizeof(PointLight) * GlobalIllumination::kMaxPointLights;
 		constexpr uint64_t kCounterBytes = 64;
+		static_assert(kConstantsOffset + sizeof(GIConstants) <= kZeroOffset && kZeroOffset + kCounterBytes <= kPointLightsOffset);
 		static_assert(kGICounterCount * sizeof(uint32_t) <= kCounterBytes);
 		// Timestamps: start, GI trace, reflection trace, REBLUR_DIFFUSE, REBLUR_SPECULAR, resolves.
 		constexpr uint32_t kTimestampsPerSlot = 6;
 
-		// Descriptor heap: mesh pages, then tables of SRV t1..t4 + UAV u0..u3 (GI trace, GI resolve), the atlases, then
+		// Descriptor heap: mesh pages, then tables of SRV t1..t4 + UAV u0..u3 + u5 (GI trace, GI resolve), the atlases, then
 		// the M8 reflection tables in the same layout.
 		constexpr uint32_t kTableSrvs = 4;
-		constexpr uint32_t kTableUavs = 4;
+		constexpr uint32_t kTableUavs = 5;  // u0..u3, then u5: M8 water, the reflection denoiser's own motion vectors (null elsewhere); u4 is the root counters
 		constexpr uint32_t kTableSize = kTableSrvs + kTableUavs;
 		constexpr uint32_t kTraceTable = GlobalIllumination::kMeshPageSlots;
 		constexpr uint32_t kResolveTable = kTraceTable + kTableSize;
@@ -132,6 +137,14 @@ namespace RT
 				a_out[r * 4 + 3] = a_view[r * 4 + 0] * a_delta.x + a_view[r * 4 + 1] * a_delta.y + a_view[r * 4 + 2] * a_delta.z + a_view[r * 4 + 3];
 		}
 
+		// a_out = a_a x a_b (row-major, column vectors: a_b applies first).
+		void Multiply4x4(const float* a_a, const float* a_b, float* a_out)
+		{
+			for (int r = 0; r < 4; r++)
+				for (int c = 0; c < 4; c++)
+					a_out[r * 4 + c] = a_a[r * 4 + 0] * a_b[0 * 4 + c] + a_a[r * 4 + 1] * a_b[1 * 4 + c] + a_a[r * 4 + 2] * a_b[2 * 4 + c] + a_a[r * 4 + 3] * a_b[3 * 4 + c];
+		}
+
 		uint8_t ToneMapByte(float a_value)
 		{
 			const float v = std::max(a_value, 0.0f);
@@ -173,9 +186,10 @@ namespace RT
 
 	bool GlobalIllumination::CreatePipelines()
 	{
-		D3D12_DESCRIPTOR_RANGE tableRanges[2]{};
-		tableRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kTableSrvs, 1, 0, 0 };           // t1..t4
-		tableRanges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kTableUavs, 0, 0, kTableSrvs };  // u0..u3
+		D3D12_DESCRIPTOR_RANGE tableRanges[3]{};
+		tableRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kTableSrvs, 1, 0, 0 };               // t1..t4
+		tableRanges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kTableUavs - 1, 0, 0, kTableSrvs };  // u0..u3
+		tableRanges[2] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 5, 0, kTableSrvs + kTableUavs - 1 };  // u5 (u4 is the root counters)
 		D3D12_DESCRIPTOR_RANGE pageRanges[3]{};
 		pageRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kMeshPageSlots, 0, 1, 0 };  // t0, space1: mesh pages
 		pageRanges[1] = GetAlphaAtlasRange(kAlphaAtlasDescriptor);                    // t0, space2: M7c alpha atlas
@@ -191,7 +205,7 @@ namespace RT
 		params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;  // u4: counters
 		params[3].Descriptor = { 4, 0 };
 		params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-		params[4].DescriptorTable = { 2, tableRanges };
+		params[4].DescriptorTable = { 3, tableRanges };
 		params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		params[5].DescriptorTable = { 3, pageRanges };
 		params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  // t6: point lights
@@ -249,7 +263,7 @@ namespace RT
 		};
 		auto uav = [&](uint32_t a_table, uint32_t a_register, ID3D12Resource* a_resource, DXGI_FORMAT a_format) {
 			D3D12_UNORDERED_ACCESS_VIEW_DESC desc{ .Format = a_format, .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D };
-			device->CreateUnorderedAccessView(a_resource, nullptr, &desc, handle(a_table + kTableSrvs + a_register));
+			device->CreateUnorderedAccessView(a_resource, nullptr, &desc, handle(a_table + kTableSrvs + (a_register == 5 ? 4 : a_register)));  // u5 sits in the table's fifth UAV slot
 		};
 		auto formatOf = [](ID3D12Resource* a_resource, DXGI_FORMAT a_fallback) { return a_resource ? a_resource->GetDesc().Format : a_fallback; };
 
@@ -262,6 +276,7 @@ namespace RT
 		uav(kTraceTable, 1, normalRoughness.get(), DXGI_FORMAT_R10G10B10A2_UNORM);
 		uav(kTraceTable, 2, nrdMotionVectors.get(), DXGI_FORMAT_R16G16_FLOAT);
 		uav(kTraceTable, 3, noisy.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+		uav(kTraceTable, 5, nullptr, DXGI_FORMAT_R16G16_FLOAT);
 
 		// Resolve: t1 depth, t2 denoised, t3 normal, t4 noisy; u0 AO, u1 Y, u2 CoCg, u3 view.
 		srv(kResolveTable, 1, rasterDepth, DXGI_FORMAT_R32_FLOAT);
@@ -272,30 +287,33 @@ namespace RT
 		uav(kResolveTable, 1, y.resource12.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
 		uav(kResolveTable, 2, coCg.resource12.get(), DXGI_FORMAT_R16G16_FLOAT);
 		uav(kResolveTable, 3, view.resource12.get(), DXGI_FORMAT_R8G8B8A8_UNORM);
+		uav(kResolveTable, 5, nullptr, DXGI_FORMAT_R16G16_FLOAT);
 
 		WriteAlphaAtlasDescriptor(device, alphaAtlas, handle(kAlphaAtlasDescriptor));
 		WriteAlbedoAtlasDescriptor(device, albedoAtlas, handle(kAlbedoAtlasDescriptor));
 
-		// M8 reflection trace: t1 depth, t2 G-buffer normal, t3 unused, t4 reflectance; u0 viewZ, u1 normal, u2 unused,
+		// M8 reflection trace: t1 depth, t2 G-buffer normal, t3 GI's NRD motion vectors, t4 reflectance; u0 viewZ, u1 normal, u2 water view Z (M8 water),
 		// u3 noisy (REBLUR_SPECULAR's inputs). Null until InitReflections creates them.
 		srv(kReflectionTraceTable, 1, rasterDepth, DXGI_FORMAT_R32_FLOAT);
 		srv(kReflectionTraceTable, 2, gbufferNormal.resource12.get(), formatOf(gbufferNormal.resource12.get(), DXGI_FORMAT_R10G10B10A2_UNORM));
-		srv(kReflectionTraceTable, 3, nullptr, DXGI_FORMAT_R16G16_FLOAT);
+		srv(kReflectionTraceTable, 3, nrdMotionVectors.get(), DXGI_FORMAT_R16G16_FLOAT);
 		srv(kReflectionTraceTable, 4, reflectance.resource12.get(), formatOf(reflectance.resource12.get(), DXGI_FORMAT_R11G11B10_FLOAT));
 		uav(kReflectionTraceTable, 0, specularViewZ.get(), DXGI_FORMAT_R32_FLOAT);
 		uav(kReflectionTraceTable, 1, specularNormalRoughness.get(), DXGI_FORMAT_R10G10B10A2_UNORM);
-		uav(kReflectionTraceTable, 2, nullptr, DXGI_FORMAT_R16G16_FLOAT);
+		uav(kReflectionTraceTable, 2, waterViewZ.get(), DXGI_FORMAT_R32_FLOAT);
 		uav(kReflectionTraceTable, 3, specularNoisy.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+		uav(kReflectionTraceTable, 5, specularMotionVectors.get(), DXGI_FORMAT_R16G16_FLOAT);
 
-		// M8 reflection resolve: t1 depth, t2 denoised, t3 viewZ, t4 noisy; u0 reflections, u1-u2 unused, u3 view.
+		// M8 reflection resolve: t1 depth, t2 denoised, t3 viewZ, t4 noisy; u0 reflections, u1 water reflections, u2 water view Z, u3 view.
 		srv(kReflectionResolveTable, 1, rasterDepth, DXGI_FORMAT_R32_FLOAT);
 		srv(kReflectionResolveTable, 2, specularDenoised.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
 		srv(kReflectionResolveTable, 3, specularViewZ.get(), DXGI_FORMAT_R32_FLOAT);
 		srv(kReflectionResolveTable, 4, specularNoisy.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
 		uav(kReflectionResolveTable, 0, reflections.resource12.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
-		uav(kReflectionResolveTable, 1, nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
-		uav(kReflectionResolveTable, 2, nullptr, DXGI_FORMAT_R16G16B16A16_FLOAT);
+		uav(kReflectionResolveTable, 1, waterReflections.resource12.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+		uav(kReflectionResolveTable, 2, waterViewZ.get(), DXGI_FORMAT_R32_FLOAT);
 		uav(kReflectionResolveTable, 3, view.resource12.get(), DXGI_FORMAT_R8G8B8A8_UNORM);
+		uav(kReflectionResolveTable, 5, nullptr, DXGI_FORMAT_R16G16_FLOAT);
 	}
 
 	bool GlobalIllumination::Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
@@ -391,10 +409,14 @@ namespace RT
 		std::string error;
 		if (!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT, "GIReflections", reflections, error))
 			return fail(std::move(error));
+		if (!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT, "GIWaterReflections", waterReflections, error))
+			return fail(std::move(error));
 		if (!CreateTexture(DXGI_FORMAT_R32_FLOAT, L"SkyrimRT::SpecularViewZ", specularViewZ) ||
 			!CreateTexture(DXGI_FORMAT_R10G10B10A2_UNORM, L"SkyrimRT::SpecularNormalRoughness", specularNormalRoughness) ||
 			!CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"SkyrimRT::SpecularNoisy", specularNoisy) ||
-			!CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"SkyrimRT::SpecularDenoised", specularDenoised))
+			!CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"SkyrimRT::SpecularDenoised", specularDenoised) ||
+			!CreateTexture(DXGI_FORMAT_R32_FLOAT, L"SkyrimRT::WaterViewZ", waterViewZ) ||
+			!CreateTexture(DXGI_FORMAT_R16G16_FLOAT, L"SkyrimRT::SpecularMotionVectors", specularMotionVectors))
 			return fail(failureReason);
 		if (!specularDenoiser.Init(device, width, height, nrd::Denoiser::REBLUR_SPECULAR))
 			return fail("NRD: " + specularDenoiser.GetFailureReason());
@@ -541,6 +563,17 @@ namespace RT
 		c->reflections = traceReflections ? 1u : 0u;
 		c->reflectionMaxRoughness = std::clamp(a_params.reflectionMaxRoughness, 0.0f, 1.0f);
 		c->reflectionHalfResolution = a_params.reflectionHalfResolution ? 1u : 0u;
+		c->water = traceReflections && a_params.water ? 1u : 0u;
+		c->waterRoughness = a_params.waterRoughness;
+		{
+			// Water pixels' motion vectors, reprojected from the water surface (GI's follow the riverbed below it). Both
+			// matrices take this frame's camera-relative positions; unjittered, as the game's kMOTION_VECTOR.
+			const RE::NiPoint3 delta{ a_camera.posAdjust.x - prevPosAdjust.x, a_camera.posAdjust.y - prevPosAdjust.y, a_camera.posAdjust.z - prevPosAdjust.z };
+			float prevViewHere[16];
+			ViewTimesTranslation(historyValid ? prevView : a_camera.view, historyValid ? delta : RE::NiPoint3{}, prevViewHere);
+			Multiply4x4(a_camera.projUnjittered, a_camera.view, c->viewProjUnjittered);
+			Multiply4x4(historyValid ? prevProj : a_camera.projUnjittered, prevViewHere, c->prevViewProj);
+		}
 
 		auto first = heap->GetCPUDescriptorHandleForHeapStart();
 		UpdatePageDescriptors(device, a_meshPool, first, descriptorSize, describedPageSerials.data(), SkinnedMeshes::kFirstPageSlot);
@@ -604,7 +637,9 @@ namespace RT
 			Barriers(a_list, { TransitionBarrier(reflectance.resource12.get(), kCommon, kSRV),
 								 TransitionBarrier(specularViewZ.get(), kSRV, kUAV),
 								 TransitionBarrier(specularNormalRoughness.get(), kSRV, kUAV),
-								 TransitionBarrier(specularNoisy.get(), kSRV, kUAV) });
+								 TransitionBarrier(specularNoisy.get(), kSRV, kUAV),
+								 TransitionBarrier(waterViewZ.get(), kSRV, kUAV),
+								 TransitionBarrier(specularMotionVectors.get(), kSRV, kUAV) });
 			a_list->SetPipelineState(reflectionTracePipeline.get());
 			a_list->SetComputeRootDescriptorTable(4, table(kReflectionTraceTable));
 			if (a_params.reflectionHalfResolution)  // one thread per 2x2 block
@@ -614,7 +649,9 @@ namespace RT
 			Barriers(a_list, { TransitionBarrier(reflectance.resource12.get(), kSRV, kCommon),
 								 TransitionBarrier(specularViewZ.get(), kUAV, kSRV),
 								 TransitionBarrier(specularNormalRoughness.get(), kUAV, kSRV),
-								 TransitionBarrier(specularNoisy.get(), kUAV, kSRV) });
+								 TransitionBarrier(specularNoisy.get(), kUAV, kSRV),
+								 TransitionBarrier(waterViewZ.get(), kUAV, kSRV),
+								 TransitionBarrier(specularMotionVectors.get(), kUAV, kSRV) });
 		}
 		if (alphaAtlas)
 			Barriers(a_list, { TransitionBarrier(alphaAtlas, kSRV, kCommon) });
@@ -640,7 +677,7 @@ namespace RT
 			if (a_params.reflectionHalfResolution)
 				specularReblur.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
 			specularDenoiser.Record(a_list, a_slot, specularCommon, specularReblur,
-				{ nrdMotionVectors.get(), specularNormalRoughness.get(), specularViewZ.get(), specularNoisy.get(), specularDenoised.get() });
+				{ specularMotionVectors.get(), specularNormalRoughness.get(), specularViewZ.get(), specularNoisy.get(), specularDenoised.get() });
 			specularEverCleared = true;
 		}
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 4);
@@ -658,11 +695,15 @@ namespace RT
 		if (traceReflections) {
 			SetPassMarker(a_list, L"SkyrimRT: reflection resolve");
 			Barriers(a_list, { TransitionBarrier(reflections.resource12.get(), kCommon, kUAV),
+								 TransitionBarrier(waterReflections.resource12.get(), kCommon, kUAV),
+								 TransitionBarrier(waterViewZ.get(), kSRV, kUAV),
 								 UavBarrier(view.resource12.get()) });  // both resolves write the debug view
 			a_list->SetPipelineState(reflectionResolvePipeline.get());
 			a_list->SetComputeRootDescriptorTable(4, table(kReflectionResolveTable));
 			a_list->Dispatch(groupsX, groupsY, 1);
-			Barriers(a_list, { TransitionBarrier(reflections.resource12.get(), kUAV, kCommon) });
+			Barriers(a_list, { TransitionBarrier(reflections.resource12.get(), kUAV, kCommon),
+								 TransitionBarrier(waterReflections.resource12.get(), kUAV, kCommon),
+								 TransitionBarrier(waterViewZ.get(), kUAV, kSRV) });
 		}
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 5);
 
@@ -738,6 +779,7 @@ namespace RT
 		prevRenderHeight = a_renderHeight;
 
 		reflectionsRecorded = traceReflections;
+		waterRecorded = traceReflections && a_params.water;
 		if (traceReflections) {
 			stats.reflectionFramesTraced++;
 			specularHaveHistory = true;
