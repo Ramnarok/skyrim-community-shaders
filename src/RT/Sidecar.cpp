@@ -662,6 +662,8 @@ namespace RT
 
 		DebugDumpData data;
 		data.gameFrame = dumpGameFrame;
+		data.nearby = std::move(dumpNearby);
+		dumpNearby.clear();
 		data.patternFrame = dumpPatternFrame;
 		data.width = kPatternSize;
 		data.height = kPatternSize;
@@ -827,8 +829,8 @@ namespace RT
 #endif
 
 		// Scene first: the TLAS is built from this frame's instances.
-		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats,
-			!treeRestPose ? TreeMode::kLiveBones : staticTrees ? TreeMode::kRestStatic : TreeMode::kRestSkinned);
+		const SceneOptions sceneOptions{ !treeRestPose ? TreeMode::kLiveBones : staticTrees ? TreeMode::kRestStatic : TreeMode::kRestSkinned, skipMeshLOD };
+		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats, sceneOptions);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);
 		// M8: each instance's Light Limit Fix room (its RoomIndex in Lighting.hlsl) for the portal-strict light test.
@@ -854,6 +856,13 @@ namespace RT
 		const PointShadowParams* pointShadows = (buildScene && a_pointShadows && raytracer.PointShadowsReady()) ? a_pointShadows : nullptr;
 		const bool dumpThisFrame = dumpRequested && dumpStage == DumpStage::kIdle;
 		const bool compareShadowMap = dumpThisFrame && shadows;
+		// Names what the TLAS holds around the camera (e.g. an occluder the raster doesn't draw), while the game's
+		// pointers are valid.
+		if (dumpThisFrame) {
+			dumpNearby.clear();
+			if (inWorld && a_camera.valid)
+				DescribeNearby(candidates, a_camera.posAdjust, kDumpNearbyRadius, kDumpNearbyMax, dumpNearby);
+		}
 
 		auto* allocator = allocators[slot].get();
 		allocator->Reset();

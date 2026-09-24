@@ -35,6 +35,13 @@ namespace RT
 		kRestStatic,   // M8: the rest pose as one rigid transform: a static instance of the bind-pose mesh, no skinning or refit
 	};
 
+	/** @brief What CollectScene extracts. */
+	struct SceneOptions
+	{
+		TreeMode treeMode = TreeMode::kRestStatic;
+		bool skipMeshLOD = false;  // M8 diagnostic: leave out every kMeshLOD shape, not only the alternates (see CollectScene)
+	};
+
 	/** @brief One extractable (static or terrain) geometry instance this frame. */
 	struct GeometryCandidate
 	{
@@ -57,7 +64,35 @@ namespace RT
 		const RE::NiNode* room = nullptr;
 		uint32_t roomWord = 0;
 		bool tree = false;  // M8: a tree partition traced as a static instance (TreeMode::kRestStatic)
+		RE::BSGeometry* geometry = nullptr;  // the scene-graph shape (skinned: shared by its partitions), valid this frame only
+		const RE::NiNode* objectRoot = nullptr;  // outermost BSFadeNode above the shape (the object's root), valid this frame only
+		bool meshLOD = false;  // a pure lower-detail copy: kMeshLOD and named "L<digit>_..." (merged "X - L2_..." shapes are not)
 	};
+
+	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
+	struct NearbyObject
+	{
+		std::string name;         // the shape's NiAVObject name
+		std::string parents;      // up to four ancestor names, nearest first, " < "-separated
+		uint32_t refFormID = 0;   // owning TESObjectREFR (NiAVObject user data), 0 if none found
+		uint32_t baseFormID = 0;
+		std::string baseName;     // TESForm::GetName of the base object
+		uint32_t flags = 0;          // the shape's NiAVObject flags
+		uint32_t ancestorFlags = 0;  // OR of every ancestor's flags (kHidden subtrees are never walked)
+		float minFade = 1.0f;        // lowest BSFadeNode::currentFade above the shape
+		float distance = 0.0f;       // from the camera to the shape's world bound (0 = inside it)
+		float offset[3]{};           // bound centre - camera
+		float boundRadius = 0.0f;
+		uint32_t triangles = 0;
+		bool alphaTested = false, alphaBlended = false, windAnimated = false, skinned = false, terrain = false, tree = false;
+	};
+
+	/**
+	 * @brief Describes this frame's candidates whose world bound comes within a_radius of a_center, nearest first, at most
+	 * a_maxCount (one entry per shape). Must run in the frame CollectScene filled a_candidates.
+	 */
+	void DescribeNearby(const std::vector<GeometryCandidate>& a_candidates, const RE::NiPoint3& a_center, float a_radius, size_t a_maxCount,
+		std::vector<NearbyObject>& a_out);
 
 	/** @brief M7: one skin partition of a skinned shape this frame, with its bone palette. */
 	struct SkinnedPartition
@@ -127,6 +162,9 @@ namespace RT
 		uint32_t dynamicRejectedShapes = 0;  ///< dynamic shapes without usable skin or position data: excluded
 		uint32_t treeShapes = 0;          ///< skinned shapes under a BSLeafAnimNode, BSTreeNode included (they sway on bones)
 		uint32_t leafAnimShapes = 0;      ///< M8: the subset under a plain BSLeafAnimNode (not a BSTreeNode)
+		uint32_t meshLODShapes = 0;       ///< M8: geometry flagged kMeshLOD (walked, whether extracted or skipped)
+		uint32_t meshLODSkipped = 0;      ///< M8: of those, left out by the diagnostic SceneOptions::skipMeshLOD
+		uint32_t meshLODAlternates = 0;   ///< M8: of those, left out as alternates of an object that has plain geometry
 		uint32_t treeRestPoseShapes = 0;  ///< trees traced in their rest pose
 		uint32_t treeStaticShapes = 0;            ///< M8: rest-pose trees with at least one static partition
 		uint32_t treeStaticPartitions = 0;        ///< M8: static tree instances (one per partition)
@@ -141,5 +179,5 @@ namespace RT
 	 * @return False when there is no world (main menu, loading), in which case a_out is empty.
 	 */
 	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats,
-		TreeMode a_treeMode);
+		const SceneOptions& a_options);
 }

@@ -225,6 +225,12 @@ namespace RT
 			sidecar->SetStaticTrees(a_enabled);
 	}
 
+	void SetSkipMeshLOD(bool a_enabled)
+	{
+		if (sidecar)
+			sidecar->SetSkipMeshLOD(a_enabled);
+	}
+
 	const AlphaAtlasStats* GetAlphaAtlasStats()
 	{
 		return sidecar ? &sidecar->GetAlphaAtlasStats() : nullptr;

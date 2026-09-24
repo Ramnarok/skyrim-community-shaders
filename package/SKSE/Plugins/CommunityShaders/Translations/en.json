@@ -1490,6 +1490,8 @@
     "feature.skyrim_rt.simulate_hang_tooltip": "Test the hang recovery: the ray tracing device stops as if it had hung. The game should freeze for about 5 seconds and then continue without ray tracing until restart.",
     "feature.skyrim_rt.skinned_instances": "Skinned TLAS instances / skinning + refit",
     "feature.skyrim_rt.skinned_shapes": "Skinned shapes traced",
+    "feature.skyrim_rt.skip_mesh_lod": "Skip all mesh LOD shapes (diagnostic)",
+    "feature.skyrim_rt.skip_mesh_lod_tooltip": "Leave out every lower-detail shape (named L1_ / L2_), including shrubs and ferns that have no other geometry. Normally only the ones whose object also has full-detail geometry are left out, since the game draws the full-detail version up close.",
     "feature.skyrim_rt.skipped_types": "Skipped: skinned / dynamic / instanced / LOD",
     "feature.skyrim_rt.static_meshes": "Static mesh instances",
     "feature.skyrim_rt.static_trees": "Trace trees as static meshes",

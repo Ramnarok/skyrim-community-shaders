@@ -37,6 +37,14 @@ namespace RT
 			                                                         a_desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_SKINNING) == 8;
 		}
 
+		// M8: a kMeshLOD shape whose name starts with "L<digit>_" is a pure lower-detail copy ("L2_WRMainRoadPlains02Parts:15").
+		// Merged shapes whose name starts with the full-detail part ("Bricks:11 - L2_WRMainRoadPlains02Parts:11", a Whiterun
+		// curb) carry the flag too but are drawn up close. Empirical (Whiterun road, rock piles, houses, shrubs; 2026-09-24).
+		bool IsPureLODShapeName(const char* a_name)
+		{
+			return a_name && a_name[0] == 'L' && a_name[1] >= '0' && a_name[1] <= '9' && a_name[2] == '_';
+		}
+
 		enum class SwayRoot : uint8_t
 		{
 			kNone,
@@ -154,8 +162,9 @@ namespace RT
 			SkinnedScene& skinned;
 			std::vector<ExclusionBound>& exclusions;
 			SceneStats& stats;
-			TreeMode treeMode = TreeMode::kRestStatic;  // see CollectSkinned
+			SceneOptions options;
 			const RE::NiNode* room = nullptr;  // M8: nearest BSMultiBoundRoom / BSPortalSharedNode above the walk position
+			const RE::NiNode* objectRoot = nullptr;  // M8: outermost BSFadeNode above the walk position (the object's root)
 		};
 
 		// M8: LightLimitFix.cpp's GetParentRoomNode test (same RTTI): Lighting.hlsl culls portal-strict lights by the room of
@@ -208,7 +217,7 @@ namespace RT
 			const bool tree = swayRoot != SwayRoot::kNone;
 			float restRow[12];
 			RE::NiTransform restTransform;
-			const bool restPose = tree && a_out.treeMode != TreeMode::kLiveBones && skin->rootParent;
+			const bool restPose = tree && a_out.options.treeMode != TreeMode::kLiveBones && skin->rootParent;
 			if (restPose) {
 				restTransform = skin->rootParent->world * skinData->rootParentToSkin.Invert();
 				TransformTo3x4(restTransform, restRow);
@@ -217,7 +226,7 @@ namespace RT
 			// none) is that one matrix for every vertex. The tree is then a static instance of its bind-pose buffers:
 			// one BLAS per mesh built once, no per-frame skinning, refit or palette. SkinCS reads half positions, the
 			// static BLAS and hit lookups don't, so those partitions stay skinned.
-			const bool staticTree = restPose && a_out.treeMode == TreeMode::kRestStatic;
+			const bool staticTree = restPose && a_out.options.treeMode == TreeMode::kRestStatic;
 
 			uint32_t accepted = 0;
 			uint32_t acceptedStatic = 0;
@@ -354,18 +363,35 @@ namespace RT
 
 			if (auto* node = a_object->AsNode()) {
 				const auto* outerRoom = a_out.room;
+				const auto* outerObjectRoot = a_out.objectRoot;
 				if (IsRoomNode(node))
 					a_out.room = node;
+				if (!a_out.objectRoot && node->AsFadeNode())
+					a_out.objectRoot = node;
 				for (auto& child : node->GetChildren())
 					Walk(child.get(), a_out);
 				a_out.room = outerRoom;
+				a_out.objectRoot = outerObjectRoot;
 				return;
 			}
 
 			if (auto* geometry = a_object->AsGeometry()) {
+				// M8: shapes named L1_/L2_ carry kMeshLOD (lower levels of detail in the object's own NIF). CollectScene
+				// drops the ones that are alternates of plain geometry; the diagnostic option drops them all.
+				const bool meshLOD = geometry->GetFlags().any(RE::NiAVObject::Flag::kMeshLOD);
+				if (meshLOD) {
+					a_out.stats.meshLODShapes++;
+					if (a_out.options.skipMeshLOD) {
+						a_out.stats.meshLODSkipped++;
+						return;
+					}
+				}
 				GeometryCandidate candidate;
 				const auto category = Classify(geometry, candidate);
 				candidate.room = a_out.room;
+				candidate.geometry = geometry;
+				candidate.objectRoot = a_out.objectRoot;
+				candidate.meshLOD = meshLOD && IsPureLODShapeName(geometry->name.c_str());
 				a_out.stats.instances[static_cast<size_t>(category)]++;
 				switch (category) {
 				case GeometryCategory::kStaticMesh:
@@ -405,6 +431,72 @@ namespace RT
 		}
 	}
 
+	void DescribeNearby(const std::vector<GeometryCandidate>& a_candidates, const RE::NiPoint3& a_center, float a_radius, size_t a_maxCount,
+		std::vector<NearbyObject>& a_out)
+	{
+		a_out.clear();
+		struct Hit
+		{
+			const GeometryCandidate* candidate;
+			float distance;
+		};
+		std::vector<Hit> hits;
+		ankerl::unordered_dense::set<const RE::BSGeometry*> seen;
+		for (const auto& candidate : a_candidates) {
+			const auto* geometry = candidate.geometry;
+			if (!geometry || !seen.insert(geometry).second)
+				continue;  // skinned partitions share their shape
+			const auto& bound = geometry->worldBound;
+			const float distance = std::max(0.0f, (bound.center - a_center).Length() - bound.radius);
+			if (distance <= a_radius)
+				hits.push_back({ &candidate, distance });
+		}
+		std::ranges::sort(hits, {}, &Hit::distance);
+		if (hits.size() > a_maxCount)
+			hits.resize(a_maxCount);
+
+		for (const auto& hit : hits) {
+			const auto& candidate = *hit.candidate;
+			const auto* geometry = candidate.geometry;
+			NearbyObject object;
+			object.name = geometry->name.c_str() ? geometry->name.c_str() : "";
+			object.flags = geometry->GetFlags().underlying();
+			int depth = 0;
+			for (const RE::NiNode* node = geometry->parent; node; node = node->parent) {
+				object.ancestorFlags |= node->GetFlags().underlying();
+				if (auto* fade = netimmerse_cast<const RE::BSFadeNode*>(node))
+					object.minFade = std::min(object.minFade, fade->GetRuntimeData().currentFade);
+				if (depth++ < 4) {
+					if (!object.parents.empty())
+						object.parents += " < ";
+					object.parents += node->name.c_str() ? node->name.c_str() : "";
+				}
+			}
+			if (const auto* reference = geometry->GetUserData()) {
+				object.refFormID = reference->GetFormID();
+				if (const auto* base = reference->GetBaseObject()) {
+					object.baseFormID = base->GetFormID();
+					const char* baseName = base->GetName();
+					object.baseName = baseName ? baseName : "";
+				}
+			}
+			const auto& bound = geometry->worldBound;
+			object.distance = hit.distance;
+			object.offset[0] = bound.center.x - a_center.x;
+			object.offset[1] = bound.center.y - a_center.y;
+			object.offset[2] = bound.center.z - a_center.z;
+			object.boundRadius = bound.radius;
+			object.triangles = candidate.triangleCount;
+			object.alphaTested = candidate.alphaTested;
+			object.alphaBlended = candidate.alphaBlended;
+			object.windAnimated = candidate.windAnimated;
+			object.skinned = candidate.skinned;
+			object.terrain = candidate.terrain;
+			object.tree = candidate.tree;
+			a_out.push_back(std::move(object));
+		}
+	}
+
 	std::string_view GetCategoryName(GeometryCategory a_category)
 	{
 		switch (a_category) {
@@ -433,15 +525,15 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode);
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, const SceneOptions& a_options);
 
 		// Last line of defence: reading the game's scene graph can still race with cell loading in ways the
 		// loading-menu check doesn't cover. An access violation drops this frame's scene instead of the game.
 		// Kept free of C++ objects so __try is allowed.
-		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode, bool& a_faulted)
+		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, const SceneOptions& a_options, bool& a_faulted)
 		{
 			__try {
-				return CollectSceneUnguarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_treeMode);
+				return CollectSceneUnguarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_options);
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				a_faulted = true;
 				return false;
@@ -449,7 +541,7 @@ namespace RT
 		}
 	}
 
-	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode)
+	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, const SceneOptions& a_options)
 	{
 		a_out.clear();
 		a_skinned.partitions.clear();
@@ -465,7 +557,7 @@ namespace RT
 			return false;
 
 		bool faulted = false;
-		const bool collected = CollectSceneGuarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_treeMode, faulted);
+		const bool collected = CollectSceneGuarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_options, faulted);
 		if (faulted) {
 			static uint32_t faults = 0;
 			if (++faults <= 10)
@@ -483,7 +575,7 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode)
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, const SceneOptions& a_options)
 		{
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes || !RE::PlayerCharacter::GetSingleton() || !RE::PlayerCharacter::GetSingleton()->Is3DLoaded())
@@ -499,7 +591,7 @@ namespace RT
 		const RE::TESObjectCELL* skyCell = worldSpace ? worldSpace->GetSkyCell() : nullptr;
 		const bool interior = tes->interiorCell != nullptr;
 
-		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats, a_treeMode };
+		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats, a_options };
 		tes->ForEachCell([&](RE::TESObjectCELL* a_cell) {
 			auto* loadedData = a_cell ? a_cell->GetRuntimeData().loadedData : nullptr;
 			if (!loadedData || !loadedData->cell3D)
@@ -537,6 +629,35 @@ namespace RT
 			}
 		}
 		a_stats.exclusionBounds = static_cast<uint32_t>(a_exclusions.size());
+
+		// M8: an object whose NIF has other shapes draws those up close; its pure lower-detail copies (kMeshLOD, named
+		// L1_/L2_) are alternates the raster skips, e.g. a road's L2_ edge card floating above the cobbles (Whiterun; 84k
+		// pixels of RT-only shadow). An object with only such shapes (shrubs, thickets, ferns) draws them: they stay.
+		{
+			ankerl::unordered_dense::set<const RE::NiNode*> rootsWithPlainShapes;
+			for (const auto& candidate : a_out)
+				if (!candidate.meshLOD && candidate.objectRoot)
+					rootsWithPlainShapes.insert(candidate.objectRoot);
+			std::vector<uint32_t> newIndex(a_out.size(), UINT32_MAX);
+			size_t kept = 0;
+			for (size_t i = 0; i < a_out.size(); i++) {
+				const auto& candidate = a_out[i];
+				if (candidate.meshLOD && candidate.objectRoot && rootsWithPlainShapes.contains(candidate.objectRoot)) {
+					a_stats.meshLODAlternates++;
+					continue;
+				}
+				newIndex[i] = static_cast<uint32_t>(kept);
+				if (kept != i)
+					a_out[kept] = a_out[i];
+				kept++;
+			}
+			a_out.resize(kept);
+			// Skinned partitions point into the candidates; a dropped one (a skinned kMeshLOD alternate) goes too.
+			std::erase_if(a_skinned.partitions, [&](SkinnedPartition& a_partition) {
+				a_partition.candidateIndex = newIndex[a_partition.candidateIndex];
+				return a_partition.candidateIndex == UINT32_MAX;
+			});
+		}
 
 		// Unique meshes: instances of the same mesh share rendererData.
 		ankerl::unordered_dense::set<const void*> staticMeshes;

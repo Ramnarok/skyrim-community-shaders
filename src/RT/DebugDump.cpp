@@ -49,7 +49,8 @@ namespace RT
 				{ "alpha_blended_instances", s.alphaBlendedInstances },
 				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
-				{ "trees", { { "shapes", s.treeShapes }, { "leaf_anim_shapes", s.leafAnimShapes },{ "rest_pose_shapes", s.treeRestPoseShapes }, { "static_shapes", s.treeStaticShapes },
+				{ "mesh_lod_shapes", { { "walked", s.meshLODShapes }, { "alternates_skipped", s.meshLODAlternates }, { "all_skipped_diagnostic", s.meshLODSkipped } } },
+				{ "trees", { { "shapes", s.treeShapes },{ "leaf_anim_shapes", s.leafAnimShapes },{ "rest_pose_shapes", s.treeRestPoseShapes }, { "static_shapes", s.treeStaticShapes },
 							   { "static_partitions", s.treeStaticPartitions }, { "static_unique_meshes", s.uniqueTreeMeshes },
 							   { "half_position_partitions_skinned", s.treeHalfPositionPartitions } } },
 				{ "instances_in_lit_rooms", s.instancesInRooms }, { "lit_room_nodes", s.roomNodes },
@@ -222,6 +223,24 @@ namespace RT
 			};
 		}
 
+		// TLAS candidates around the camera: names what the traces see (e.g. an occluder the raster doesn't draw).
+		json NearbyJson(const DebugDumpData& a_data)
+		{
+			json objects = json::array();
+			for (const auto& o : a_data.nearby) {
+				objects.push_back({ { "name", o.name }, { "parents", o.parents }, { "ref", std::format("{:08X}", o.refFormID) },
+					{ "base", std::format("{:08X}", o.baseFormID) }, { "base_name", o.baseName },
+					{ "flags", std::format("{:08X}", o.flags) }, { "ancestor_flags", std::format("{:08X}", o.ancestorFlags) },
+					{ "not_visible", ((o.flags | o.ancestorFlags) & (1u << 20)) != 0 },  // NiAVObject::Flag::kNotVisible
+					{ "min_fade", o.minFade }, { "distance", o.distance }, { "offset", { o.offset[0], o.offset[1], o.offset[2] } },
+					{ "bound_radius", o.boundRadius }, { "triangles", o.triangles },
+					{ "alpha_tested", o.alphaTested }, { "alpha_blended", o.alphaBlended }, { "wind_animated", o.windAnimated },
+					{ "skinned", o.skinned }, { "terrain", o.terrain }, { "tree", o.tree } });
+			}
+			return { { "note", "TLAS candidates within 512 units of the camera, nearest first; offset = bound centre - camera (z up)" },
+				{ "objects", objects } };
+		}
+
 		json SkinnedJson(const DebugDumpData& a_data)
 		{
 			const auto& k = a_data.skinned;
@@ -347,6 +366,7 @@ namespace RT
 				{ "point_light_shadows", PointShadowsJson(a_data) },
 				{ "trace", TraceJson(a_data) },
 				{ "scene", SceneJson(a_data) },
+				{ "nearby_objects", NearbyJson(a_data) },
 				{ "mesh_cache", CacheJson(a_data.cache) },
 				{ "frame", a_data.gameFrame },
 				{ "written_utc", std::format("{:%FT%TZ}", now) },

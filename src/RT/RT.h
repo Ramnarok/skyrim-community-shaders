@@ -251,6 +251,8 @@ namespace RT
 	void SetTreeRestPose(bool a_enabled);
 	/** @brief M8: trace rest-pose trees as static instances of their bind-pose meshes instead of skinning them each frame. */
 	void SetStaticTrees(bool a_enabled);
+	/** @brief M8 diagnostic: leave shapes flagged kMeshLOD (their mesh's L1_/L2_ detail levels) out of the traced scene. */
+	void SetSkipMeshLOD(bool a_enabled);
 	/** @brief M7c alpha-atlas stats, or nullptr. */
 	const struct AlphaAtlasStats* GetAlphaAtlasStats();
 	/** @brief M7 skinning stats, or nullptr. */

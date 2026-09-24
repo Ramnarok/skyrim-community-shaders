@@ -48,6 +48,7 @@ struct SkyrimRT : OverlayFeature
 		bool AlphaTest = true;        ///< M7c: alpha-test foliage in every trace (else solid cards)
 		bool TreeRestPose = true;        ///< M7: trace trees without sway (their bones hold the last culling camera's pose)
 		bool StaticTrees = true;         ///< M8: rest-pose trees as static instances (one BLAS per mesh, no per-frame skinning)
+		bool SkipMeshLOD = false;        ///< M8 diagnostic: leave kMeshLOD shapes (L1_/L2_ detail levels) out of the traced scene
 		bool GPUHangDiagnostics = true;  ///< DRED breadcrumbs + page faults in every build (read at startup)
 		bool SunShadows = true;       ///< M5: ray-traced sun shadows in place of Screen-Space Shadows
 		float SunAngularRadius = 0.5f;  ///< degrees; penumbra width

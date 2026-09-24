@@ -29,6 +29,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	AlphaTest,
 	TreeRestPose,
 	StaticTrees,
+	SkipMeshLOD,
 	GPUHangDiagnostics,
 	SunShadows,
 	SunAngularRadius,
@@ -282,6 +283,7 @@ void SkyrimRT::Prepass()
 	RT::SetAlphaTest(settings.AlphaTest);
 	RT::SetTreeRestPose(settings.TreeRestPose);
 	RT::SetStaticTrees(settings.StaticTrees);
+	RT::SetSkipMeshLOD(settings.SkipMeshLOD);
 	{
 		// M8: Light Limit Fix rebuilt its room indices in its Prepass, earlier this frame; Lighting.hlsl's RoomIndex uses
 		// the same map during the opaque pass.
@@ -622,6 +624,9 @@ void SkyrimRT::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("static_trees_tooltip"), "In their rest pose a tree's bones all share one transform, so the tree can be traced like any static mesh: its acceleration structure is built once instead of being skinned and refitted every frame. Same result, less GPU work."));
+		ImGui::Checkbox(T(TKEY("skip_mesh_lod"), "Skip all mesh LOD shapes (diagnostic)"), &settings.SkipMeshLOD);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("skip_mesh_lod_tooltip"), "Leave out every lower-detail shape (named L1_ / L2_), including shrubs and ferns that have no other geometry. Normally only the ones whose object also has full-detail geometry are left out, since the game draws the full-detail version up close."));
 
 		ImGui::BeginDisabled(!settings.Enabled || !RT::IsRunning());
 		if (ImGui::Button(T(TKEY("write_dump"), "Write debug dump (F10)")))

@@ -42,6 +42,7 @@ namespace RT
 		MaterialTableStats materials;
 		AlphaAtlasStats alphaAtlas;
 		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
+		std::vector<NearbyObject> nearby;  ///< TLAS candidates near the camera, nearest first
 	};
 
 	/**

@@ -64,6 +64,8 @@ namespace RT
 		void SetTreeRestPose(bool a_enabled) { treeRestPose = a_enabled; }
 		/** @brief M8: trace rest-pose trees as static instances of their bind-pose meshes (no skinning or refit). */
 		void SetStaticTrees(bool a_enabled) { staticTrees = a_enabled; }
+		/** @brief M8 diagnostic: leave kMeshLOD shapes (L1_/L2_ detail levels) out of the scene. */
+		void SetSkipMeshLOD(bool a_enabled) { skipMeshLOD = a_enabled; }
 		/** @brief M8: Light Limit Fix's room indices for this frame (see RT::SetRoomIndices). */
 		void SetRoomIndices(std::span<const RoomIndex> a_rooms)
 		{
@@ -162,6 +164,8 @@ namespace RT
 			kFinishing,    // waiting for the fence and the captures, then written
 		};
 		static constexpr uint32_t kSuppressFrames = 3;
+		static constexpr float kDumpNearbyRadius = 512.0f;  // game units around the camera (DebugDump NearbyJson)
+		static constexpr size_t kDumpNearbyMax = 96;
 		winrt::com_ptr<ID3D12Resource> patternReadback;
 		uint32_t patternRowPitch = 0;
 		bool dumpRequested = false;
@@ -176,6 +180,7 @@ namespace RT
 		FrameCapture captureOff;
 
 		bool dumpGITraced = false;
+		std::vector<NearbyObject> dumpNearby;  // TLAS candidates around the camera on the dump frame
 
 		// At most one round trip per game frame.
 		bool haveSubmitted = false;
@@ -198,6 +203,7 @@ namespace RT
 		bool alphaTestEnabled = true;
 		bool treeRestPose = true;
 		bool staticTrees = true;
+		bool skipMeshLOD = false;
 		ankerl::unordered_dense::map<const void*, uint32_t> roomIndices;  // M8: room node -> Light Limit Fix index + 1
 #if defined(SKYRIMRT_NRD)
 		std::unique_ptr<GlobalIllumination> gi;
