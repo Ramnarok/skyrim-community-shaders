@@ -6,6 +6,7 @@
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "I18n/I18n.h"
+#include "RT/AlbedoAtlas.h"
 #include "RT/AlphaAtlas.h"
 #include "RT/GlobalIllumination.h"
 #include "RT/MaterialTable.h"
@@ -49,6 +50,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIInteriors,
 	GIPointLights,
 	GIPointLightShadows,
+	GIAlbedoTextures,
 	GISkyLight,
 	GIHistory,
 	GIView)
@@ -282,6 +284,7 @@ void SkyrimRT::Prepass()
 		pointParams.viewMode = settings.PointShadowView;
 	}
 	RT::SetAlphaTest(settings.AlphaTest);
+	RT::SetAlbedoTextures(settings.GIAlbedoTextures);
 	RT::SetTreeRestPose(settings.TreeRestPose);
 	RT::SetStaticTrees(settings.StaticTrees);
 	RT::SetSkipMeshLOD(settings.SkipMeshLOD);
@@ -485,6 +488,12 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("gi_point_light_shadows"), "Point lights are occluded"), &settings.GIPointLightShadows);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_point_light_shadows_tooltip"), "Trace a ray to each sampled point light, so walls stop its bounce light. When off, point lights bounce through walls, as the game lights surfaces through them."));
+
+	ImGui::Checkbox(T(TKEY("gi_albedo_textures"), "Textured bounce light"), &settings.GIAlbedoTextures);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_albedo_textures_tooltip"), "Bounced light takes the colour of the exact spot it bounces off (its texture and vertex colour), instead of one average colour per texture."));
+	if (const auto* atlas = RT::GetAlbedoAtlasStats(); atlas && atlas->available && settings.GIAlbedoTextures)
+		ImGui::Text("%s: %u / %u (%u / %u)", T(TKEY("albedo_atlas_status"), "Albedo atlas tiles (textured meshes)"), atlas->tilesUsed, atlas->capacity, atlas->candidatesTextured, atlas->candidates);
 
 	ImGui::Checkbox(T(TKEY("gi_sky_light"), "Ray-traced sky light"), &settings.GISkyLight);
 	if (auto _tt = Util::HoverTooltipWrapper())

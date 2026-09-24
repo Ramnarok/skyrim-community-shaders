@@ -45,6 +45,7 @@ static const uint kGIOccluderNear32 = 5;   // occluded samples by the blocker's 
 static const uint kGIOccluderNear64 = 6;
 static const uint kGIOccluderNear128 = 7;
 static const uint kGISkyVisible = 8;       // misses whose continuation reached the sky (SkyLight)
+static const uint kGITexturedHits = 9;     // M8: hits shaded with the texture from the albedo atlas (else the average)
 
 ConstantBuffer<GIConstants> C : register(b0);
 

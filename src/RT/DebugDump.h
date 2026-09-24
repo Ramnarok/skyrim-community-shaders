@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AlbedoAtlas.h"
 #include "AlphaAtlas.h"
 #include "GlobalIllumination.h"
 #include "MaterialTable.h"
@@ -41,6 +42,7 @@ namespace RT
 		SkinnedStats skinned;
 		MaterialTableStats materials;
 		AlphaAtlasStats alphaAtlas;
+		AlbedoAtlasStats albedoAtlas;  // M8
 		std::vector<DumpImage> images;  ///< debug_<name>_<frame>.png
 		std::vector<NearbyObject> nearby;  ///< TLAS candidates near the camera, nearest first
 	};

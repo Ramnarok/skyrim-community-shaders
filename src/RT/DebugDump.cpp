@@ -331,6 +331,30 @@ namespace RT
 			};
 		}
 
+		// M8 materials at GI hits.
+		json AlbedoAtlasJson(const DebugDumpData& a_data)
+		{
+			const auto& a = a_data.albedoAtlas;
+			const auto& g = a_data.gi;
+			json images = json::array();
+			for (const auto& image : a_data.images) {
+				if (image.name == "albedo_atlas")
+					images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			}
+			return {
+				{ "available", a.available },
+				{ "enabled", a.enabled },
+				{ "tile_size", AlbedoAtlas::kTileSize },
+				{ "tiles", { { "capacity", a.capacity }, { "used", a.tilesUsed }, { "filled_last_frame", a.filledLastFrame }, { "evicted_last_frame", a.evictedLastFrame }, { "total_fills", a.totalFills }, { "total_evictions", a.totalEvictions } } },
+				{ "traced_candidates",
+					{ { "total", a.candidates }, { "textured", a.candidatesTextured }, { "with_vertex_colors", a.candidatesVertexColors },
+						{ "average_no_texture", a.candidatesNoTexture }, { "average_no_uv", a.candidatesNoUV }, { "average_unsupported_texture", a.candidatesUnsupported },
+						{ "average_waiting_for_tile", a.candidatesWaiting } } },
+				{ "gi_hits_textured_percent", g.counters[kGIHits] ? 100.0 * g.counters[kGITexturedHits] / g.counters[kGIHits] : 0.0 },
+				{ "images", images },
+			};
+		}
+
 		json AlphaAtlasJson(const DebugDumpData& a_data)
 		{
 			const auto& a = a_data.alphaAtlas;
@@ -366,6 +390,7 @@ namespace RT
 			return {
 				{ "milestone", "M7" },
 				{ "alpha_atlas", AlphaAtlasJson(a_data) },
+				{ "albedo_atlas", AlbedoAtlasJson(a_data) },
 				{ "skinned", SkinnedJson(a_data) },
 				{ "global_illumination", GlobalIlluminationJson(a_data) },
 				{ "sun_shadows", SunShadowsJson(a_data) },

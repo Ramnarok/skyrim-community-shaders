@@ -423,6 +423,7 @@ namespace RT
 			record.albedo = candidate.albedo;
 			// M7c: trees are skinned (their branches sway on bones), and so is hair; UVs come from the bind-pose source.
 			record.alpha = candidate.alphaWord;
+			record.albedoWord = candidate.albedoWord;  // M8: texture and vertex colours from the bind-pose source too
 			record.uvPage = entry.source.vertexPage;
 			record.uvOffset = entry.source.vertexOffset;
 			record.uvStride = entry.source.stride;

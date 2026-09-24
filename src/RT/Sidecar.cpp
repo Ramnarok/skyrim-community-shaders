@@ -153,6 +153,8 @@ namespace RT
 		// M7c. A failure only leaves alpha-tested meshes traced as solid cards.
 		alphaAtlasReady = alphaAtlas.Init(d3d11Device.get(), d3d11Context.get(), device5.get());
 		ID3D12Resource* atlas12 = alphaAtlasReady ? alphaAtlas.GetResource() : nullptr;
+		// M8. A failure only leaves GI hits on the average albedo.
+		albedoAtlasReady = albedoAtlas.Init(d3d11Device.get(), d3d11Context.get(), device5.get());
 
 		// M4 ray tracing. A failure here only disables tracing; the M2/M3 interop keeps running.
 		raytracerReady = raytracer.Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight, atlas12);
@@ -163,7 +165,7 @@ namespace RT
 #if defined(SKYRIMRT_NRD)
 		if (raytracerReady) {
 			gi = std::make_unique<GlobalIllumination>();
-			if (gi->Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight, raytracer.GetRasterDepth(), atlas12))
+			if (gi->Init(device5.get(), d3d11Device.get(), d3d11Context.get(), a_screenWidth, a_screenHeight, raytracer.GetRasterDepth(), atlas12, albedoAtlasReady ? albedoAtlas.GetResource() : nullptr))
 				gi->SetTimestampFrequency(d3d12TimestampFrequency);
 			else
 				gi.reset();
@@ -714,6 +716,8 @@ namespace RT
 		data.materials = materialTable.GetStats();
 		data.alphaAtlas = alphaAtlas.GetStats();
 		alphaAtlas.ReadDumpImage(data.images);
+		data.albedoAtlas = albedoAtlas.GetStats();
+		albedoAtlas.ReadDumpImage(data.images);
 #if defined(SKYRIMRT_NRD)
 		if (gi) {
 			data.giAvailable = true;
@@ -847,6 +851,9 @@ namespace RT
 		// M7c: new alpha-atlas tiles are filled here, on D3D11 before the signal below, so this frame's traces see them.
 		if (inWorld && alphaAtlasReady)
 			alphaAtlas.Update(candidates, a_gameFrame, alphaTestEnabled);
+		// M8: likewise the albedo atlas, whose tiles GI hits sample later this frame.
+		if (inWorld && albedoAtlasReady)
+			albedoAtlas.Update(candidates, a_gameFrame, albedoTexturesEnabled);
 
 		// Trace only when the camera was captured for this very frame (SkyrimRT::Prepass), so matrices, depth and
 		// transforms all describe the same frame.
@@ -979,6 +986,8 @@ namespace RT
 		if (dumpThisFrame) {
 			if (alphaAtlasReady)
 				alphaAtlas.CaptureForDump();
+			if (albedoAtlasReady)
+				albedoAtlas.CaptureForDump();
 			dumpHasTrace = debugTrace;
 			dumpShadowsTraced = shadows != nullptr;
 			dumpPointShadowsTraced = pointShadows != nullptr;

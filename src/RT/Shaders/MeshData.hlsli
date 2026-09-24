@@ -111,3 +111,48 @@ float4 UnpackRGBA8(uint a_packed)
 {
 	return float4(a_packed & 0xFFu, (a_packed >> 8) & 0xFFu, (a_packed >> 16) & 0xFFu, a_packed >> 24) / 255.0;
 }
+
+#if defined(SKYRIMRT_ALBEDO_ATLAS)
+// M8 materials at GI hits: each traced diffuse texture's colour, one 128x128 tile per texture, filled on D3D11
+// (AlbedoAtlas.cpp). InstanceData.Flags bits 8-19: tile + 1, 20-27: UV byte offset, 28-31: vertex-colour offset / 4.
+Texture2D<float4> AlbedoAtlas : register(t1, space2);
+static const uint kAlbedoAtlasTilesPerRow = 32;  // mirrored in AlbedoAtlas.h
+static const float kAlbedoAtlasTileSize = 128.0;
+
+// The albedo Lighting.hlsl writes to the G-buffer (texture x vertex colour, as the texture stores it, Skyrim gamma) at a
+// committed hit, or the instance's average albedo (M6) while its texture has no tile.
+float3 HitAlbedo(InstanceData a_data, uint a_primitive, float2 a_barycentrics)
+{
+	const uint word = a_data.Flags >> 8;
+	const uint tile = word & 0xFFFu;
+	if (tile == 0 || a_data.UVPage >= 64 || a_data.IndexPage >= 64)
+		return UnpackRGBA8(a_data.Albedo).rgb;
+	const uint uvOffset = (word >> 12) & 0xFFu;
+	const uint colorOffset = ((word >> 20) & 0xFu) * 4;
+
+	const uint indexBase = a_data.IndexOffset + a_primitive * 6;
+	const ByteAddressBuffer indices = MeshPages[NonUniformResourceIndex(a_data.IndexPage)];
+	const ByteAddressBuffer vertices = MeshPages[NonUniformResourceIndex(a_data.UVPage)];
+	const uint i0 = LoadIndex(indices, indexBase);
+	const uint i1 = LoadIndex(indices, indexBase + 2);
+	const uint i2 = LoadIndex(indices, indexBase + 4);
+	const float3 weights = float3(1.0 - a_barycentrics.x - a_barycentrics.y, a_barycentrics.x, a_barycentrics.y);
+	const float2 uv = LoadUV(vertices, a_data, i0, uvOffset) * weights.x + LoadUV(vertices, a_data, i1, uvOffset) * weights.y +
+	                  LoadUV(vertices, a_data, i2, uvOffset) * weights.z;
+
+	// Wrap addressing, then half a texel inside the tile so bilinear filtering never reads a neighbour.
+	const uint index = tile - 1;
+	const float2 origin = float2(index % kAlbedoAtlasTilesPerRow, index / kAlbedoAtlasTilesPerRow) * kAlbedoAtlasTileSize;
+	const float2 texel = origin + clamp(frac(uv) * kAlbedoAtlasTileSize, 0.5, kAlbedoAtlasTileSize - 0.5);
+	float3 albedo = AlbedoAtlas.SampleLevel(AlphaAtlasSampler, texel / (kAlbedoAtlasTileSize * kAlbedoAtlasTilesPerRow), 0.0).rgb;
+
+	if (colorOffset != 0) {
+		const uint stride = a_data.UVStride;
+		const float3 c0 = UnpackRGBA8(vertices.Load(a_data.UVOffset + i0 * stride + colorOffset)).rgb;
+		const float3 c1 = UnpackRGBA8(vertices.Load(a_data.UVOffset + i1 * stride + colorOffset)).rgb;
+		const float3 c2 = UnpackRGBA8(vertices.Load(a_data.UVOffset + i2 * stride + colorOffset)).rgb;
+		albedo *= c0 * weights.x + c1 * weights.y + c2 * weights.z;
+	}
+	return albedo;
+}
+#endif

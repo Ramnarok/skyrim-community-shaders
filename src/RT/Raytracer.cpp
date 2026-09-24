@@ -383,7 +383,7 @@ namespace RT
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;
 			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride,
-				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u), record.albedo, record.alpha,
+				(record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u) | (record.albedoWord << 8), record.albedo, record.alpha,
 				record.uvPage, record.uvOffset, record.uvStride, record.room };
 		}
 

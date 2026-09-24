@@ -117,5 +117,5 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 - ✅ Ray-traced sky light (2026-09-24, on by default; path-tracing step 1): GI misses that reach the sky carry its radiance, and the composite scales the game's ambient by the traced / open-sky ratio (ARCHITECTURE §5). Market: sunlit open surfaces −1 to −6%, under awnings −13 to −17%; GI hand-off +0.03 ms. Found on the way: a ratio is needed rather than a replacement, because the game adds its ambient to direct light in gamma space; and decals must stay out of the traces (Whiterun gate).
 - Multi-bounce path tracing.
 - One-frame-late async RT.
-- The v2 texture path for all materials.
+- The v2 texture path for all materials. **✅ Albedo at GI hits (2026-09-24, path-tracing step 2)** (ARCHITECTURE §6: `TextureAtlas`, `AlbedoAtlas`, texture × vertex colour at the hit): 100% of GI hits textured in the market, GI trace +0.02–0.04 ms, no evictions. The visual effect on diffuse bounce is small (frame −2%, local −6 to −15% from vertex colours; no visible tint), as expected; it's the base for reflections and multi-bounce. Still open: terrain layer blending, normal maps and specular at hits.
 - True PBR material support.

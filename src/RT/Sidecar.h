@@ -6,6 +6,7 @@
 
 #include "FrameCapture.h"
 #include "GlobalIllumination.h"
+#include "AlbedoAtlas.h"
 #include "AlphaAtlas.h"
 #include "MaterialTable.h"
 #include "MeshCache.h"
@@ -58,8 +59,11 @@ namespace RT
 		ID3D11ShaderResourceView* GetGIViewSRV() const;
 		const MaterialTableStats& GetMaterialStats() const { return materialTable.GetStats(); }
 		const AlphaAtlasStats& GetAlphaAtlasStats() const { return alphaAtlas.GetStats(); }
+		const AlbedoAtlasStats& GetAlbedoAtlasStats() const { return albedoAtlas.GetStats(); }
 		/** @brief M7c: alpha-test foliage against the atlas (else alpha-tested meshes are traced as solid cards). */
 		void SetAlphaTest(bool a_enabled) { alphaTestEnabled = a_enabled; }
+		/** @brief M8: GI hits sample their texture from the albedo atlas (else the average albedo). */
+		void SetAlbedoTextures(bool a_enabled) { albedoTexturesEnabled = a_enabled; }
 		/** @brief M7: trace trees in their rest pose (their swaying bones hold whichever culling camera's pose came last). */
 		void SetTreeRestPose(bool a_enabled) { treeRestPose = a_enabled; }
 		/** @brief M8: trace rest-pose trees as static instances of their bind-pose meshes (no skinning or refit). */
@@ -201,6 +205,9 @@ namespace RT
 		AlphaAtlas alphaAtlas;
 		bool alphaAtlasReady = false;
 		bool alphaTestEnabled = true;
+		AlbedoAtlas albedoAtlas;  // M8 materials at GI hits
+		bool albedoAtlasReady = false;
+		bool albedoTexturesEnabled = true;
 		bool treeRestPose = true;
 		bool staticTrees = true;
 		bool skipMeshLOD = false;

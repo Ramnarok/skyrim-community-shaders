@@ -251,6 +251,8 @@ namespace RT
 
 	/** @brief M7c: alpha-test alpha-tested meshes (foliage) in every trace; off traces them as solid cards. */
 	void SetAlphaTest(bool a_enabled);
+	/** @brief M8: GI hits sample their diffuse texture (albedo atlas) instead of its average colour. */
+	void SetAlbedoTextures(bool a_enabled);
 	/** @brief M7: trace trees in their rest pose instead of their swaying bones' current pose. */
 	void SetTreeRestPose(bool a_enabled);
 	/** @brief M8: trace rest-pose trees as static instances of their bind-pose meshes instead of skinning them each frame. */
@@ -259,6 +261,8 @@ namespace RT
 	void SetSkipMeshLOD(bool a_enabled);
 	/** @brief M7c alpha-atlas stats, or nullptr. */
 	const struct AlphaAtlasStats* GetAlphaAtlasStats();
+	/** @brief M8 albedo-atlas stats, or nullptr. */
+	const struct AlbedoAtlasStats* GetAlbedoAtlasStats();
 	/** @brief M7 skinning stats, or nullptr. */
 	const struct SkinnedStats* GetRaytracerSkinnedStats();
 	/** @brief GI debug view (RGBA8) when GIParams::viewMode is set, or nullptr. */

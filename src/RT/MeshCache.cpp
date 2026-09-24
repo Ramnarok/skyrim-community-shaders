@@ -576,6 +576,7 @@ namespace RT
 				.stride = entry.stride,
 				.albedo = candidate.albedo,
 				.alpha = candidate.alphaWord,
+				.albedoWord = candidate.albedoWord,
 				.uvPage = entry.vertexAllocation.page,
 				.uvOffset = static_cast<uint32_t>(entry.vertexAllocation.offset),
 				.uvStride = entry.stride,

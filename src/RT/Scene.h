@@ -58,6 +58,7 @@ namespace RT
 		bool skinned = false;  // M7: one skin partition; rendererData is the partition's bind-pose buffers
 		uint8_t alphaThreshold = 0;  // M7c: NiAlphaProperty::alphaThreshold (the game discards alpha below threshold / 255)
 		uint32_t alphaWord = 0;      // M7c: InstanceData::Alpha (atlas tile, threshold, UV offset), filled by AlphaAtlas; 0 = opaque
+		uint32_t albedoWord = 0;     // M8: albedo-atlas tile, UV and vertex-colour offsets (InstanceData.Flags >> 8), by AlbedoAtlas; 0 = average
 		bool windAnimated = false;   // M7c: kTreeAnim; the game's vertex shader sways it along its normals (Lighting.hlsl TREE_ANIM)
 		// M8: nearest BSMultiBoundRoom / BSPortalSharedNode ancestor (LightLimitFix GetParentRoomNode), valid this frame only,
 		// and its Light Limit Fix room index + 1 (0 = none or no light uses it), filled by the sidecar.

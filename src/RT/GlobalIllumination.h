@@ -22,6 +22,7 @@ namespace RT
 		kGIOccluderNear64,   ///< ... 32-64 units from it
 		kGIOccluderNear128,  ///< ... 64-128 units from it (the rest is farther: walls)
 		kGISkyVisible,       ///< M8: misses whose continuation to 50,000 units reached the sky (sky light on)
+		kGITexturedHits,     ///< M8: hits shaded with their texture from the albedo atlas (else the average albedo)
 		kGICounterCount
 	};
 
@@ -76,9 +77,9 @@ namespace RT
 		static constexpr float kSkyViewZ = 10000000.0f;
 		static constexpr uint32_t kMaxPointLights = 1024;  ///< LightLimitFix::MAX_LIGHTS
 
-		/** @param a_alphaAtlas M7c alpha atlas, or nullptr (then nothing is alpha-tested). */
+		/** @param a_alphaAtlas M7c alpha atlas, or nullptr (then nothing is alpha-tested). @param a_albedoAtlas M8 albedo atlas, or nullptr (average albedo). */
 		bool Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
-			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D12Resource* a_alphaAtlas);
+			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D12Resource* a_alphaAtlas, ID3D12Resource* a_albedoAtlas);
 		const std::string& GetFailureReason() const { return failureReason; }
 		void SetTimestampFrequency(uint64_t a_frequency) { timestampFrequency = a_frequency; }
 
@@ -114,6 +115,7 @@ namespace RT
 		ID3D11DeviceContext4* d3d11Context = nullptr;
 		ID3D12Resource* rasterDepth = nullptr;
 		ID3D12Resource* alphaAtlas = nullptr;
+		ID3D12Resource* albedoAtlas = nullptr;  // M8
 		uint32_t width = 0;
 		uint32_t height = 0;
 

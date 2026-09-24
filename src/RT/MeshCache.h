@@ -98,6 +98,7 @@ namespace RT
 		uint32_t stride = 0;
 		uint32_t albedo = 0;  // RGBA8, see GeometryCandidate::albedo
 		uint32_t alpha = 0;   // M7c InstanceData::Alpha, see GeometryCandidate::alphaWord; non-zero = alpha-tested (non-opaque)
+		uint32_t albedoWord = 0;  // M8, see GeometryCandidate::albedoWord (24 bits, packed into InstanceData.Flags bits 8-31)
 		uint32_t uvPage = 0;  // M7c: vertex data holding the texture coordinates (skinned: the bind-pose source)
 		uint32_t uvOffset = 0;
 		uint32_t uvStride = 0;

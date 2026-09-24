@@ -213,6 +213,12 @@ namespace RT
 			sidecar->SetAlphaTest(a_enabled);
 	}
 
+	void SetAlbedoTextures(bool a_enabled)
+	{
+		if (sidecar)
+			sidecar->SetAlbedoTextures(a_enabled);
+	}
+
 	void SetTreeRestPose(bool a_enabled)
 	{
 		if (sidecar)
@@ -234,6 +240,11 @@ namespace RT
 	const AlphaAtlasStats* GetAlphaAtlasStats()
 	{
 		return sidecar ? &sidecar->GetAlphaAtlasStats() : nullptr;
+	}
+
+	const AlbedoAtlasStats* GetAlbedoAtlasStats()
+	{
+		return sidecar ? &sidecar->GetAlbedoAtlasStats() : nullptr;
 	}
 
 	ID3D11ShaderResourceView* GetGIViewSRV()

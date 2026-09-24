@@ -1,10 +1,13 @@
 // SkyrimRT M6: one-bounce diffuse GI, one cosine-weighted ray per pixel from the finished G-buffer (DXR 1.1 inline
 // RayQuery). The radiance leaving each hit follows the rule CS's deferred lighting uses for the surfaces Screen-Space
-// GI gathers: average albedo x (sun x N.L x sun visibility + point lights + the game's directional ambient), in Skyrim
-// gamma, then Color::RadianceToLinear. Output is REBLUR's noisy input. Misses carry no radiance (the composite keeps the
-// game's ambient, scaled by the ambient occlusion REBLUR derives from the hit distance), except with M8 sky light
-// (exteriors): a miss that reaches the sky carries the sky's radiance, and the composite drops the game's ambient.
+// GI gathers: albedo x (sun x N.L x sun visibility + point lights + the game's directional ambient), in Skyrim gamma, then
+// Color::RadianceToLinear. The albedo is the hit's texture x vertex colour from the M8 albedo atlas, or the texture's
+// average (M6) until its tile is filled. Output is REBLUR's noisy input. Misses carry no radiance (the composite keeps
+// the game's ambient, scaled by the ambient occlusion REBLUR derives from the hit distance), except with M8 sky light
+// (exteriors): a miss that reaches the sky carries the sky's radiance, and the composite scales the game's ambient by
+// the traced light over the open-sky light.
 
+#define SKYRIMRT_ALBEDO_ATLAS
 #include "GICommon.hlsli"
 #include "MeshData.hlsli"
 #include "PointLights.hlsli"
@@ -191,6 +194,7 @@ float3 SkyRadiance(float3 a_direction)
 	bool lightSampled = false;
 	bool lightOccluded = false;
 	float occluderToLight = -1.0;
+	bool texturedHit = false;
 	if (hit) {
 		hitDistance = query.CommittedRayT();
 		const InstanceData instance = Instances[query.CommittedInstanceID()];
@@ -205,7 +209,8 @@ float3 SkyRadiance(float3 a_direction)
 			sunLit = C.Interior || !Occluded(hitOrigin, C.ToSun.xyz, kSunRayLength);
 		const float3 pointLights = SamplePointLights(hitPosition, hitNormal, hitOrigin, Random1(dispatchID.xy, C.FrameIndex),
 			int(instance.Room) - 1, lightSampled, lightOccluded, occluderToLight);
-		radiance = HitRadiance(UnpackRGBA8(instance.Albedo).rgb, hitNormal, sunLit ? 1.0 : 0.0, pointLights);
+		radiance = HitRadiance(HitAlbedo(instance, query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics()), hitNormal, sunLit ? 1.0 : 0.0, pointLights);
+		texturedHit = ((instance.Flags >> 8) & 0xFFFu) != 0;
 	}
 	// M8 sky light: a miss within the GI ray length isn't sky yet. It continues, as an any-hit visibility ray, to the
 	// sun's range: past it there's no geometry in the loaded cells (distant LOD isn't in the TLAS).
@@ -231,4 +236,5 @@ float3 SkyRadiance(float3 a_direction)
 	Count(kGIOccluderNear64, lightOccluded && occluderToLight >= 32.0 && occluderToLight < 64.0);
 	Count(kGIOccluderNear128, lightOccluded && occluderToLight >= 64.0 && occluderToLight < 128.0);
 	Count(kGISkyVisible, skyVisible);
+	Count(kGITexturedHits, texturedHit);
 }

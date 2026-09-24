@@ -2,6 +2,7 @@
 
 #if defined(SKYRIMRT_NRD)
 
+#	include "AlbedoAtlas.h"
 #	include "AlphaAtlas.h"
 #	include "Deferred.h"
 
@@ -67,7 +68,8 @@ namespace RT
 		constexpr uint32_t kTraceTable = GlobalIllumination::kMeshPageSlots;
 		constexpr uint32_t kResolveTable = kTraceTable + kTableSize;
 		constexpr uint32_t kAlphaAtlasDescriptor = kResolveTable + kTableSize;  // M7c
-		constexpr uint32_t kDescriptorCount = kAlphaAtlasDescriptor + 1;
+		constexpr uint32_t kAlbedoAtlasDescriptor = kAlphaAtlasDescriptor + 1;  // M8, right after it (t1, space2)
+		constexpr uint32_t kDescriptorCount = kAlbedoAtlasDescriptor + 1;
 
 		constexpr auto kSRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 		constexpr auto kUAV = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -149,9 +151,10 @@ namespace RT
 		D3D12_DESCRIPTOR_RANGE tableRanges[2]{};
 		tableRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kTableSrvs, 1, 0, 0 };           // t1..t4
 		tableRanges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kTableUavs, 0, 0, kTableSrvs };  // u0..u3
-		D3D12_DESCRIPTOR_RANGE pageRanges[2]{};
+		D3D12_DESCRIPTOR_RANGE pageRanges[3]{};
 		pageRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kMeshPageSlots, 0, 1, 0 };  // t0, space1: mesh pages
 		pageRanges[1] = GetAlphaAtlasRange(kAlphaAtlasDescriptor);                    // t0, space2: M7c alpha atlas
+		pageRanges[2] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 2, kAlbedoAtlasDescriptor };  // t1, space2: M8 albedo atlas
 
 		D3D12_ROOT_PARAMETER params[7]{};
 		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;  // b0
@@ -165,7 +168,7 @@ namespace RT
 		params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		params[4].DescriptorTable = { 2, tableRanges };
 		params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-		params[5].DescriptorTable = { 2, pageRanges };
+		params[5].DescriptorTable = { 3, pageRanges };
 		params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  // t6: point lights
 		params[6].Descriptor = { 6, 0 };
 		for (auto& param : params)
@@ -237,12 +240,14 @@ namespace RT
 		uav(kResolveTable, 3, view.resource12.get(), DXGI_FORMAT_R8G8B8A8_UNORM);
 
 		WriteAlphaAtlasDescriptor(device, alphaAtlas, handle(kAlphaAtlasDescriptor));
+		WriteAlbedoAtlasDescriptor(device, albedoAtlas, handle(kAlbedoAtlasDescriptor));
 	}
 
 	bool GlobalIllumination::Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
-		uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D12Resource* a_alphaAtlas)
+		uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D12Resource* a_alphaAtlas, ID3D12Resource* a_albedoAtlas)
 	{
 		alphaAtlas = a_alphaAtlas;
+		albedoAtlas = a_albedoAtlas;
 		device = a_device;
 		d3d11Device = a_d3d11Device;
 		d3d11Context = a_d3d11Context;
@@ -475,12 +480,16 @@ namespace RT
 							 TransitionBarrier(noisy.get(), kSRV, kUAV) });
 		if (alphaAtlas)
 			Barriers(a_list, { TransitionBarrier(alphaAtlas, kCommon, kSRV) });  // M7c, filled on D3D11 at Prepass
+		if (albedoAtlas)
+			Barriers(a_list, { TransitionBarrier(albedoAtlas, kCommon, kSRV) });  // M8, likewise
 		bind();
 		a_list->SetPipelineState(tracePipeline.get());
 		a_list->SetComputeRootDescriptorTable(4, table(kTraceTable));
 		a_list->Dispatch(groupsX, groupsY, 1);
 		if (alphaAtlas)
 			Barriers(a_list, { TransitionBarrier(alphaAtlas, kSRV, kCommon) });
+		if (albedoAtlas)
+			Barriers(a_list, { TransitionBarrier(albedoAtlas, kSRV, kCommon) });
 		Barriers(a_list, { TransitionBarrier(viewZ.get(), kUAV, kSRV),
 							 TransitionBarrier(normalRoughness.get(), kUAV, kSRV),
 							 TransitionBarrier(nrdMotionVectors.get(), kUAV, kSRV),
