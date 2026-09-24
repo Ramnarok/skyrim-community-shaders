@@ -43,6 +43,11 @@ Texture2D<float4> SsgiAoTexture : register(t10);
 Texture2D<float4> SsgiYTexture : register(t11);
 Texture2D<float4> SsgiCoCgTexture : register(t12);
 Texture2D<float4> SsgiSpecularTexture : register(t13);
+#	if defined(SKYRIM_RT)
+// Skyrim RT sky light: bound only when the GI inputs above carry the sky's light as well as the bounce; only its
+// presence is read. The game's ambient is then scaled by the traced light over the open-sky light (see below).
+Texture2D<unorm float> SkyrimRTSkyLight : register(t16);
+#	endif
 
 void SampleSSGI(uint2 pixCoord, float3 normalWS, out float ao, out float3 il)
 {
@@ -159,6 +164,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		directionalAmbientColor = max(0, directionalAmbientColor);
 	}
 
+	bool skyrimRTSkyLight = false;
 	{
 		float maxScale = 1.0;
 		if (directionalAmbientColor.x > 0.0)
@@ -173,11 +179,27 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		linDiffuseColor = Color::IrradianceToLinear(diffuseColor);
 		linDiffuseColor *= sqrt(multiBounceSSGIAo);
 		diffuseColor = Color::IrradianceToGamma(linDiffuseColor);
-		diffuseColor += Color::IrradianceToGamma(Color::IrradianceToLinear(directionalAmbientColor) * multiBounceSSGIAo);
+		float3 ambientScale = multiBounceSSGIAo;
+#	if defined(SKYRIM_RT)
+		// Skyrim RT sky light: ssgiIl is the traced environment light (sky where rays escape, bounce where they hit).
+		// Dividing by what a fully open hemisphere returns (the trace's SkyRadiance, integrated: this pixel's ambient
+		// converted the same way) scales the game's own ambient term, which stays in the gamma-space sum with the direct
+		// light as Lighting.hlsl builds it. Adding the sky in linear instead lost that sum's cross term: open ground
+		// came out 15-20% darker than the game.
+		uint skyLightWidth, skyLightHeight;
+		SkyrimRTSkyLight.GetDimensions(skyLightWidth, skyLightHeight);
+		if (skyLightWidth > 0) {
+			skyrimRTSkyLight = true;
+			const float3 openSky = Color::IrradianceToLinear(Color::Ambient(max(0, SharedData::GetAmbient(normalWS))) * Color::PBRLightingScale);
+			ambientScale = clamp(ssgiIl / max(openSky, 1e-4), 0.0, 4.0);
+		}
+#	endif
+		diffuseColor += Color::IrradianceToGamma(Color::IrradianceToLinear(directionalAmbientColor) * ambientScale);
 		linDiffuseColor = Color::IrradianceToLinear(diffuseColor);
 	}
 
-	linDiffuseColor += ssgiIl * linAlbedo;
+	if (!skyrimRTSkyLight)
+		linDiffuseColor += ssgiIl * linAlbedo;
 #endif
 
 	float3 color = linDiffuseColor + specularColor;

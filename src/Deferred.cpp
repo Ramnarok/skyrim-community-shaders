@@ -358,7 +358,7 @@ void Deferred::DeferredPasses()
 	{
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
-		ID3D11ShaderResourceView* srvs[16]{
+		ID3D11ShaderResourceView* srvs[17]{
 			specular.SRV,                                                                                    // t0  SpecularTexture
 			albedo.SRV,                                                                                      // t1  AlbedoTexture
 			normalRoughness.SRV,                                                                             // t2  NormalRoughnessTexture
@@ -375,6 +375,7 @@ void Deferred::DeferredPasses()
 			ssgi_hq_spec ? ssgi_gi_spec : nullptr,                                                           // t13 SsgiSpecularTexture
 			ibl.loaded ? ibl.envIBLTexture->srv.get() : nullptr,                                             // t14 EnvIBLTexture
 			ibl.loaded ? ibl.skyIBLTexture->srv.get() : nullptr,                                             // t15 SkyIBLTexture
+			useRTGI && !interior ? rtGI.skyLight : nullptr,                                                  // t16 SkyrimRTSkyLight (presence only)
 		};
 
 		if (dynamicCubemaps.loaded)
@@ -398,7 +399,7 @@ void Deferred::DeferredPasses()
 
 	// Clear
 	{
-		ID3D11ShaderResourceView* views[16]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+		ID3D11ShaderResourceView* views[17]{};
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
 		ID3D11UnorderedAccessView* uavs[3]{ nullptr, nullptr, nullptr };
@@ -617,6 +618,10 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 		// (R24_UNORM_X8_TYPELESS game depth) to `Texture2D<float>` (R32_FLOAT blendedDepth).
 		if (globals::features::terrainBlending.loaded)
 			defines.push_back({ "TERRAIN_BLENDING", nullptr });
+
+		// Skyrim RT sky light (exteriors): t16 bound means the GI inputs carry the sky, so the ambient is dropped.
+		if (globals::features::skyrimRT.loaded)
+			defines.push_back({ "SKYRIM_RT", nullptr });
 
 		mainCompositeCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
 	}

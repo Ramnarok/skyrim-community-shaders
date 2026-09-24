@@ -105,6 +105,7 @@ namespace RT
 		bool terrain = false;
 		bool alphaTested = false;
 		bool alphaBlended = false;
+		bool decal = false;  // M8: see GeometryCandidate::decal; not traced
 		bool actor = false;  // M7: skinned, positions already camera-relative world space
 		bool windAnimated = false;  // M7c: see GeometryCandidate::windAnimated
 	};

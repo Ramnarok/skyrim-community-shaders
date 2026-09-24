@@ -67,6 +67,9 @@ namespace RT
 		RE::BSGeometry* geometry = nullptr;  // the scene-graph shape (skinned: shared by its partitions), valid this frame only
 		const RE::NiNode* objectRoot = nullptr;  // outermost BSFadeNode above the shape (the object's root), valid this frame only
 		bool meshLOD = false;  // a pure lower-detail copy: kMeshLOD and named "L<digit>_..." (merged "X - L2_..." shapes are not)
+		// M8: kDecal / kDynamicDecal: an overlay drawn just above another surface without writing depth (road dirt and grass
+		// strips). Traced, it shadowed the surface under it (Whiterun gate), so it stays out of every trace.
+		bool decal = false;
 	};
 
 	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
@@ -85,6 +88,13 @@ namespace RT
 		float boundRadius = 0.0f;
 		uint32_t triangles = 0;
 		bool alphaTested = false, alphaBlended = false, windAnimated = false, skinned = false, terrain = false, tree = false;
+		// What decides whether the raster draws the shape at all (M8, invisible-occluder hunt).
+		float materialAlpha = 1.0f;    // BSShaderProperty::alpha
+		uint32_t renderPasses = 0;     // BSShaderProperty::renderPassList length (capped at 16): passes built for this frame
+		int32_t lastRenderPassState = 0;
+		bool vertexAlpha = false;      // kVertexAlpha: the game multiplies alpha by the vertex colour's (our alpha test doesn't)
+		bool vertexColors = false;     // the vertex format has colours (VF_COLORS)
+		bool decal = false;            // kDecal or kDynamicDecal
 	};
 
 	/**
@@ -144,6 +154,7 @@ namespace RT
 		std::array<uint32_t, static_cast<size_t>(GeometryCategory::kCount)> instances{};
 		uint32_t alphaTestedInstances = 0;  ///< Subset of static + terrain instances.
 		uint32_t alphaBlendedInstances = 0;  ///< Subset of static + terrain instances.
+		uint32_t decalInstances = 0;         ///< M8: subset of static + terrain instances that are decals (not traced)
 		bool grassWalked = false;           ///< BGSGrassManager::grassNode was found and walked
 		uint32_t grassBounds = 0;           ///< exclusion bounds contributed by grass
 		uint32_t uniqueStaticMeshes = 0;

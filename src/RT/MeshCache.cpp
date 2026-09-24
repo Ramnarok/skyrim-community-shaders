@@ -583,6 +583,7 @@ namespace RT
 				.terrain = candidate.terrain,
 				.alphaTested = candidate.alphaTested,
 				.alphaBlended = candidate.alphaBlended,
+				.decal = candidate.decal,
 				.windAnimated = candidate.windAnimated });
 		}
 	}

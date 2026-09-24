@@ -114,6 +114,7 @@ Each milestone lists its **acceptance criteria** and a **kickoff prompt**; paste
 - Reflections.
 - Distant LOD in the TLAS.
 - Water.
+- ✅ Ray-traced sky light (2026-09-24, on by default; path-tracing step 1): GI misses that reach the sky carry its radiance, and the composite scales the game's ambient by the traced / open-sky ratio (ARCHITECTURE §5). Market: sunlit open surfaces −1 to −6%, under awnings −13 to −17%; GI hand-off +0.03 ms. Found on the way: a ratio is needed rather than a replacement, because the game adds its ambient to direct light in gamma space; and decals must stay out of the traces (Whiterun gate).
 - Multi-bounce path tracing.
 - One-frame-late async RT.
 - The v2 texture path for all materials.

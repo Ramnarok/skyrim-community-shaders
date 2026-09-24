@@ -47,6 +47,7 @@ namespace RT
 				{ "exclusion_bounds_by_category", exclusions },
 				{ "alpha_tested_instances", s.alphaTestedInstances },
 				{ "alpha_blended_instances", s.alphaBlendedInstances },
+				{ "decal_instances_not_traced", s.decalInstances },
 				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
 				{ "mesh_lod_shapes", { { "walked", s.meshLODShapes }, { "alternates_skipped", s.meshLODAlternates }, { "all_skipped_diagnostic", s.meshLODSkipped } } },
@@ -235,7 +236,9 @@ namespace RT
 					{ "min_fade", o.minFade }, { "distance", o.distance }, { "offset", { o.offset[0], o.offset[1], o.offset[2] } },
 					{ "bound_radius", o.boundRadius }, { "triangles", o.triangles },
 					{ "alpha_tested", o.alphaTested }, { "alpha_blended", o.alphaBlended }, { "wind_animated", o.windAnimated },
-					{ "skinned", o.skinned }, { "terrain", o.terrain }, { "tree", o.tree } });
+					{ "skinned", o.skinned }, { "terrain", o.terrain }, { "tree", o.tree },
+					{ "material_alpha", o.materialAlpha }, { "render_passes", o.renderPasses }, { "last_render_pass_state", o.lastRenderPassState },
+					{ "vertex_alpha", o.vertexAlpha }, { "vertex_colors", o.vertexColors }, { "decal", o.decal } });
 			}
 			return { { "note", "TLAS candidates within 512 units of the camera, nearest first; offset = bound centre - camera (z up)" },
 				{ "objects", objects } };
@@ -289,6 +292,9 @@ namespace RT
 							  { "hit_point_light_sampled", g.counters[kGILightSampled] }, { "hit_point_light_occluded", g.counters[kGILightOccluded] } } },
 				{ "hit_percent", g.HitPercent() },
 				{ "sunlit_hit_percent", g.SunLitHitPercent() },
+				// M8 sky light: of all traced rays, those that missed and reached the sky (0 unless sky light is on).
+				{ "sky_light", { { "enabled", p.skyLight }, { "rays_to_sky", g.counters[kGISkyVisible] },
+								   { "rays_to_sky_percent", g.counters[kGITraced] ? 100.0 * g.counters[kGISkyVisible] / g.counters[kGITraced] : 0.0 } } },
 				{ "point_lights", { { "count", g.pointLights }, { "dropped", g.pointLightsDropped }, { "sampled_hit_percent", g.LightSampledHitPercent() },
 									  { "occluded_percent", g.LightOccludedPercent() }, { "shadows", p.pointLightShadows }, { "inverse_square", p.inverseSquare },
 									  { "occluded_by_distance_to_light",

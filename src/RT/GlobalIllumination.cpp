@@ -41,8 +41,10 @@ namespace RT
 			uint32_t pointLightShadows;
 			uint32_t inverseSquare;
 			float directionalLightMult;
+			uint32_t skyLight;  // M8: misses that reach the sky carry its radiance (exteriors)
+			uint32_t pad[3];
 		};
-		static_assert(sizeof(GIConstants) == 368);
+		static_assert(sizeof(GIConstants) == 384);
 
 		constexpr uint32_t kMaskStatic = 0x01;  // InstanceMask bits, as Raytracer::Record assigns them
 		constexpr uint32_t kMaskTerrain = 0x02;
@@ -427,6 +429,7 @@ namespace RT
 		c->pointLightShadows = a_params.pointLightShadows ? 1u : 0u;
 		c->inverseSquare = a_params.inverseSquare ? 1u : 0u;
 		c->directionalLightMult = a_params.directionalLightMult;
+		c->skyLight = a_params.skyLight && !a_params.interior ? 1u : 0u;
 
 		auto first = heap->GetCPUDescriptorHandleForHeapStart();
 		UpdatePageDescriptors(device, a_meshPool, first, descriptorSize, describedPageSerials.data(), SkinnedMeshes::kFirstPageSlot);

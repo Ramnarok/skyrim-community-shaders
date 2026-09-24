@@ -49,6 +49,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIInteriors,
 	GIPointLights,
 	GIPointLightShadows,
+	GISkyLight,
 	GIHistory,
 	GIView)
 
@@ -333,8 +334,12 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 		params.pointLights = GatherPointLights(params.linearLighting);
 	params.pointLightShadows = settings.GIPointLightShadows;
 	params.inverseSquare = globals::features::inverseSquareLighting.loaded;
+	params.skyLight = settings.GISkyLight && !params.interior;
 	a_outputs = RT::SubmitGI(params);
-	return a_outputs.ao && a_outputs.y && a_outputs.coCg;
+	const bool traced = a_outputs.ao && a_outputs.y && a_outputs.coCg;
+	// The flag SRV tells the composite the GI carries the sky: any bound view works, only its presence is read.
+	a_outputs.skyLight = traced && params.skyLight ? a_outputs.ao : nullptr;
+	return traced;
 }
 
 void SkyrimRT::Reset()
@@ -480,6 +485,10 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("gi_point_light_shadows"), "Point lights are occluded"), &settings.GIPointLightShadows);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_point_light_shadows_tooltip"), "Trace a ray to each sampled point light, so walls stop its bounce light. When off, point lights bounce through walls, as the game lights surfaces through them."));
+
+	ImGui::Checkbox(T(TKEY("gi_sky_light"), "Ray-traced sky light"), &settings.GISkyLight);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_sky_light_tooltip"), "Outdoors, rays that reach the open sky carry the sky's light, and the game's ambient light is scaled by what the rays find: unchanged under open sky, darker under overhangs, in alleys or facing a cliff, and tinted by nearby sunlit surfaces."));
 
 	ImGui::Checkbox(T(TKEY("gi_interiors"), "Ray-traced GI in interiors"), &settings.GIInteriors);
 	if (auto _tt = Util::HoverTooltipWrapper())

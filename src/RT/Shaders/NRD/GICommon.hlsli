@@ -32,6 +32,7 @@ struct GIConstants
 	uint PointLightShadows;     // trace a visibility ray to the sampled point light
 	uint InverseSquare;         // Inverse Square Lighting loaded: Lighting.hlsl uses its attenuation (ISL define)
 	float DirectionalLightMult; // Linear Lighting
+	uint SkyLight;              // M8: misses that reach the sky carry its radiance (exteriors); the composite drops the ambient
 };
 
 // Counter slots, mirrored in GlobalIllumination.h
@@ -43,6 +44,7 @@ static const uint kGILightOccluded = 4;
 static const uint kGIOccluderNear32 = 5;   // occluded samples by the blocker's distance from the light (game units)
 static const uint kGIOccluderNear64 = 6;
 static const uint kGIOccluderNear128 = 7;
+static const uint kGISkyVisible = 8;       // misses whose continuation reached the sky (SkyLight)
 
 ConstantBuffer<GIConstants> C : register(b0);
 

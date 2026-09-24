@@ -24,7 +24,7 @@ namespace RT
 		constexpr uint32_t kMaskAlphaTested = 0x08;
 		constexpr uint32_t kMaskExclusion = 0x10;
 		constexpr uint32_t kMaskActor = 0x04;         // M7 skinned
-		constexpr uint32_t kMaskAlphaBlended = 0x20;  // not in the depth trace: drawn after the pre-water depth copy
+		constexpr uint32_t kMaskAlphaBlended = 0x20;  // in no trace: alpha-blended (drawn after the pre-water depth copy) and decals
 
 		// Descriptor heap layout.
 		constexpr uint32_t kDepthDescriptor = 0;
@@ -378,7 +378,7 @@ namespace RT
 				desc.Transform[row][3] = translate[row];
 			}
 			desc.InstanceID = i;
-			desc.InstanceMask = record.actor ? kMaskActor : record.alphaBlended ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
+			desc.InstanceMask = record.actor ? kMaskActor : record.alphaBlended || record.decal ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
 			desc.Flags = record.alpha ? kInstanceFlagForceNonOpaque : 0u;
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;

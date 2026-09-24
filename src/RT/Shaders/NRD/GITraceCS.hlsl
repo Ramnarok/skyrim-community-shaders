@@ -1,8 +1,9 @@
 // SkyrimRT M6: one-bounce diffuse GI, one cosine-weighted ray per pixel from the finished G-buffer (DXR 1.1 inline
 // RayQuery). The radiance leaving each hit follows the rule CS's deferred lighting uses for the surfaces Screen-Space
 // GI gathers: average albedo x (sun x N.L x sun visibility + point lights + the game's directional ambient), in Skyrim
-// gamma, then Color::RadianceToLinear. Output is REBLUR's noisy input; sky and misses carry no radiance (the composite
-// keeps the game's ambient, scaled by the ambient occlusion REBLUR derives from the hit distance).
+// gamma, then Color::RadianceToLinear. Output is REBLUR's noisy input. Misses carry no radiance (the composite keeps the
+// game's ambient, scaled by the ambient occlusion REBLUR derives from the hit distance), except with M8 sky light
+// (exteriors): a miss that reaches the sky carries the sky's radiance, and the composite drops the game's ambient.
 
 #include "GICommon.hlsli"
 #include "MeshData.hlsli"
@@ -123,6 +124,22 @@ float3 HitRadiance(float3 a_albedo, float3 a_normal, float a_sunVisibility, floa
 	return SkyrimGammaToLinear(a_albedo * (C.SunColor.rgb * sunCosine * a_sunVisibility + a_pointLights + GetAmbient(a_normal)));
 }
 
+// M8 sky light: radiance arriving from the sky in a_direction, such that its cosine-weighted mean over an unoccluded
+// hemisphere is the game's directional ambient at that normal. The ambient is L0 + L1.n as a function of the normal;
+// cosine convolution scales L1 by 2/3, so the radiance carries L0 + 1.5 L1. The conversion matches the composite's for
+// its ambient term (DeferredCompositeCS: Color::Ambient x albedo, to linear, against il x IrradianceToLinear(albedo /
+// PBRLightingScale)): outside Linear Lighting that is SkyrimGammaToLinear with the 0.65 PBRLightingScale folded in.
+float3 SkyRadiance(float3 a_direction)
+{
+	float4 basis = ShEvaluate(a_direction);
+	basis.yzw *= 1.5;
+	const float3 ambient = max(0.0, float3(dot(C.AmbientSHR, basis), dot(C.AmbientSHG, basis), dot(C.AmbientSHB, basis)));
+	if (C.LinearLighting)
+		return pow(ambient, C.AmbientGamma) * C.AmbientMult;
+	static const float kPBRLightingScale = 0.65;  // Color::PBRLightingScale without Linear Lighting
+	return SkyrimGammaToLinear(ambient * kPBRLightingScale);
+}
+
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID)
 {
 	if (any(dispatchID.xy >= C.RenderSize))
@@ -190,6 +207,14 @@ float3 HitRadiance(float3 a_albedo, float3 a_normal, float a_sunVisibility, floa
 			int(instance.Room) - 1, lightSampled, lightOccluded, occluderToLight);
 		radiance = HitRadiance(UnpackRGBA8(instance.Albedo).rgb, hitNormal, sunLit ? 1.0 : 0.0, pointLights);
 	}
+	// M8 sky light: a miss within the GI ray length isn't sky yet. It continues, as an any-hit visibility ray, to the
+	// sun's range: past it there's no geometry in the loaded cells (distant LOD isn't in the TLAS).
+	bool skyVisible = false;
+	if (!hit && C.SkyLight) {
+		skyVisible = !Occluded(ray.Origin + direction * ray.TMax, direction, kSunRayLength);
+		if (skyVisible)
+			radiance = SkyRadiance(direction);
+	}
 
 	OutViewZ[pixel] = viewZ;
 	OutNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(normal, 1.0, 0.0);
@@ -205,4 +230,5 @@ float3 HitRadiance(float3 a_albedo, float3 a_normal, float a_sunVisibility, floa
 	Count(kGIOccluderNear32, lightOccluded && occluderToLight < 32.0);
 	Count(kGIOccluderNear64, lightOccluded && occluderToLight >= 32.0 && occluderToLight < 64.0);
 	Count(kGIOccluderNear128, lightOccluded && occluderToLight >= 64.0 && occluderToLight < 128.0);
+	Count(kGISkyVisible, skyVisible);
 }

@@ -130,6 +130,7 @@ namespace RT
 			auto* lightingProperty = a_property;
 			const auto& geometryData = a_geometryData;
 			a_candidate.windAnimated = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim);
+			a_candidate.decal = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kDecal, RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal);
 			// Same test CS uses for landscape (TruePBR.cpp): the lighting material's feature.
 			if (auto* material = lightingProperty->material) {
 				const auto feature = material->GetFeature();
@@ -402,6 +403,7 @@ namespace RT
 					candidate.world = geometry->world;
 					a_out.stats.alphaTestedInstances += candidate.alphaTested;
 					a_out.stats.alphaBlendedInstances += candidate.alphaBlended;
+					a_out.stats.decalInstances += candidate.decal;
 					a_out.candidates.push_back(candidate);
 					break;
 				case GeometryCategory::kSkinned:
@@ -493,6 +495,18 @@ namespace RT
 			object.skinned = candidate.skinned;
 			object.terrain = candidate.terrain;
 			object.tree = candidate.tree;
+			if (const auto* property = geometry->GetGeometryRuntimeData().shaderProperty.get()) {
+				using ShaderFlag = RE::BSShaderProperty::EShaderPropertyFlag;
+				object.materialAlpha = property->alpha;
+				object.lastRenderPassState = property->lastRenderPassState;
+				for (const auto* pass = property->renderPassList.head; pass && object.renderPasses < 16; pass = pass->next)
+					object.renderPasses++;
+				object.vertexAlpha = property->flags.any(ShaderFlag::kVertexAlpha);
+				object.decal = property->flags.any(ShaderFlag::kDecal, ShaderFlag::kDynamicDecal);
+			}
+			RE::BSGraphics::VertexDesc desc;
+			std::memcpy(&desc, &candidate.vertexDesc, sizeof(desc));
+			object.vertexColors = desc.HasFlag(RE::BSGraphics::Vertex::VF_COLORS);
 			a_out.push_back(std::move(object));
 		}
 	}

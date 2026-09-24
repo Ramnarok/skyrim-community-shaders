@@ -174,14 +174,18 @@ namespace RT
 		std::span<const PointLight> pointLights;  ///< valid only during SubmitGI (not kept in GIStats::params)
 		bool pointLightShadows = true;             ///< trace a visibility ray to the sampled point light
 		bool inverseSquare = false;                ///< Inverse Square Lighting loaded: its attenuation applies (Lighting.hlsl ISL)
+		bool skyLight = false;  ///< M8: misses that reach the sky carry its radiance, replacing the composite's ambient (exteriors)
 	};
 
-	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12). */
+	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 sky flag. */
 	struct GIOutputs
 	{
 		ID3D11ShaderResourceView* ao = nullptr;
 		ID3D11ShaderResourceView* y = nullptr;
 		ID3D11ShaderResourceView* coCg = nullptr;
+		/// M8: bound at composite t16 when the GI carries sky light. Only its presence is read (GetDimensions): the
+		/// composite then scales the game's ambient by the traced light over the open-sky light, instead of by the AO.
+		ID3D11ShaderResourceView* skyLight = nullptr;
 	};
 
 	/** @brief Minimum tier we require: DXR 1.1 for inline RayQuery in compute shaders. */

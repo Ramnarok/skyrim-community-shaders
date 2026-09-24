@@ -1426,6 +1426,8 @@
     "feature.skyrim_rt.gi_ray_length": "Ray length",
     "feature.skyrim_rt.gi_ray_length_tooltip": "How far bounce rays look for surfaces. Longer rays find more distant light but cost more.",
     "feature.skyrim_rt.gi_section": "Global illumination",
+    "feature.skyrim_rt.gi_sky_light": "Ray-traced sky light",
+    "feature.skyrim_rt.gi_sky_light_tooltip": "Outdoors, rays that reach the open sky carry the sky's light, and the game's ambient light is scaled by what the rays find: unchanged under open sky, darker under overhangs, in alleys or facing a cliff, and tinted by nearby sunlit surfaces.",
     "feature.skyrim_rt.gi_sunlit": "sunlit",
     "feature.skyrim_rt.gi_timings": "Trace / denoise / resolve",
     "feature.skyrim_rt.gi_tooltip": "Trace one bounce of sunlight, point lights and ambient light off the scene, with ray-traced ambient occlusion, in place of Screen-Space GI.",

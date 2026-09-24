@@ -21,6 +21,7 @@ namespace RT
 		kGIOccluderNear32,   ///< ... by something within 32 units of the light (its own fixture?)
 		kGIOccluderNear64,   ///< ... 32-64 units from it
 		kGIOccluderNear128,  ///< ... 64-128 units from it (the rest is farther: walls)
+		kGISkyVisible,       ///< M8: misses whose continuation to 50,000 units reached the sky (sky light on)
 		kGICounterCount
 	};
 
