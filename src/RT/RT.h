@@ -104,6 +104,23 @@ namespace RT
 
 	struct GIStats;
 
+	/**
+	 * @brief One point light for the GI bounce, from Light Limit Fix's per-frame light list (the lights Lighting.hlsl
+	 * evaluates). Layout matches GIPointLight in GICommon.hlsli.
+	 */
+	struct GIPointLight
+	{
+		float position[3]{};  ///< camera-relative (FrameBuffer::CameraPosAdjust origin, as the TLAS)
+		float radius = 0.0f;
+		float color[3]{};  ///< Color::PointLight(color) x fade: the light colour Lighting.hlsl multiplies by attenuation
+		float invRadius = 0.0f;
+		float fadeZone = 0.0f;  ///< Inverse Square Lighting attenuation terms (used when inverseSquare is set)
+		float sizeBias = 0.0f;
+		uint32_t flags = 0;  ///< LightLimitFix::LightFlags
+		float pad = 0.0f;
+	};
+	static_assert(sizeof(GIPointLight) == 48);
+
 	/** @brief Per-frame GI inputs, filled by the SkyrimRT feature from the same sources CS's SharedData uses (M6). */
 	struct GIParams
 	{
@@ -122,6 +139,10 @@ namespace RT
 		uint32_t maxAccumulatedFrames = 30;  ///< REBLUR history (frames)
 		uint32_t viewMode = 0;               ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
 		bool interior = false;               ///< interior cell: the directional light is unshadowed, as in Lighting.hlsl
+		float directionalLightMult = 1.0f;   ///< Linear Lighting (used only when linearLighting is set)
+		std::span<const GIPointLight> pointLights;  ///< valid only during SubmitGI (not kept in GIStats::params)
+		bool pointLightShadows = true;             ///< trace a visibility ray to the sampled point light
+		bool inverseSquare = false;                ///< Inverse Square Lighting loaded: its attenuation applies (Lighting.hlsl ISL)
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12). */

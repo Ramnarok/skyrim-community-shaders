@@ -173,6 +173,8 @@ public:
 	eastl::unique_ptr<Buffer> lightGrid = nullptr;
 
 	std::uint32_t lightCount = 0;
+	/** @brief This frame's lights as uploaded (first lightCount entries), kept for SkyrimRT's GI bounce. */
+	eastl::vector<LightData> lightsData;
 	float lightsNear = 1;
 	float lightsFar = 16384;
 

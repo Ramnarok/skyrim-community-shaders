@@ -16,6 +16,11 @@ namespace RT
 		kGITraced,
 		kGIHits,
 		kGISunLitHits,
+		kGILightSampled,   ///< hits that picked a point light (one within range, facing the hit)
+		kGILightOccluded,  ///< ... whose visibility ray was blocked
+		kGIOccluderNear32,   ///< ... by something within 32 units of the light (its own fixture?)
+		kGIOccluderNear64,   ///< ... 32-64 units from it
+		kGIOccluderNear128,  ///< ... 64-128 units from it (the rest is farther: walls)
 		kGICounterCount
 	};
 
@@ -30,7 +35,10 @@ namespace RT
 		uint32_t textureHeight = 0;
 		uint32_t renderWidth = 0;
 		uint32_t renderHeight = 0;
-		GIParams params;
+		GIParams params;           ///< pointLights is cleared (the span doesn't outlive SubmitGI)
+		uint32_t pointLights = 0;  ///< point lights uploaded for the bounce last frame
+		uint32_t pointLightsDropped = 0;  ///< beyond kMaxPointLights
+		std::vector<GIPointLight> lastPointLights;  ///< last frame's uploaded lights, for the dump
 		TimingSeries traceMs;
 		TimingSeries denoiseMs;
 		TimingSeries resolveMs;
@@ -39,6 +47,8 @@ namespace RT
 
 		float HitPercent() const { return counters[kGITraced] ? 100.0f * counters[kGIHits] / counters[kGITraced] : 0.0f; }
 		float SunLitHitPercent() const { return counters[kGIHits] ? 100.0f * counters[kGISunLitHits] / counters[kGIHits] : 0.0f; }
+		float LightSampledHitPercent() const { return counters[kGIHits] ? 100.0f * counters[kGILightSampled] / counters[kGIHits] : 0.0f; }
+		float LightOccludedPercent() const { return counters[kGILightSampled] ? 100.0f * counters[kGILightOccluded] / counters[kGILightSampled] : 0.0f; }
 	};
 }
 
@@ -63,6 +73,7 @@ namespace RT
 		static constexpr float kUnitsPerMeter = 70.0f;           ///< Skyrim units; NRD's defaults are in meters
 		static constexpr float kDenoisingRange = 400000.0f;     ///< game units; farther pixels (and sky) are ignored
 		static constexpr float kSkyViewZ = 10000000.0f;
+		static constexpr uint32_t kMaxPointLights = 1024;  ///< LightLimitFix::MAX_LIGHTS
 
 		/** @param a_alphaAtlas M7c alpha atlas, or nullptr (then nothing is alpha-tested). */
 		bool Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,

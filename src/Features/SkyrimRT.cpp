@@ -1,5 +1,7 @@
 #include "SkyrimRT.h"
 
+#include "Features/InverseSquareLighting.h"
+#include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
@@ -40,6 +42,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIRayLength,
 	GIAlphaTested,
 	GIInteriors,
+	GIPointLights,
+	GIPointLightShadows,
 	GIHistory,
 	GIView)
 
@@ -115,7 +119,48 @@ namespace
 		a_params.lightGamma = linearLighting.settings.lightGamma;
 		a_params.ambientGamma = linearLighting.settings.ambientGamma;
 		a_params.ambientMult = linearLighting.settings.ambientMult;
+		a_params.directionalLightMult = linearLighting.settings.directionalLightMult;
 		return true;
+	}
+
+	// Light Limit Fix's lights for this frame (built in its Prepass, earlier in the feature list), with the colour
+	// Lighting.hlsl ends up multiplying by attenuation and N.L: Color::PointLight(color) x Color::VanillaNormalization
+	// x fade. Positions are already relative to FrameBuffer::CameraPosAdjust, the TLAS origin.
+	std::span<const RT::GIPointLight> GatherPointLights(bool a_linearLighting)
+	{
+		static std::vector<RT::GIPointLight> lights;
+		lights.clear();
+		const auto& lightLimitFix = globals::features::lightLimitFix;
+		if (!lightLimitFix.loaded)
+			return {};
+		const auto& linearLighting = globals::features::linearLighting.settings;
+		const uint32_t count = std::min<uint32_t>(lightLimitFix.lightCount, static_cast<uint32_t>(lightLimitFix.lightsData.size()));
+		lights.reserve(count);
+		for (uint32_t i = 0; i < count; i++) {
+			const auto& source = lightLimitFix.lightsData[i];
+			if (!(source.radius > 0.0f))
+				continue;
+			const bool isLinear = source.lightFlags.any(LightLimitFix::LightFlags::Linear);
+			RT::GIPointLight& light = lights.emplace_back();
+			light.position[0] = source.positionWS.data.x;
+			light.position[1] = source.positionWS.data.y;
+			light.position[2] = source.positionWS.data.z;
+			light.radius = source.radius;
+			light.invRadius = 1.0f / source.radius;  // Light Limit Fix fills it only under Inverse Square Lighting
+			light.fadeZone = source.fadeZone;
+			light.sizeBias = source.sizeBias;
+			light.flags = source.lightFlags.underlying();
+			const float color[3] = { source.color.x, source.color.y, source.color.z };
+			for (uint32_t c = 0; c < 3; c++) {
+				float value = std::max(color[c], 0.0f);
+				// Under Linear Lighting, Color::PointLight's pi x pointLightMult (skipped for linear lights) meets the
+				// diffuse term's 1/pi.
+				if (a_linearLighting)
+					value = isLinear ? value / std::numbers::pi_v<float> : std::pow(value, linearLighting.lightGamma) * linearLighting.pointLightMult;
+				light.color[c] = value * source.fade;
+			}
+		}
+		return lights;
 	}
 
 	bool IsGameWindowFocused()
@@ -212,8 +257,7 @@ void SkyrimRT::Prepass()
 bool SkyrimRT::WantsGlobalIllumination()
 {
 	// DeferredCompositeCS reads t10-t12 only when compiled with SSGI, i.e. when Screen-Space GI is loaded.
-	// Interiors are lit mostly by point lights, which the bounce doesn't sample yet, so they stay with Screen-Space GI
-	// unless GIInteriors asks otherwise.
+	// Interiors stay with Screen-Space GI unless GIInteriors asks otherwise.
 	return loaded && settings.Enabled && settings.GlobalIllumination && globals::features::screenSpaceGI.loaded &&
 	       RT::IsGIAvailable() && !RT::IsSunShadowSuppressed() && (settings.GIInteriors || !Util::IsInterior());
 }
@@ -232,6 +276,10 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.maxAccumulatedFrames = settings.GIHistory;
 	params.viewMode = settings.GIView;
 	params.interior = Util::IsInterior();
+	if (settings.GIPointLights)
+		params.pointLights = GatherPointLights(params.linearLighting);
+	params.pointLightShadows = settings.GIPointLightShadows;
+	params.inverseSquare = globals::features::inverseSquareLighting.loaded;
 	a_outputs = RT::SubmitGI(params);
 	return a_outputs.ao && a_outputs.y && a_outputs.coCg;
 }
@@ -328,7 +376,7 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 {
 	ImGui::Checkbox(T(TKEY("gi"), "Ray-traced global illumination"), &settings.GlobalIllumination);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("%s", T(TKEY("gi_tooltip"), "Trace one bounce of sunlight and ambient light off the static scene and terrain, with ray-traced ambient occlusion, in place of Screen-Space GI."));
+		ImGui::Text("%s", T(TKEY("gi_tooltip"), "Trace one bounce of sunlight, point lights and ambient light off the scene, with ray-traced ambient occlusion, in place of Screen-Space GI."));
 
 	if (!RT::IsGICompiledIn()) {
 		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("gi_not_compiled"), "Not in this build: ray-traced GI needs a private build with NVIDIA NRD (SKYRIMRT_NRD)."));
@@ -355,9 +403,17 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_alpha_tested_tooltip"), "Include foliage and other alpha-tested meshes. With Alpha-test foliage off, leaves act as solid cards."));
 
+	ImGui::Checkbox(T(TKEY("gi_point_lights"), "Bounce point lights"), &settings.GIPointLights);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_point_lights_tooltip"), "Bounce the light of torches, candles, fires and spells, as Light Limit Fix passes them to the lighting shaders. Interiors are lit mostly by these."));
+
+	ImGui::Checkbox(T(TKEY("gi_point_light_shadows"), "Point lights are occluded"), &settings.GIPointLightShadows);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_point_light_shadows_tooltip"), "Trace a ray to each sampled point light, so walls stop its bounce light. When off, point lights bounce through walls, as the game lights surfaces through them."));
+
 	ImGui::Checkbox(T(TKEY("gi_interiors"), "Ray-traced GI in interiors"), &settings.GIInteriors);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("%s", T(TKEY("gi_interiors_tooltip"), "Interiors are lit mostly by torches, candles and fires, which ray-traced GI doesn't bounce yet. When off, interiors use Screen-Space GI."));
+		ImGui::Text("%s", T(TKEY("gi_interiors_tooltip"), "Use ray-traced GI inside buildings and dungeons too. Interiors are lit mostly by point lights, so keep Bounce point lights on. When off, interiors use Screen-Space GI."));
 
 	ImGui::SliderInt(T(TKEY("gi_history"), "Denoiser history (frames)"), reinterpret_cast<int*>(&settings.GIHistory), 1, 63);
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -372,6 +428,8 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 
 	if (const auto* stats = RT::GetGIStats(); stats && stats->haveResult) {
 		ImGui::Text("%s: %.1f%% (%s %.1f%%)", T(TKEY("gi_hits"), "Rays hitting geometry"), stats->HitPercent(), T(TKEY("gi_sunlit"), "sunlit"), stats->SunLitHitPercent());
+		ImGui::Text("%s: %u (%s %.1f%%, %s %.1f%%)", T(TKEY("gi_point_light_count"), "Point lights"), stats->pointLights, T(TKEY("gi_point_light_sampled"), "hits in range"),
+			stats->LightSampledHitPercent(), T(TKEY("gi_point_light_occluded"), "occluded"), stats->LightOccludedPercent());
 		ImGui::Text("%s: %.3f / %.3f / %.3f ms", T(TKEY("gi_timings"), "Trace / denoise / resolve"), stats->traceMs.Average(), stats->denoiseMs.Average(), stats->resolveMs.Average());
 		ImGui::Text("%s: %.3f ms", T(TKEY("gi_frame_cost"), "Frame cost (GI hand-off)"), stats->roundTripMs.Average());
 		if (const auto* interop = RT::GetInteropStats())

@@ -210,6 +210,11 @@ namespace RT
 				if (image.name.starts_with("gi_"))
 					images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
 			}
+			json lights = json::array();
+			for (const auto& light : g.lastPointLights) {
+				lights.push_back({ { "position", { light.position[0], light.position[1], light.position[2] } }, { "radius", light.radius },
+					{ "color", { light.color[0], light.color[1], light.color[2] } }, { "flags", light.flags } });
+			}
 			return {
 				{ "compiled_in_nrd", a_data.giCompiledIn },
 				{ "available", a_data.giAvailable },
@@ -218,9 +223,16 @@ namespace RT
 				{ "frames_traced", g.framesTraced },
 				{ "history_resets", g.historyResets },
 				{ "render_size", { g.renderWidth, g.renderHeight } },
-				{ "rays", { { "traced", g.counters[kGITraced] }, { "hit", g.counters[kGIHits] }, { "hit_sunlit", g.counters[kGISunLitHits] } } },
+				{ "rays", { { "traced", g.counters[kGITraced] }, { "hit", g.counters[kGIHits] }, { "hit_sunlit", g.counters[kGISunLitHits] },
+							  { "hit_point_light_sampled", g.counters[kGILightSampled] }, { "hit_point_light_occluded", g.counters[kGILightOccluded] } } },
 				{ "hit_percent", g.HitPercent() },
 				{ "sunlit_hit_percent", g.SunLitHitPercent() },
+				{ "point_lights", { { "count", g.pointLights }, { "dropped", g.pointLightsDropped }, { "sampled_hit_percent", g.LightSampledHitPercent() },
+									  { "occluded_percent", g.LightOccludedPercent() }, { "shadows", p.pointLightShadows }, { "inverse_square", p.inverseSquare },
+									  { "occluded_by_distance_to_light",
+										  { { "under_32", g.counters[kGIOccluderNear32] }, { "32_to_64", g.counters[kGIOccluderNear64] }, { "64_to_128", g.counters[kGIOccluderNear128] },
+											  { "128_and_over", g.counters[kGILightOccluded] - g.counters[kGIOccluderNear32] - g.counters[kGIOccluderNear64] - g.counters[kGIOccluderNear128] } } },
+									  { "lights_camera_relative", std::move(lights) } } },
 				{ "nrd_dispatches", g.nrdDispatches },
 				{ "params",
 					{ { "to_sun", { p.toSun[0], p.toSun[1], p.toSun[2] } },
@@ -231,7 +243,8 @@ namespace RT
 						{ "ao_strength", p.aoStrength },
 						{ "ray_length_units", p.rayLength },
 						{ "alpha_tested_casters", p.alphaTestedCasters },
-						{ "max_accumulated_frames", p.maxAccumulatedFrames } } },
+						{ "max_accumulated_frames", p.maxAccumulatedFrames },
+						{ "interior", p.interior } } },
 				{ "material_table",
 					{ { "textures", m.textures },
 						{ "pending", m.pending },

@@ -56,7 +56,9 @@ struct SkyrimRT : OverlayFeature
 		float GIAOStrength = 1.0f;
 		float GIRayLength = 3000.0f;  ///< game units
 		bool GIAlphaTested = true;
-		bool GIInteriors = false;  ///< ray-traced GI in interiors (no point-light bounce yet; else Screen-Space GI there)
+		bool GIInteriors = true;          ///< ray-traced GI in interiors (else Screen-Space GI there)
+		bool GIPointLights = true;        ///< bounce Light Limit Fix's point lights
+		bool GIPointLightShadows = true;  ///< trace visibility to the sampled point light
 		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames
 		uint32_t GIView = 0;      ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
 	};

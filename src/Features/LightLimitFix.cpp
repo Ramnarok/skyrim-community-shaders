@@ -415,7 +415,7 @@ void LightLimitFix::UpdateLights()
 		eyePositionCached = { eyePosition.x, eyePosition.y, eyePosition.z };
 	}
 
-	eastl::vector<LightData> lightsData{};
+	lightsData.clear();
 	lightsData.reserve(MAX_LIGHTS);
 
 	// Process point lights

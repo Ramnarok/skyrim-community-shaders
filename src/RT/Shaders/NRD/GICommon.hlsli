@@ -28,12 +28,37 @@ struct GIConstants
 	float AmbientMult;
 	uint ViewMode;  // debug view: 0 off, 1 noisy radiance, 2 denoised radiance, 3 ambient occlusion
 	uint Interior;  // the game doesn't shadow an interior's directional light, so neither does the bounce
+	uint PointLightCount;
+	uint PointLightShadows;     // trace a visibility ray to the sampled point light
+	uint InverseSquare;         // Inverse Square Lighting loaded: Lighting.hlsl uses its attenuation (ISL define)
+	float DirectionalLightMult; // Linear Lighting
 };
+
+// One of Light Limit Fix's lights (RT::GIPointLight).
+struct GIPointLight
+{
+	float3 Position;  // camera-relative, like the TLAS
+	float Radius;
+	float3 Color;  // Color::PointLight(color) x fade
+	float InvRadius;
+	float FadeZone;
+	float SizeBias;
+	uint Flags;  // LightLimitFix::LightFlags
+	float Pad;
+};
+
+static const uint kLightFlagDisabled = 1u << 9;       // LightLimitFix::LightFlags
+static const uint kLightFlagInverseSquare = 1u << 10;
 
 // Counter slots, mirrored in GlobalIllumination.h
 static const uint kGITraced = 0;
 static const uint kGIHits = 1;
 static const uint kGISunLitHits = 2;
+static const uint kGILightSampled = 3;
+static const uint kGILightOccluded = 4;
+static const uint kGIOccluderNear32 = 5;   // occluded samples by the blocker's distance from the light (game units)
+static const uint kGIOccluderNear64 = 6;
+static const uint kGIOccluderNear128 = 7;
 
 ConstantBuffer<GIConstants> C : register(b0);
 
@@ -75,6 +100,12 @@ float2 Random2(uint2 a_pixel, uint a_frame)
 	const uint h = Hash(a_pixel.x | (a_pixel.y << 16));
 	const float2 base = float2(h & 0xFFFFu, h >> 16) / 65536.0;
 	return frac(base + float2(0.7548776662, 0.5698402910) * float(a_frame & 1023u));
+}
+
+// Independent of Random2: white noise per pixel and frame.
+float Random1(uint2 a_pixel, uint a_frame)
+{
+	return float(Hash(Hash(a_pixel.x | (a_pixel.y << 16)) ^ (a_frame * 0x9E3779B9u)) >> 8) / 16777216.0;
 }
 
 // CS's Color::SkyrimGammaToLinear (Color.hlsli).

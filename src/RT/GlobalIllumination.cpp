@@ -37,8 +37,12 @@ namespace RT
 			float ambientMult;
 			uint32_t viewMode;
 			uint32_t interior;
+			uint32_t pointLightCount;
+			uint32_t pointLightShadows;
+			uint32_t inverseSquare;
+			float directionalLightMult;
 		};
-		static_assert(sizeof(GIConstants) == 352);
+		static_assert(sizeof(GIConstants) == 368);
 
 		constexpr uint32_t kMaskStatic = 0x01;  // InstanceMask bits, as Raytracer::Record assigns them
 		constexpr uint32_t kMaskTerrain = 0x02;
@@ -47,9 +51,10 @@ namespace RT
 		constexpr float kNormalBias = 1.0f;
 		constexpr float kDistanceBias = 0.002f;
 
-		constexpr uint64_t kUploadBytes = 4096;
 		constexpr uint64_t kConstantsOffset = 0;
 		constexpr uint64_t kZeroOffset = 512;
+		constexpr uint64_t kPointLightsOffset = 1024;
+		constexpr uint64_t kUploadBytes = kPointLightsOffset + sizeof(GIPointLight) * GlobalIllumination::kMaxPointLights;
 		constexpr uint64_t kCounterBytes = 64;
 		constexpr uint32_t kTimestampsPerSlot = 4;
 
@@ -146,7 +151,7 @@ namespace RT
 		pageRanges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, kMeshPageSlots, 0, 1, 0 };  // t0, space1: mesh pages
 		pageRanges[1] = GetAlphaAtlasRange(kAlphaAtlasDescriptor);                    // t0, space2: M7c alpha atlas
 
-		D3D12_ROOT_PARAMETER params[6]{};
+		D3D12_ROOT_PARAMETER params[7]{};
 		params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;  // b0
 		params[0].Descriptor = { 0, 0 };
 		params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  // t0: TLAS
@@ -159,11 +164,13 @@ namespace RT
 		params[4].DescriptorTable = { 2, tableRanges };
 		params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 		params[5].DescriptorTable = { 2, pageRanges };
+		params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;  // t6: point lights
+		params[6].Descriptor = { 6, 0 };
 		for (auto& param : params)
 			param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
 		const D3D12_STATIC_SAMPLER_DESC sampler = GetAlphaAtlasSampler();
-		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 6, .pParameters = params, .NumStaticSamplers = 1, .pStaticSamplers = &sampler };
+		D3D12_ROOT_SIGNATURE_DESC rootDesc{ .NumParameters = 7, .pParameters = params, .NumStaticSamplers = 1, .pStaticSamplers = &sampler };
 		winrt::com_ptr<ID3DBlob> blob, errors;
 		HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, blob.put(), errors.put());
 		if (FAILED(hr))
@@ -413,6 +420,13 @@ namespace RT
 		c->ambientMult = a_params.ambientMult;
 		c->viewMode = a_params.viewMode;
 		c->interior = a_params.interior ? 1u : 0u;
+		const uint32_t pointLightCount = static_cast<uint32_t>(std::min<size_t>(a_params.pointLights.size(), kMaxPointLights));
+		if (pointLightCount)
+			std::memcpy(uploadCpu[a_slot] + kPointLightsOffset, a_params.pointLights.data(), sizeof(GIPointLight) * pointLightCount);
+		c->pointLightCount = pointLightCount;
+		c->pointLightShadows = a_params.pointLightShadows ? 1u : 0u;
+		c->inverseSquare = a_params.inverseSquare ? 1u : 0u;
+		c->directionalLightMult = a_params.directionalLightMult;
 
 		auto first = heap->GetCPUDescriptorHandleForHeapStart();
 		UpdatePageDescriptors(device, a_meshPool, first, descriptorSize, describedPageSerials.data(), SkinnedMeshes::kFirstPageSlot);
@@ -436,6 +450,7 @@ namespace RT
 			a_list->SetComputeRootShaderResourceView(2, a_instances);
 			a_list->SetComputeRootUnorderedAccessView(3, counters->GetGPUVirtualAddress());
 			a_list->SetComputeRootDescriptorTable(5, table(0));
+			a_list->SetComputeRootShaderResourceView(6, uploadVA + kPointLightsOffset);
 		};
 		const uint32_t groupsX = (a_renderWidth + 7) / 8;
 		const uint32_t groupsY = (a_renderHeight + 7) / 8;
@@ -531,6 +546,11 @@ namespace RT
 		slotPending[a_slot] = true;
 		slotDispatches[a_slot] = denoiser.GetLastDispatchCount();
 		stats.params = a_params;
+		stats.params.pointLights = {};
+		stats.pointLights = pointLightCount;
+		stats.pointLightsDropped = static_cast<uint32_t>(a_params.pointLights.size() - pointLightCount);
+		if (a_captureDump)
+			stats.lastPointLights.assign(a_params.pointLights.begin(), a_params.pointLights.begin() + pointLightCount);
 		stats.renderWidth = a_renderWidth;
 		stats.renderHeight = a_renderHeight;
 		stats.framesTraced++;
@@ -562,8 +582,8 @@ namespace RT
 		stats.haveResult = true;
 
 		if (stats.framesTraced % 600 == 0) {
-			logger::info("[SkyrimRT] GI: {:.1f}% of {} rays hit, {:.1f}% of hits sunlit | trace {:.3f} ms NRD {:.3f} ms ({} dispatches) resolve {:.3f} ms | hand-off {:.3f} ms | history resets {}",
-				stats.HitPercent(), stats.counters[kGITraced], stats.SunLitHitPercent(), stats.traceMs.Average(), stats.denoiseMs.Average(),
+			logger::info("[SkyrimRT] GI: {:.1f}% of {} rays hit, {:.1f}% of hits sunlit, {:.1f}% sampled one of {} point lights ({:.1f}% occluded) | trace {:.3f} ms NRD {:.3f} ms ({} dispatches) resolve {:.3f} ms | hand-off {:.3f} ms | history resets {}",
+				stats.HitPercent(), stats.counters[kGITraced], stats.SunLitHitPercent(), stats.LightSampledHitPercent(), stats.pointLights, stats.LightOccludedPercent(), stats.traceMs.Average(), stats.denoiseMs.Average(),
 				stats.nrdDispatches, stats.resolveMs.Average(), stats.roundTripMs.Average(), stats.historyResets);
 		}
 	}
