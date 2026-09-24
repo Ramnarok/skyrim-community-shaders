@@ -77,6 +77,9 @@ namespace RT
 		bool distantLOD = false;
 		bool lodClip = false;
 		bool treeLOD = false;  // M8: one distant tree (a BGSDistantTreeBlock instance of its group's crossed-quad card)
+		// M8 water: a loaded cell's BSWaterShaderProperty plane (whole-cell, under the land too). Own mask (0x80), in no
+		// trace but the water queries: water doesn't shadow or occlude.
+		bool water = false;
 	};
 
 	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
@@ -162,6 +165,7 @@ namespace RT
 		uint32_t alphaTestedInstances = 0;  ///< Subset of static + terrain instances.
 		uint32_t alphaBlendedInstances = 0;  ///< Subset of static + terrain instances.
 		uint32_t decalInstances = 0;         ///< M8: subset of static + terrain instances that are decals (not traced)
+		uint32_t waterInstances = 0;         ///< M8: water planes in the TLAS (mask 0x80; counted under kEffectOrWater too)
 		bool grassWalked = false;           ///< BGSGrassManager::grassNode was found and walked
 		uint32_t grassBounds = 0;           ///< exclusion bounds contributed by grass
 		uint32_t uniqueStaticMeshes = 0;

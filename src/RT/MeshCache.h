@@ -111,6 +111,7 @@ namespace RT
 		bool windAnimated = false;  // M7c: see GeometryCandidate::windAnimated
 		bool distantLOD = false;    // M8: see GeometryCandidate::distantLOD
 		bool lodClip = false;       // M8: see GeometryCandidate::lodClip
+		bool water = false;         // M8: see GeometryCandidate::water (mask 0x80)
 	};
 
 	/**

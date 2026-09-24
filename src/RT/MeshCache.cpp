@@ -606,7 +606,8 @@ namespace RT
 				.decal = candidate.decal,
 				.windAnimated = candidate.windAnimated,
 				.distantLOD = candidate.distantLOD,
-				.lodClip = candidate.lodClip });
+				.lodClip = candidate.lodClip,
+				.water = candidate.water });
 		}
 	}
 }

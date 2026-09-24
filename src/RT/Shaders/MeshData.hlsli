@@ -25,6 +25,7 @@ static const uint kInstanceActor = 8;
 static const uint kInstanceWindAnimated = 16;  // M7c: kTreeAnim, swayed by the game's vertex shader (not in the TLAS)
 static const uint kInstanceDistantLOD = 32;    // M8: distant land / object LOD (TES::lodLandRoot); not in a room
 static const uint kInstanceLODClip = 64;       // M8: ... reaching into the loaded cells: Room = index of the clip record
+static const uint kInstanceWater = 128;        // M8: a loaded cell's water plane (mask kMaskWater only)
 
 // InstanceMask bits, mirrored in Raytracer.cpp
 static const uint kMaskStatic = 0x01;
@@ -33,6 +34,7 @@ static const uint kMaskActor = 0x04;  // M7 skinned
 static const uint kMaskAlphaTested = 0x08;
 static const uint kMaskExclusion = 0x10;
 static const uint kMaskDistantLOD = 0x40;  // M8
+static const uint kMaskWater = 0x80;       // M8: water planes, in the water queries only (never shadows or occludes)
 
 // Light Limit Fix room index of an instance (-1 = none), as Lighting.hlsl's RoomIndex. Distant LOD has none.
 int InstanceRoom(InstanceData a_data)

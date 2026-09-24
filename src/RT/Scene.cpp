@@ -69,6 +69,7 @@ namespace RT
 		using Feature = RE::BSShaderMaterial::Feature;
 
 		void FillMaterial(RE::BSLightingShaderProperty* a_property, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& a_geometryData, GeometryCandidate& a_candidate);
+		GeometryCategory FillMeshData(RE::BSGeometry* a_geometry, GeometryCandidate& a_candidate);
 
 		/** @param a_acceptLOD M8: extract LOD shape types like triangle shapes (the distant-LOD walk); else they're kLOD. */
 		GeometryCategory Classify(RE::BSGeometry* a_geometry, GeometryCandidate& a_candidate, bool a_acceptLOD = false)
@@ -111,8 +112,17 @@ namespace RT
 			if (geometryData.skinInstance)
 				return GeometryCategory::kSkinned;
 
+			const auto mesh = FillMeshData(a_geometry, a_candidate);
+			if (mesh != GeometryCategory::kStaticMesh)
+				return mesh;
+			return a_candidate.terrain ? GeometryCategory::kTerrain : GeometryCategory::kStaticMesh;
+		}
+
+		/** @brief The renderer buffers and counts of an unskinned tri shape: kStaticMesh when usable, else kNoRendererData / kSkinned. */
+		GeometryCategory FillMeshData(RE::BSGeometry* a_geometry, GeometryCandidate& a_candidate)
+		{
 			auto* triShape = a_geometry->AsTriShape();
-			auto* rendererData = geometryData.rendererData;
+			auto* rendererData = a_geometry->GetGeometryRuntimeData().rendererData;
 			if (!triShape || !rendererData)
 				return GeometryCategory::kNoRendererData;
 
@@ -127,7 +137,7 @@ namespace RT
 			a_candidate.rendererData = rendererData;
 			a_candidate.vertexCount = counts.vertexCount;
 			a_candidate.triangleCount = counts.triangleCount;
-			return a_candidate.terrain ? GeometryCategory::kTerrain : GeometryCategory::kStaticMesh;
+			return GeometryCategory::kStaticMesh;
 		}
 
 		void FillMaterial(RE::BSLightingShaderProperty* a_property, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& a_geometryData, GeometryCandidate& a_candidate)
@@ -1030,9 +1040,19 @@ namespace RT
 					AddExclusion(geometry, category, a_out);
 					break;
 				case GeometryCategory::kEffectOrWater:
-					if (a_out.waterShapes && netimmerse_cast<RE::BSWaterShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get()))
-						a_out.waterShapes->push_back(geometry);
-					break;  // effects, water and sky don't write the pre-water depth we compare against
+					// Effects, water and sky don't write the pre-water depth we compare against. M8: water planes go into the
+					// TLAS on their own mask, for the water queries only.
+					if (netimmerse_cast<RE::BSWaterShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get())) {
+						if (a_out.waterShapes)
+							a_out.waterShapes->push_back(geometry);
+						if (FillMeshData(geometry, candidate) == GeometryCategory::kStaticMesh) {
+							candidate.world = geometry->world;
+							candidate.water = true;
+							a_out.stats.waterInstances++;
+							a_out.candidates.push_back(candidate);
+						}
+					}
+					break;
 				default:
 					// Particles don't write the pre-water depth either.
 					break;
@@ -1333,7 +1353,7 @@ namespace RT
 		ankerl::unordered_dense::set<const void*> terrainMeshes;
 		ankerl::unordered_dense::set<const void*> treeMeshes;
 		for (const auto& candidate : a_out)
-			if (!candidate.skinned)
+			if (!candidate.skinned && !candidate.water)
 				(candidate.tree ? treeMeshes : candidate.terrain ? terrainMeshes : staticMeshes).insert(candidate.rendererData);
 		a_stats.uniqueStaticMeshes = static_cast<uint32_t>(staticMeshes.size());
 		a_stats.uniqueTerrainMeshes = static_cast<uint32_t>(terrainMeshes.size());

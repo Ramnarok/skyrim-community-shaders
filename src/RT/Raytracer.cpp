@@ -26,10 +26,12 @@ namespace RT
 		constexpr uint32_t kMaskActor = 0x04;         // M7 skinned
 		constexpr uint32_t kMaskAlphaBlended = 0x20;  // in no trace: alpha-blended (drawn after the pre-water depth copy) and decals
 		constexpr uint32_t kMaskDistantLOD = 0x40;    // M8: distant land and object LOD (TES::lodLandRoot)
+		constexpr uint32_t kMaskWater = 0x80;         // M8: loaded cells' water planes, only in the water queries
 
-		// InstanceData.Flags bits 5-6 (M8 distant LOD); bits 0-4 are the older flags, 8-31 the albedo word.
+		// InstanceData.Flags bits 5-7 (M8 distant LOD, water); bits 0-4 are the older flags, 8-31 the albedo word.
 		constexpr uint32_t kInstanceDataDistantLOD = 32;
 		constexpr uint32_t kInstanceDataLODClip = 64;  // Room = index of the clip record: hits inside the loaded cells are rejected
+		constexpr uint32_t kInstanceDataWater = 128;  // M8: bit 7, a water plane
 
 		// Descriptor heap layout.
 		constexpr uint32_t kDepthDescriptor = 0;
@@ -383,8 +385,8 @@ namespace RT
 				desc.Transform[row][3] = translate[row];
 			}
 			desc.InstanceID = i;
-			desc.InstanceMask = record.distantLOD ? kMaskDistantLOD : record.actor ? kMaskActor : record.alphaBlended || record.decal ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
-			uint32_t flags = (record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u) | (record.albedoWord << 8);
+			desc.InstanceMask = record.water ? kMaskWater : record.distantLOD ? kMaskDistantLOD : record.actor ? kMaskActor : record.alphaBlended || record.decal ? kMaskAlphaBlended : record.alphaTested ? kMaskAlphaTested : record.terrain ? kMaskTerrain : kMaskStatic;
+			uint32_t flags = (record.terrain ? 1u : 0u) | (record.alphaTested ? 2u : 0u) | (record.alphaBlended ? 4u : 0u) | (record.actor ? 8u : 0u) | (record.windAnimated ? 16u : 0u) | (record.water ? kInstanceDataWater : 0u) | (record.albedoWord << 8);
 			uint32_t alpha = record.alpha;
 			uint32_t room = record.room;
 			// M8: distant LOD reaching into the loaded cells is non-opaque; every trace rejects its hits inside them

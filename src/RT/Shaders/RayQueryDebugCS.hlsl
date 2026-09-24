@@ -59,6 +59,10 @@ static const uint kOutsideNearer = 16;
 static const uint kOutsideFarther = 17;
 static const uint kOutsideMiss = 18;
 static const uint kOutsideHitLOD = 19;  // ... whose traced hit is a distant-LOD instance
+// M8 water: pixels whose camera ray meets a water plane before the pre-pass depth (the game draws water after it),
+// and those of them where the pre-pass depth is sky (water against the horizon).
+static const uint kWaterPixels = 20;
+static const uint kWaterOverSky = 21;
 
 void Count(uint a_slot, bool a_condition)
 {
@@ -245,11 +249,25 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	Count(kOutsideMiss, outside && !hit);
 	Count(kOutsideHitLOD, outside && hit && (hitData.Flags & kInstanceDistantLOD) != 0);
 
+	// M8 water: the first water plane in front of the opaque surface (the planes cover whole cells, under the land too).
+	RayDesc waterRay = ray;
+	waterRay.TMax = sky ? maxT : rasterT * 0.999;
+	RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> waterQuery;
+	waterQuery.TraceRayInline(Scene, RAY_FLAG_NONE, kMaskWater, waterRay);
+	waterQuery.Proceed();
+	const bool waterHit = waterQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+	Count(kWaterPixels, waterHit);
+	Count(kWaterOverSky, waterHit && sky);
+
 	// Depth view: near = bright, log scaled; misses dark blue.
 	const float depthValue = 1.0 - saturate(log2(1.0 + t) / log2(1.0 + C.MaxDistance));
 	DepthView[dispatchID.xy] = hit ? float4(depthValue.xxx, 1.0) : float4(0.0, 0.0, 0.25, 1.0);
 
-	InstanceView[dispatchID.xy] = hit ? float4(HashColor(query.CommittedInstanceIndex()), 1.0) : float4(0.0, 0.0, 0.0, 1.0);
+	float3 instanceColor = hit ? HashColor(query.CommittedInstanceIndex()) : float3(0.0, 0.0, 0.0);
+	// M8: water pixels tinted cyan over what lies beneath.
+	if (waterHit)
+		instanceColor = lerp(instanceColor, float3(0.0, 0.8, 1.0), 0.65);
+	InstanceView[dispatchID.xy] = float4(instanceColor, 1.0);
 
 	NormalView[dispatchID.xy] = any(hitNormal != 0.0) ? float4(hitNormal * 0.5 + 0.5, 1.0) : float4(0.0, 0.0, 0.0, 1.0);
 

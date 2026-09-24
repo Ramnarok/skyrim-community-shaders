@@ -128,6 +128,7 @@ namespace RT
 				{ "alpha_tested_instances", s.alphaTestedInstances },
 				{ "alpha_blended_instances", s.alphaBlendedInstances },
 				{ "decal_instances_not_traced", s.decalInstances },
+				{ "water_instances", s.waterInstances },
 				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
 				{ "mesh_lod_shapes", { { "walked", s.meshLODShapes }, { "alternates_skipped", s.meshLODAlternates }, { "all_skipped_diagnostic", s.meshLODSkipped } } },
@@ -228,6 +229,9 @@ namespace RT
 						{ "traced_miss", t.counters[kOutsideMiss] },
 						{ "hit_distant_lod", t.counters[kOutsideHitLOD] },
 						{ "mismatch_percent", t.OutsideMismatchPercent() } } },
+				// M8 water: pixels whose camera ray meets a water plane (mask 0x80) in front of the opaque scene.
+				{ "water", { { "pixels", t.counters[kWaterPixels] }, { "over_sky", t.counters[kWaterOverSky] },
+							   { "percent_of_render", t.counters[kRenderPixels] ? 100.0f * t.counters[kWaterPixels] / t.counters[kRenderPixels] : 0.0f } } },
 				{ "timings_ms", { { "blas_builds", TimingJson(t.blasBuildMs) }, { "tlas_build", TimingJson(t.tlasBuildMs) }, { "trace", TimingJson(t.traceMs) } } },
 				{ "blas", { { "built", c.blasBuilt }, { "pending", c.blasPending }, { "built_last_frame", c.blasBuiltLastFrame }, { "total_built", c.blasTotalBuilt }, { "failed", c.blasFailed }, { "blas_mb", c.blasBytes / kMB }, { "as_pool_reserved_mb", c.asPoolBytes / kMB } } },
 				{ "loaded_area", { { "bounded", t.area.bounded }, { "min_xy", { t.area.min.x, t.area.min.y } }, { "max_xy", { t.area.max.x, t.area.max.y } } } },

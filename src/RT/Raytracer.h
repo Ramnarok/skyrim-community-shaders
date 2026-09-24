@@ -38,6 +38,8 @@ namespace RT
 		kOutsideFarther,
 		kOutsideMiss,
 		kOutsideHitLOD,  ///< ... whose traced hit is a distant-LOD instance
+		kWaterPixels,   ///< M8: pixels whose camera ray meets a water plane before the pre-pass depth
+		kWaterOverSky,  ///< ... of them, where the pre-pass depth is sky
 		kCounterCount
 	};
 
