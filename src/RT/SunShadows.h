@@ -67,9 +67,9 @@ namespace RT
 		float toSun[3]{};
 		float coneHalfAngleDegrees = 0.0f;
 		uint32_t pointLights = 0;  ///< M8 point-light variant: lights uploaded last traced frame
-		uint32_t pointLightsShadowMapped = 0;  ///< ... of which the game shadow-maps (not traced)
+		uint32_t pointLightsShadowMapped = 0;  ///< ... of which the game shadow-maps (M9: traced too; Lighting.hlsl skips their shadow map)
 		uint32_t pointLightsPortalStrict = 0;  ///< ... of the traced, room-limited (portal-strict): traced where their rooms are
-		uint32_t pointLightsTraced = 0;        ///< ... all but the shadow-mapped: the lights the mask covers
+		uint32_t pointLightsTraced = 0;        ///< ... all but disabled ones: the lights the mask covers
 		uint32_t textureWidth = 0;
 		uint32_t textureHeight = 0;
 		uint32_t renderWidth = 0;  ///< region of the mask written by the last traced frame

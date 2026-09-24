@@ -16,9 +16,10 @@ RWTexture2D<unorm float> RawVisibility : register(u0);
 RWTexture2D<float4> Geometry : register(u1);  // xyz: reconstructed normal (camera-relative world space)
 RWByteAddressBuffer Counters : register(u4);
 
-// The game shadow-maps Shadow lights. Portal-strict lights are traced where Lighting.hlsl applies them: the pixel's
-// room comes from the instance a primary ray finds (PixelRoom), tested as LightLimitFix::IsLightIgnored does.
-static const uint kSkippedLights = kLightFlagShadow | kLightFlagDisabled;
+// M9: every light, the shadow-mapped ones included (Lighting.hlsl then skips the game's shadow map for them). Portal-strict
+// lights are traced where Lighting.hlsl applies them: the pixel's room comes from the instance a primary ray finds
+// (PixelRoom), tested as LightLimitFix::IsLightIgnored does.
+static const uint kSkippedLights = kLightFlagDisabled;
 static const uint kPrimaryMask = 0x0F;  // static | terrain | actor | alpha-tested: what the depth pre-pass draws
 
 // Light Limit Fix room of the instance drawn at the pixel (Lighting.hlsl's RoomIndex for that draw), or -1. The primary

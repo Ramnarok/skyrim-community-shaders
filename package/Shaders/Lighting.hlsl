@@ -2371,8 +2371,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		else
 
 #			if defined(SKYRIM_RT) && defined(DEFERRED)
-	// Skyrim RT: ray-traced visibility of the unshadowed point lights (1 when not tracing).
-	const float skyrimRTPointLightShadow = inReflection ? 1.0 : SkyrimRT::GetPointLightShadow(input.Position);
+	// Skyrim RT: ray-traced visibility of every point light, in place of the game's point-light shadow maps (M9); when not
+	// tracing (or in a reflection) the vanilla path.
+	const bool skyrimRTPointLights = !inReflection && SkyrimRT::IsPointLightShadowBound();
+	const float skyrimRTPointLightShadow = skyrimRTPointLights ? SkyrimRT::GetPointLightShadow(input.Position) : 1.0;
 #			endif
 
 	uint numClusteredLights = 0;
@@ -2419,13 +2421,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float shadowComponent = 1.0;
 		if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow) {
 			if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
-				shadowComponent = shadowColor[light.shadowLightIndex];
-				lightShadow *= shadowComponent;
+#			if defined(SKYRIM_RT) && defined(DEFERRED)
+				if (!skyrimRTPointLights)
+#			endif
+				{
+					shadowComponent = shadowColor[light.shadowLightIndex];
+					lightShadow *= shadowComponent;
+				}
 			}
 		}
 #			if defined(SKYRIM_RT) && defined(DEFERRED)
-		if (SkyrimRT::IsPointLightRayTraced(light.lightFlags))
-			lightShadow *= skyrimRTPointLightShadow;
+		lightShadow *= skyrimRTPointLightShadow;
 #			endif
 
 		float3 normalizedLightDirection = normalize(lightDirection);

@@ -390,15 +390,20 @@ namespace RT
 		if (settings.pointLightCount)
 			std::memcpy(uploadCpu[a_slot] + kPointLightsOffset, a_params.lights.data(), sizeof(PointLight) * settings.pointLightCount);
 		settings.inverseSquare = a_params.inverseSquare;
-		// Which lights the trace covers (PointLightShadowTraceCS's kSkippedLights: all but shadow-mapped and disabled);
-		// room-limited ones among them need the per-pixel room.
+		// Which lights the trace covers (PointLightShadowTraceCS's kSkippedLights: all but disabled; M9: the shadow-mapped
+		// ones too); room-limited ones among them need the per-pixel room.
 		constexpr uint32_t kPortalStrict = 1u << 0;  // LightLimitFix::LightFlags
 		constexpr uint32_t kShadow = 1u << 1;
-		uint32_t shadowMapped = 0, portalStrict = 0;
+		constexpr uint32_t kDisabled = 1u << 9;
+		uint32_t shadowMapped = 0, portalStrict = 0, disabled = 0;
 		for (uint32_t i = 0; i < settings.pointLightCount; i++) {
 			const uint32_t flags = a_params.lights[i].flags;
+			if (flags & kDisabled) {
+				disabled++;
+				continue;
+			}
 			shadowMapped += (flags & kShadow) != 0;
-			portalStrict += (flags & (kShadow | kPortalStrict)) == kPortalStrict;
+			portalStrict += (flags & kPortalStrict) != 0;
 		}
 		settings.roomTest = portalStrict > 0;
 		settings.alphaTestedCasters = a_params.alphaTestedCasters;
@@ -411,7 +416,7 @@ namespace RT
 		stats.pointLights = settings.pointLightCount;
 		stats.pointLightsShadowMapped = shadowMapped;
 		stats.pointLightsPortalStrict = portalStrict;
-		stats.pointLightsTraced = settings.pointLightCount - shadowMapped;
+		stats.pointLightsTraced = settings.pointLightCount - disabled;
 	}
 
 	void SunShadows::RecordPasses(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
