@@ -35,6 +35,9 @@ namespace RT
 			return;  // albedoWord stays 0: the average albedo
 
 		atlas.BeginFrame();
+		ID3D11ShaderResourceView* lastSRV = nullptr;
+		TextureAtlas::Result lastResult{};
+		uint32_t lastTile = 0;
 		for (auto& candidate : a_candidates) {
 			if (candidate.alphaBlended || candidate.decal)
 				continue;  // in no trace
@@ -50,8 +53,18 @@ namespace RT
 				continue;
 			}
 
+			// Consecutive candidates with one texture (M8 tree LOD) reuse the last tile lookup.
 			uint32_t tile = 0;
-			const auto result = atlas.Acquire(candidate.diffuseSRV, a_frame, tile);
+			TextureAtlas::Result result;
+			if (candidate.diffuseSRV == lastSRV) {
+				result = lastResult;
+				tile = lastTile;
+			} else {
+				result = atlas.Acquire(candidate.diffuseSRV, a_frame, tile);
+				lastSRV = candidate.diffuseSRV;
+				lastResult = result;
+				lastTile = tile;
+			}
 			if (result == TextureAtlas::Result::kUnsupported) {
 				stats.candidatesUnsupported++;
 				continue;

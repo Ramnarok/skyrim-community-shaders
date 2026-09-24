@@ -552,6 +552,30 @@ namespace RT
 			return a_stats.atlasLoaded ? source->rendererTexture->resourceView : nullptr;
 		}
 
+		// M8: per tree group, its trees' world transforms (decoding and composing them cost ~0.5 ms a frame for 7,000 trees).
+		// Keyed by the group; valid while its instance array, size and block origin are unchanged. Render thread only.
+		struct CachedTreeGroup
+		{
+			const void* instances = nullptr;
+			uint32_t count = 0;
+			RE::NiPoint3 origin;
+			std::vector<RE::NiTransform> worlds;
+			std::vector<bool> valid;
+			uint64_t seenWalk = 0;
+		};
+
+		ankerl::unordered_dense::map<const void*, CachedTreeGroup>& TreeGroupCache()
+		{
+			static ankerl::unordered_dense::map<const void*, CachedTreeGroup> cache;
+			return cache;
+		}
+
+		uint64_t& TreeGroupWalk()
+		{
+			static uint64_t walk = 0;
+			return walk;
+		}
+
 		constexpr float kTreeLODMaxDistance = 60000.0f;    // beyond the traces' 50,000-unit rays, plus a margin
 		constexpr float kTreeLODRadiusPerScale = 1500.0f;  // bound radius per unit of instance scale (billboards ~1,000-1,400 tall)
 
@@ -607,29 +631,50 @@ namespace RT
 				return;
 			}
 
+			// The decoded transforms only change when the block reloads (a new instance array) or moves: cached per group.
+			auto& cached = TreeGroupCache()[&a_group];
+			const auto& origin = geometry->world.translate;
+			const bool moved = cached.origin.x != origin.x || cached.origin.y != origin.y || cached.origin.z != origin.z;
+			if (cached.instances != a_group.instances.data() || cached.count != a_group.instances.size() || moved) {
+				cached.instances = a_group.instances.data();
+				cached.count = a_group.instances.size();
+				cached.origin = origin;
+				cached.worlds.resize(cached.count);
+				cached.valid.assign(cached.count, false);
+				for (uint32_t i = 0; i < cached.count; i++) {
+					const auto& instance = a_group.instances[i];
+					using DirectX::PackedVector::XMConvertHalfToFloat;
+					const RE::NiPoint3 local(XMConvertHalfToFloat(instance.x), XMConvertHalfToFloat(instance.y), XMConvertHalfToFloat(instance.z));
+					const float rotZ = XMConvertHalfToFloat(instance.rotZ);
+					const float scale = XMConvertHalfToFloat(instance.scale);
+					if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || !std::isfinite(rotZ) || !(scale > 0.0f) || scale > 100.0f)
+						continue;
+					RE::NiTransform localTransform;
+					const float c = std::cos(rotZ), s = std::sin(rotZ);
+					localTransform.rotate = RE::NiMatrix3(RE::NiPoint3(c, -s, 0.0f), RE::NiPoint3(s, c, 0.0f), RE::NiPoint3(0.0f, 0.0f, 1.0f));
+					localTransform.scale = scale;
+					localTransform.translate = local;
+					cached.worlds[i] = geometry->world * localTransform;
+					cached.valid[i] = true;
+				}
+				a_stats.groupsDecoded++;
+			}
+			cached.seenWalk = TreeGroupWalk();
+
 			const auto& area = *a_target.area;
-			for (const auto& instance : a_group.instances) {
-				if (instance.hidden) {
+			for (uint32_t i = 0; i < cached.count; i++) {
+				if (a_group.instances[i].hidden) {
 					a_stats.skippedHidden++;
 					continue;
 				}
-				using DirectX::PackedVector::XMConvertHalfToFloat;
-				const RE::NiPoint3 local(XMConvertHalfToFloat(instance.x), XMConvertHalfToFloat(instance.y), XMConvertHalfToFloat(instance.z));
-				const float rotZ = XMConvertHalfToFloat(instance.rotZ);
-				const float scale = XMConvertHalfToFloat(instance.scale);
-				if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z) || !std::isfinite(rotZ) || !(scale > 0.0f) || scale > 100.0f) {
+				if (!cached.valid[i]) {
 					a_stats.skippedInvalid++;
 					continue;
 				}
-				RE::NiTransform localTransform;
-				const float c = std::cos(rotZ), s = std::sin(rotZ);
-				localTransform.rotate = RE::NiMatrix3(RE::NiPoint3(c, -s, 0.0f), RE::NiPoint3(s, c, 0.0f), RE::NiPoint3(0.0f, 0.0f, 1.0f));
-				localTransform.scale = scale;
-				localTransform.translate = local;
-				const RE::NiTransform world = geometry->world * localTransform;
+				const RE::NiTransform& world = cached.worlds[i];
 
 				// Inside the loaded cells the game draws the full tree; beyond the rays' reach nothing can hit it.
-				const float radius = kTreeLODRadiusPerScale * scale;
+				const float radius = kTreeLODRadiusPerScale * world.scale;
 				const auto& p = world.translate;
 				const bool insideLoaded = area.bounded && p.x >= area.min.x + radius && p.x <= area.max.x - radius && p.y >= area.min.y + radius && p.y <= area.max.y - radius;
 				if (insideLoaded) {
@@ -672,6 +717,7 @@ namespace RT
 			a_out.rootNodeHex = HexBytes(manager->rootNode, sizeof(RE::BGSTerrainNode));
 			// The atlas belongs to the worldspace that owns the LOD (a child worldspace may use its parent's).
 			TreeLODTarget target = a_target;
+			const uint64_t walk = ++TreeGroupWalk();
 			if (target.candidates)
 				target.atlasSRV = TreeLODAtlas(manager->worldSpace, a_out);
 			a_out.stage = 4;
@@ -721,6 +767,10 @@ namespace RT
 					}
 				}
 			}
+			// Groups not seen this walk (their blocks detached) drop their cached transforms.
+			if (target.candidates)
+				std::erase_if(TreeGroupCache(), [walk](const auto& a_entry) { return a_entry.second.seenWalk != walk; });
+			a_out.cachedGroups = static_cast<uint32_t>(TreeGroupCache().size());
 		}
 
 		// Its own guard: a fault here (layout mismatch) must not drop the frame's scene. Kept free of C++ objects for __try.

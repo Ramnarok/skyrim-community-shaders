@@ -127,20 +127,30 @@ namespace RT
 
 		// The queue only ever holds SRVs seen this frame: game textures may unload between frames.
 		queue.clear();
+		// Consecutive candidates with one texture (M8 tree LOD: thousands sharing the billboard atlas) reuse the last lookup.
+		ID3D11ShaderResourceView* lastSRV = nullptr;
+		bool lastReady = false;
+		uint32_t lastPlain = 0, lastWeighted = 0;
 		for (auto& candidate : a_candidates) {
 			candidate.albedo = kDefaultAlbedo;
 			if (!candidate.diffuseSRV) {
 				stats.candidatesWithoutTexture++;
 				continue;
 			}
-			auto& entry = entries[candidate.diffuseSRV];
-			if (entry.validatedFrame != a_frame) {
-				entry.validatedFrame = a_frame;
-				if (Validate(candidate.diffuseSRV, entry) && !entry.ready)
-					queue.push_back(candidate.diffuseSRV);
+			if (candidate.diffuseSRV != lastSRV) {
+				auto& entry = entries[candidate.diffuseSRV];
+				if (entry.validatedFrame != a_frame) {
+					entry.validatedFrame = a_frame;
+					if (Validate(candidate.diffuseSRV, entry) && !entry.ready)
+						queue.push_back(candidate.diffuseSRV);
+				}
+				lastSRV = candidate.diffuseSRV;
+				lastReady = entry.ready;
+				lastPlain = entry.plain;
+				lastWeighted = entry.weighted;
 			}
-			if (entry.ready)
-				candidate.albedo = candidate.alphaTested ? entry.weighted : entry.plain;
+			if (lastReady)
+				candidate.albedo = candidate.alphaTested ? lastWeighted : lastPlain;
 			else
 				stats.candidatesDefaulted++;
 		}

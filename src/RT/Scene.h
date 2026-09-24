@@ -244,6 +244,8 @@ namespace RT
 			// Traced trees (one candidate each) and why the others weren't.
 			uint32_t traced = 0, clipped = 0, skippedHidden = 0, skippedInsideLoaded = 0, skippedFar = 0, skippedInvalid = 0, groupsWithoutTexture = 0;
 			uint32_t texturesFromVisitor = 0;  ///< groups whose billboard texture came from ForEachTexture
+			uint32_t groupsDecoded = 0;        ///< groups whose transforms were (re)decoded this frame (else cached)
+			uint32_t cachedGroups = 0;         ///< groups in the transform cache after this walk
 			std::string textureName;           ///< the first billboard texture found
 			std::string atlasPath;             ///< the worldspace's tree billboard atlas, loaded by path
 			bool atlasLoaded = false;

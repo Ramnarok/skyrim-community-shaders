@@ -76,7 +76,8 @@ namespace RT
 				{ "skipped", { { "hidden", a_tree.skippedHidden }, { "inside_loaded_cells", a_tree.skippedInsideLoaded }, { "beyond_60000_units", a_tree.skippedFar },
 								 { "invalid_instance_data", a_tree.skippedInvalid } } },
 				{ "groups_without_texture", a_tree.groupsWithoutTexture }, { "textures_from_visitor", a_tree.texturesFromVisitor }, { "texture_name", a_tree.textureName },
-				{ "atlas", { { "path", a_tree.atlasPath }, { "loaded", a_tree.atlasLoaded } } }, { "tree_layers", a_tree.treeLayers },
+				{ "atlas", { { "path", a_tree.atlasPath }, { "loaded", a_tree.atlasLoaded } } },
+				{ "transform_cache", { { "groups_decoded_this_frame", a_tree.groupsDecoded }, { "groups_cached", a_tree.cachedGroups } } }, { "tree_layers", a_tree.treeLayers },
 				{ "blocks", a_tree.blocks }, { "blocks_attached", a_tree.blocksAttached }, { "groups", a_tree.groups }, { "groups_with_geometry", a_tree.groupsWithGeometry },
 				{ "instances", a_tree.instances }, { "hidden_instances", a_tree.hiddenInstances }, { "samples", samples } };
 		}

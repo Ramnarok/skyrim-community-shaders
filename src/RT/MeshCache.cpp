@@ -329,10 +329,19 @@ namespace RT
 				entry.state = State::kResident;
 		}
 
-		// 1. Mark every mesh seen this frame; register new ones.
+		// 1. Mark every mesh seen this frame; register new ones. Consecutive candidates of one mesh (M8 tree LOD: thousands
+		// of instances per group) need one lookup.
+		MeshKey previousKey{};
+		bool havePrevious = false;
+		bool previousSkinned = false;
 		for (const auto& candidate : a_candidates) {
 			auto* rendererData = candidate.rendererData;
 			const MeshKey key = MakeKey(candidate);
+			if (havePrevious && key == previousKey && candidate.skinned == previousSkinned)
+				continue;
+			havePrevious = true;
+			previousKey = key;
+			previousSkinned = candidate.skinned;
 			auto [it, inserted] = entries.try_emplace(key);
 			auto& entry = it->second;
 			entry.lastSeenFrame = a_frame;
@@ -560,13 +569,23 @@ namespace RT
 	void MeshCache::GatherInstances(const std::vector<GeometryCandidate>& a_candidates, std::vector<InstanceRecord>& a_out) const
 	{
 		a_out.clear();
+		// Consecutive candidates of one mesh (M8 tree LOD) reuse the previous lookup; nothing is inserted during the loop.
+		MeshKey previousKey{};
+		const MeshEntry* previous = nullptr;
+		bool havePrevious = false;
 		for (const auto& candidate : a_candidates) {
 			if (candidate.skinned)
 				continue;
-			auto it = entries.find(MakeKey(candidate));
-			if (it == entries.end() || !it->second.blasAllocation.IsValid())
+			const MeshKey key = MakeKey(candidate);
+			if (!havePrevious || key != previousKey) {
+				auto it = entries.find(key);
+				previous = it != entries.end() ? &it->second : nullptr;
+				previousKey = key;
+				havePrevious = true;
+			}
+			if (!previous || !previous->blasAllocation.IsValid())
 				continue;
-			const auto& entry = it->second;
+			const auto& entry = *previous;
 			a_out.push_back({ .blas = asPool.GetAddress(entry.blasAllocation),
 				.world = candidate.world,
 				.vertexPage = entry.vertexAllocation.page,
