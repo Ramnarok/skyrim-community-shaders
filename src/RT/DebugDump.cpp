@@ -49,7 +49,9 @@ namespace RT
 				{ "alpha_blended_instances", s.alphaBlendedInstances },
 				{ "grass", { { "walked", s.grassWalked }, { "exclusion_bounds", s.grassBounds } } },
 				{ "unique_meshes", { { "static_mesh", s.uniqueStaticMeshes }, { "terrain", s.uniqueTerrainMeshes } } },
-				{ "trees", { { "skinned_shapes", s.treeShapes }, { "rest_pose_shapes", s.treeRestPoseShapes } } },
+				{ "trees", { { "shapes", s.treeShapes }, { "leaf_anim_shapes", s.leafAnimShapes },{ "rest_pose_shapes", s.treeRestPoseShapes }, { "static_shapes", s.treeStaticShapes },
+							   { "static_partitions", s.treeStaticPartitions }, { "static_unique_meshes", s.uniqueTreeMeshes },
+							   { "half_position_partitions_skinned", s.treeHalfPositionPartitions } } },
 				{ "instances_in_lit_rooms", s.instancesInRooms }, { "lit_room_nodes", s.roomNodes },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};

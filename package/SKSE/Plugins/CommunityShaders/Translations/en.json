@@ -1492,6 +1492,8 @@
     "feature.skyrim_rt.skinned_shapes": "Skinned shapes traced",
     "feature.skyrim_rt.skipped_types": "Skipped: skinned / dynamic / instanced / LOD",
     "feature.skyrim_rt.static_meshes": "Static mesh instances",
+    "feature.skyrim_rt.static_trees": "Trace trees as static meshes",
+    "feature.skyrim_rt.static_trees_tooltip": "In their rest pose a tree's bones all share one transform, so the tree can be traced like any static mesh: its acceleration structure is built once instead of being skinned and refitted every frame. Same result, less GPU work.",
     "feature.skyrim_rt.sun_angular_radius": "Sun angular radius",
     "feature.skyrim_rt.sun_angular_radius_tooltip": "Apparent size of the sun. Larger values give wider, softer shadow edges. The real sun is about 0.27 degrees.",
     "feature.skyrim_rt.sun_shadows": "Ray-traced sun shadows",

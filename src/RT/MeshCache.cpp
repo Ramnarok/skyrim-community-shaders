@@ -336,6 +336,10 @@ namespace RT
 			auto [it, inserted] = entries.try_emplace(key);
 			auto& entry = it->second;
 			entry.lastSeenFrame = a_frame;
+			// M8: the same bind-pose buffers can be a skinned source and a static instance (a rest-pose tree, after
+			// switching TreeMode): any static use needs the BLAS.
+			if (!candidate.skinned)
+				entry.skinned = false;
 			if (!inserted)
 				continue;
 

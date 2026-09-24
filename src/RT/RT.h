@@ -249,6 +249,8 @@ namespace RT
 	void SetAlphaTest(bool a_enabled);
 	/** @brief M7: trace trees in their rest pose instead of their swaying bones' current pose. */
 	void SetTreeRestPose(bool a_enabled);
+	/** @brief M8: trace rest-pose trees as static instances of their bind-pose meshes instead of skinning them each frame. */
+	void SetStaticTrees(bool a_enabled);
 	/** @brief M7c alpha-atlas stats, or nullptr. */
 	const struct AlphaAtlasStats* GetAlphaAtlasStats();
 	/** @brief M7 skinning stats, or nullptr. */

@@ -219,6 +219,12 @@ namespace RT
 			sidecar->SetTreeRestPose(a_enabled);
 	}
 
+	void SetStaticTrees(bool a_enabled)
+	{
+		if (sidecar)
+			sidecar->SetStaticTrees(a_enabled);
+	}
+
 	const AlphaAtlasStats* GetAlphaAtlasStats()
 	{
 		return sidecar ? &sidecar->GetAlphaAtlasStats() : nullptr;

@@ -827,7 +827,8 @@ namespace RT
 #endif
 
 		// Scene first: the TLAS is built from this frame's instances.
-		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats, treeRestPose);
+		inWorld = CollectScene(candidates, skinnedScene, exclusions, loadedArea, sceneStats,
+			!treeRestPose ? TreeMode::kLiveBones : staticTrees ? TreeMode::kRestStatic : TreeMode::kRestSkinned);
 		if (inWorld)
 			sceneTraversalMs.Add(sceneStats.traversalMs);
 		// M8: each instance's Light Limit Fix room (its RoomIndex in Lighting.hlsl) for the portal-strict light test.

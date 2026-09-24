@@ -30,13 +30,29 @@ namespace RT
 			return true;
 		}
 
-		bool IsUnderTree(const RE::NiAVObject* a_object)
+		// Skinned vertices: positions are float3 + pad (16 B) unless the next attribute starts at 8 (4 x half).
+		bool HasHalfPositions(const RE::BSGraphics::VertexDesc& a_desc)
+		{
+			return a_desc.HasFlag(RE::BSGraphics::Vertex::VF_UV) ? a_desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0) == 8 :
+			                                                         a_desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_SKINNING) == 8;
+		}
+
+		enum class SwayRoot : uint8_t
+		{
+			kNone,
+			kTree,      // BSTreeNode
+			kLeafAnim,  // M8: a plain BSLeafAnimNode (BSTreeNode's base): swaying plants, re-posed by the same OnVisible
+		};
+
+		SwayRoot FindSwayRoot(const RE::NiAVObject* a_object)
 		{
 			for (auto* node = a_object ? a_object->parent : nullptr; node; node = node->parent) {
 				if (netimmerse_cast<RE::BSTreeNode*>(node))
-					return true;
+					return SwayRoot::kTree;
+				if (netimmerse_cast<RE::BSLeafAnimNode*>(node))
+					return SwayRoot::kLeafAnim;
 			}
-			return false;
+			return SwayRoot::kNone;
 		}
 
 		using Type = RE::BSGeometry::Type;
@@ -138,7 +154,7 @@ namespace RT
 			SkinnedScene& skinned;
 			std::vector<ExclusionBound>& exclusions;
 			SceneStats& stats;
-			bool treeRestPose = true;  // M7: trees in their rest pose (see CollectSkinned)
+			TreeMode treeMode = TreeMode::kRestStatic;  // see CollectSkinned
 			const RE::NiNode* room = nullptr;  // M8: nearest BSMultiBoundRoom / BSPortalSharedNode above the walk position
 		};
 
@@ -154,7 +170,8 @@ namespace RT
 
 		/**
 		 * @brief M7: one candidate per skin partition (bind-pose buffers + this shape's material) and its bone palette,
-		 * boneWorld * skinToBone for each palette bone, computed now while the game's pointers are valid.
+		 * boneWorld * skinToBone for each palette bone, computed now while the game's pointers are valid. M8: a rest-pose
+		 * tree's partitions become static candidates instead (TreeMode::kRestStatic), with no palette.
 		 * @return False if nothing usable was found; the caller then keeps an exclusion bound as before.
 		 */
 		bool CollectSkinned(RE::BSGeometry* a_geometry, const GeometryCandidate& a_material, WalkOutput& a_out)
@@ -185,13 +202,25 @@ namespace RT
 			// Skylighting's occlusion pass) re-poses those bones (BSLeafAnimNode::OnVisible), so the pose left at this walk
 			// belongs to whichever camera culled last, not necessarily the view (measured: trunks a full width off). A tree
 			// is traced in its rest pose instead, every bone at rootParent * inverse(rootParentToSkin); the root doesn't sway.
-			const bool tree = IsUnderTree(a_geometry);
+			// M8: BSTreeNode derives from BSLeafAnimNode, and BSLeafAnimNode::OnVisible is what re-poses the bones, so plants
+			// under a plain BSLeafAnimNode have the trees' problem and get the same treatment.
+			const SwayRoot swayRoot = FindSwayRoot(a_geometry);
+			const bool tree = swayRoot != SwayRoot::kNone;
 			float restRow[12];
-			const bool restPose = tree && a_out.treeRestPose && skin->rootParent;
-			if (restPose)
-				TransformTo3x4(skin->rootParent->world * skinData->rootParentToSkin.Invert(), restRow);
+			RE::NiTransform restTransform;
+			const bool restPose = tree && a_out.treeMode != TreeMode::kLiveBones && skin->rootParent;
+			if (restPose) {
+				restTransform = skin->rootParent->world * skinData->rootParentToSkin.Invert();
+				TransformTo3x4(restTransform, restRow);
+			}
+			// M8: with every bone at the same matrix, linear-blend skinning (SkinCS.hlsl: weights normalized, bone 0 when
+			// none) is that one matrix for every vertex. The tree is then a static instance of its bind-pose buffers:
+			// one BLAS per mesh built once, no per-frame skinning, refit or palette. SkinCS reads half positions, the
+			// static BLAS and hit lookups don't, so those partitions stay skinned.
+			const bool staticTree = restPose && a_out.treeMode == TreeMode::kRestStatic;
 
 			uint32_t accepted = 0;
+			uint32_t acceptedStatic = 0;
 			for (uint32_t p = 0; p < partitions->numPartitions; p++) {
 				const auto& partition = partitions->partitions[p];
 				auto* buffers = partition.buffData;
@@ -206,6 +235,28 @@ namespace RT
 					reinterpret_cast<::ID3D11Buffer*>(buffers->vertexBuffer)->GetDesc(&desc);
 					vertexCount = stride ? desc.ByteWidth / stride : 0;
 					usable = vertexCount > 0 && vertexCount <= 65536 && (!dynamicData || vertexCount <= dynamicVertexCount);
+				}
+				if (usable && staticTree) {
+					if (!HasHalfPositions(buffers->vertexDesc)) {
+						if (!IsSanePaletteRow(restRow)) {
+							a_out.stats.skinnedInvalidPoses++;
+							a_out.stats.skinnedRejectedPartitions++;
+							continue;
+						}
+						GeometryCandidate candidate = a_material;
+						candidate.rendererData = buffers;
+						std::memcpy(&candidate.vertexDesc, &buffers->vertexDesc, sizeof(candidate.vertexDesc));
+						candidate.vertexCount = vertexCount;
+						candidate.triangleCount = partition.triangles;
+						candidate.world = restTransform;
+						candidate.tree = true;
+						a_out.candidates.push_back(candidate);
+						a_out.stats.treeStaticPartitions++;
+						acceptedStatic++;
+						accepted++;
+						continue;
+					}
+					a_out.stats.treeHalfPositionPartitions++;
 				}
 				const uint32_t paletteOffset = static_cast<uint32_t>(a_out.skinned.palettes.size());
 				for (uint32_t k = 0; usable && k < partition.numBones; k++) {
@@ -251,13 +302,11 @@ namespace RT
 				entry.paletteOffset = paletteOffset;
 				entry.boneCount = partition.numBones;
 				entry.skinningOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_SKINNING);
-				// Positions are float3 + pad (16 B) unless the next attribute starts at 8 (4 x half).
 				entry.dynamicData = dynamicData;
 				entry.dynamicStride = dynamicStride;
 				entry.dynamicVertexCount = dynamicVertexCount;
 				entry.dynamicVersion = dynamicVersion;
-				entry.halfPositions = desc.HasFlag(RE::BSGraphics::Vertex::VF_UV) ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0) == 8 :
-				                                                                      entry.skinningOffset == 8;
+				entry.halfPositions = HasHalfPositions(desc);
 				a_out.candidates.push_back(candidate);
 				entry.tree = tree;
 				a_out.skinned.partitions.push_back(entry);
@@ -267,9 +316,11 @@ namespace RT
 				accepted++;
 			}
 			if (accepted > 0) {
-				a_out.stats.skinnedShapes++;
+				a_out.stats.skinnedShapes += accepted > acceptedStatic;
 				a_out.stats.treeShapes += tree;
+				a_out.stats.leafAnimShapes += swayRoot == SwayRoot::kLeafAnim;
 				a_out.stats.treeRestPoseShapes += restPose;
+				a_out.stats.treeStaticShapes += acceptedStatic > 0;
 			}
 			return accepted > 0;
 		}
@@ -382,15 +433,15 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_treeRestPose);
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode);
 
 		// Last line of defence: reading the game's scene graph can still race with cell loading in ways the
 		// loading-menu check doesn't cover. An access violation drops this frame's scene instead of the game.
 		// Kept free of C++ objects so __try is allowed.
-		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_treeRestPose, bool& a_faulted)
+		bool CollectSceneGuarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode, bool& a_faulted)
 		{
 			__try {
-				return CollectSceneUnguarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_treeRestPose);
+				return CollectSceneUnguarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_treeMode);
 			} __except (EXCEPTION_EXECUTE_HANDLER) {
 				a_faulted = true;
 				return false;
@@ -398,7 +449,7 @@ namespace RT
 		}
 	}
 
-	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_treeRestPose)
+	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode)
 	{
 		a_out.clear();
 		a_skinned.partitions.clear();
@@ -414,7 +465,7 @@ namespace RT
 			return false;
 
 		bool faulted = false;
-		const bool collected = CollectSceneGuarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_treeRestPose, faulted);
+		const bool collected = CollectSceneGuarded(a_out, a_skinned, a_exclusions, a_area, a_stats, a_treeMode, faulted);
 		if (faulted) {
 			static uint32_t faults = 0;
 			if (++faults <= 10)
@@ -432,7 +483,7 @@ namespace RT
 
 	namespace
 	{
-		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, bool a_treeRestPose)
+		bool CollectSceneUnguarded(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats, TreeMode a_treeMode)
 		{
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes || !RE::PlayerCharacter::GetSingleton() || !RE::PlayerCharacter::GetSingleton()->Is3DLoaded())
@@ -448,7 +499,7 @@ namespace RT
 		const RE::TESObjectCELL* skyCell = worldSpace ? worldSpace->GetSkyCell() : nullptr;
 		const bool interior = tes->interiorCell != nullptr;
 
-		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats, a_treeRestPose };
+		WalkOutput out{ a_out, a_skinned, a_exclusions, a_stats, a_treeMode };
 		tes->ForEachCell([&](RE::TESObjectCELL* a_cell) {
 			auto* loadedData = a_cell ? a_cell->GetRuntimeData().loadedData : nullptr;
 			if (!loadedData || !loadedData->cell3D)
@@ -490,11 +541,13 @@ namespace RT
 		// Unique meshes: instances of the same mesh share rendererData.
 		ankerl::unordered_dense::set<const void*> staticMeshes;
 		ankerl::unordered_dense::set<const void*> terrainMeshes;
+		ankerl::unordered_dense::set<const void*> treeMeshes;
 		for (const auto& candidate : a_out)
 			if (!candidate.skinned)
-				(candidate.terrain ? terrainMeshes : staticMeshes).insert(candidate.rendererData);
+				(candidate.tree ? treeMeshes : candidate.terrain ? terrainMeshes : staticMeshes).insert(candidate.rendererData);
 		a_stats.uniqueStaticMeshes = static_cast<uint32_t>(staticMeshes.size());
 		a_stats.uniqueTerrainMeshes = static_cast<uint32_t>(terrainMeshes.size());
+		a_stats.uniqueTreeMeshes = static_cast<uint32_t>(treeMeshes.size());
 
 		QueryPerformanceCounter(&end);
 		a_stats.traversalMs = static_cast<float>(static_cast<double>(end.QuadPart - start.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart));

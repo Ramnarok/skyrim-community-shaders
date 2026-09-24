@@ -28,6 +28,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	DebugView,
 	AlphaTest,
 	TreeRestPose,
+	StaticTrees,
 	GPUHangDiagnostics,
 	SunShadows,
 	SunAngularRadius,
@@ -280,6 +281,7 @@ void SkyrimRT::Prepass()
 	}
 	RT::SetAlphaTest(settings.AlphaTest);
 	RT::SetTreeRestPose(settings.TreeRestPose);
+	RT::SetStaticTrees(settings.StaticTrees);
 	{
 		// M8: Light Limit Fix rebuilt its room indices in its Prepass, earlier this frame; Lighting.hlsl's RoomIndex uses
 		// the same map during the opaque pass.
@@ -615,6 +617,11 @@ void SkyrimRT::DrawSettings()
 		ImGui::Checkbox(T(TKEY("tree_rest_pose"), "Trace trees in their rest pose"), &settings.TreeRestPose);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("tree_rest_pose_tooltip"), "Trace trees without their sway. Every camera that culls a tree (the view, the shadow maps, Skylighting) re-poses its branches, so the swaying pose at tracing time can belong to another camera and jump away from the drawn tree."));
+		ImGui::BeginDisabled(!settings.TreeRestPose);
+		ImGui::Checkbox(T(TKEY("static_trees"), "Trace trees as static meshes"), &settings.StaticTrees);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("static_trees_tooltip"), "In their rest pose a tree's bones all share one transform, so the tree can be traced like any static mesh: its acceleration structure is built once instead of being skinned and refitted every frame. Same result, less GPU work."));
 
 		ImGui::BeginDisabled(!settings.Enabled || !RT::IsRunning());
 		if (ImGui::Button(T(TKEY("write_dump"), "Write debug dump (F10)")))

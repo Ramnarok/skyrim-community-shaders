@@ -27,6 +27,14 @@ namespace RT
 
 	std::string_view GetCategoryName(GeometryCategory a_category);
 
+	/** @brief How trees (skinned shapes under a BSTreeNode) are traced. */
+	enum class TreeMode : uint8_t
+	{
+		kLiveBones,    // skinned from their bones' current pose (the last culling camera's sway)
+		kRestSkinned,  // M7: skinned, every bone at the rest pose
+		kRestStatic,   // M8: the rest pose as one rigid transform: a static instance of the bind-pose mesh, no skinning or refit
+	};
+
 	/** @brief One extractable (static or terrain) geometry instance this frame. */
 	struct GeometryCandidate
 	{
@@ -48,6 +56,7 @@ namespace RT
 		// and its Light Limit Fix room index + 1 (0 = none or no light uses it), filled by the sidecar.
 		const RE::NiNode* room = nullptr;
 		uint32_t roomWord = 0;
+		bool tree = false;  // M8: a tree partition traced as a static instance (TreeMode::kRestStatic)
 	};
 
 	/** @brief M7: one skin partition of a skinned shape this frame, with its bone palette. */
@@ -116,8 +125,13 @@ namespace RT
 		uint32_t roomNodes = 0;         ///< M8: rooms/portals Light Limit Fix indexed this frame (referenced by its lights)
 		uint32_t dynamicShapes = 0;          ///< M7b: dynamic (FaceGen) shapes extracted as skinned
 		uint32_t dynamicRejectedShapes = 0;  ///< dynamic shapes without usable skin or position data: excluded
-		uint32_t treeShapes = 0;          ///< skinned shapes under a BSTreeNode (their branches sway on bones)
+		uint32_t treeShapes = 0;          ///< skinned shapes under a BSLeafAnimNode, BSTreeNode included (they sway on bones)
+		uint32_t leafAnimShapes = 0;      ///< M8: the subset under a plain BSLeafAnimNode (not a BSTreeNode)
 		uint32_t treeRestPoseShapes = 0;  ///< trees traced in their rest pose
+		uint32_t treeStaticShapes = 0;            ///< M8: rest-pose trees with at least one static partition
+		uint32_t treeStaticPartitions = 0;        ///< M8: static tree instances (one per partition)
+		uint32_t treeHalfPositionPartitions = 0;  ///< M8: rest-pose tree partitions with half positions, left on the skinned path
+		uint32_t uniqueTreeMeshes = 0;            ///< M8: distinct bind-pose buffers among the static tree instances (BLASes needed)
 		float traversalMs = 0.0f;
 	};
 
@@ -127,5 +141,5 @@ namespace RT
 	 * @return False when there is no world (main menu, loading), in which case a_out is empty.
 	 */
 	bool CollectScene(std::vector<GeometryCandidate>& a_out, SkinnedScene& a_skinned, std::vector<ExclusionBound>& a_exclusions, LoadedArea& a_area, SceneStats& a_stats,
-		bool a_treeRestPose);
+		TreeMode a_treeMode);
 }
