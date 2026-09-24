@@ -74,7 +74,7 @@ struct SkyrimRT : OverlayFeature
 		bool GISkyLight = true;           ///< M8: rays that reach the sky carry its light; the game's ambient is scaled by the traced / open-sky ratio (exteriors)
 		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames
 		uint32_t GIView = 0;      ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion, 4/5 reflections noisy/denoised
-		bool GIReflections = false;             ///< M8: ray-traced reflections in place of the cubemaps (needs Dynamic Cubemaps; off until verified)
+		bool GIReflections = true;              ///< M8: ray-traced reflections in place of the cubemaps (needs Dynamic Cubemaps)
 		float GIReflectionMaxRoughness = 1.0f;  ///< rougher surfaces keep the cubemap reflection
 		bool GIReflectionHalfResolution = true;  ///< one reflection ray per 2x2 block (measured +1.2-1.5 ms at full resolution in rain)
 	};
