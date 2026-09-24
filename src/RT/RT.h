@@ -168,7 +168,7 @@ namespace RT
 		float rayLength = 3000.0f;    ///< game units
 		bool alphaTestedCasters = true;
 		uint32_t maxAccumulatedFrames = 30;  ///< REBLUR history (frames)
-		uint32_t viewMode = 0;               ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
+		uint32_t viewMode = 0;               ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion, 4/5 reflections noisy/denoised
 		bool interior = false;               ///< interior cell: the directional light is unshadowed, as in Lighting.hlsl
 		float directionalLightMult = 1.0f;   ///< Linear Lighting (used only when linearLighting is set)
 		std::span<const PointLight> pointLights;  ///< valid only during SubmitGI (not kept in GIStats::params)
@@ -176,9 +176,14 @@ namespace RT
 		bool inverseSquare = false;                ///< Inverse Square Lighting loaded: its attenuation applies (Lighting.hlsl ISL)
 		bool skyLight = false;  ///< M8: misses that reach the sky carry its radiance; the composite scales its ambient by the traced / open-sky ratio (exteriors)
 		uint32_t bounces = 1;   ///< M8 multi-bounce: path vertices per GI ray (1 = the M6 single bounce, at most 3)
+		/// M8 reflections: trace a glossy ray from each pixel with a reflection term (Dynamic Cubemaps' REFLECTANCE) and
+		/// give the composite the traced light in place of its cubemaps. Needs Dynamic Cubemaps (no reflection term otherwise).
+		bool reflections = false;
+		float reflectionMaxRoughness = 1.0f;  ///< rougher pixels keep the cubemaps
+		bool reflectionHalfResolution = true;  ///< one ray per 2x2 block, REBLUR reconstructs the rest
 	};
 
-	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 sky flag. */
+	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 extras. */
 	struct GIOutputs
 	{
 		ID3D11ShaderResourceView* ao = nullptr;
@@ -187,6 +192,9 @@ namespace RT
 		/// M8: bound at composite t16 when the GI carries sky light. Only its presence is read (GetDimensions): the
 		/// composite then scales the game's ambient by the traced light over the open-sky light, instead of by the AO.
 		ID3D11ShaderResourceView* skyLight = nullptr;
+		/// M8 reflections (RGBA16F), bound at composite t17 when traced this frame: rgb the light along the reflection lobe,
+		/// a = 1 where traced. The composite uses it in place of its cubemap reflection there.
+		ID3D11ShaderResourceView* reflections = nullptr;
 	};
 
 	/** @brief Minimum tier we require: DXR 1.1 for inline RayQuery in compute shaders. */

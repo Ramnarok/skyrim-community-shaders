@@ -73,7 +73,10 @@ struct SkyrimRT : OverlayFeature
 		bool GIAlbedoTextures = true;     ///< M8: GI hits sample their diffuse texture x vertex colour (else the texture's average)
 		bool GISkyLight = true;           ///< M8: rays that reach the sky carry its light; the game's ambient is scaled by the traced / open-sky ratio (exteriors)
 		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames
-		uint32_t GIView = 0;      ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
+		uint32_t GIView = 0;      ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion, 4/5 reflections noisy/denoised
+		bool GIReflections = false;             ///< M8: ray-traced reflections in place of the cubemaps (needs Dynamic Cubemaps; off until verified)
+		float GIReflectionMaxRoughness = 1.0f;  ///< rougher surfaces keep the cubemap reflection
+		bool GIReflectionHalfResolution = true;  ///< one reflection ray per 2x2 block (measured +1.2-1.5 ms at full resolution in rain)
 	};
 
 	Settings settings;
@@ -84,6 +87,7 @@ struct SkyrimRT : OverlayFeature
 	/**
 	 * @brief Called by Deferred::DeferredPasses in place of Screen-Space GI's pass. Runs the GI hand-off and returns
 	 * true with the composite's t10-t12 inputs when ray-traced GI ran this frame; false to let Screen-Space GI run.
+	 * M8: a_outputs.reflections (composite t17) is set when ray-traced reflections ran too.
 	 */
 	bool DrawGlobalIllumination(RT::GIOutputs& a_outputs);
 

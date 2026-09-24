@@ -26,7 +26,7 @@ struct GIConstants
 	float LightGamma;
 	float AmbientGamma;
 	float AmbientMult;
-	uint ViewMode;  // debug view: 0 off, 1 noisy radiance, 2 denoised radiance, 3 ambient occlusion
+	uint ViewMode;  // debug view: 0 off, 1 noisy radiance, 2 denoised radiance, 3 ambient occlusion, 4/5 reflections noisy/denoised
 	uint Interior;  // the game doesn't shadow an interior's directional light, so neither does the bounce
 	uint PointLightCount;
 	uint PointLightShadows;     // trace a visibility ray to the sampled point light
@@ -34,6 +34,9 @@ struct GIConstants
 	float DirectionalLightMult; // Linear Lighting
 	uint SkyLight;              // M8: misses that reach the sky carry its radiance (exteriors); the composite scales the ambient
 	uint Bounces;               // M8 multi-bounce: path vertices, 1 = the M6 single bounce
+	uint Reflections;              // M8 reflections: trace a glossy ray from every pixel with a reflection term
+	float ReflectionMaxRoughness;  // ... whose G-buffer roughness is at most this
+	uint ReflectionHalfResolution; // ... one ray per 2x2 block (ReflectionTraceCS)
 };
 
 // Counter slots, mirrored in GlobalIllumination.h
@@ -48,6 +51,10 @@ static const uint kGIOccluderNear128 = 7;
 static const uint kGISkyVisible = 8;       // misses whose continuation reached the sky (SkyLight)
 static const uint kGITexturedHits = 9;     // M8: hits shaded with the texture from the albedo atlas (else the average)
 static const uint kGIDeeperHits = 10;      // M8 multi-bounce: hits of continuation rays (second bounce and deeper)
+static const uint kGIReflectionTraced = 11;  // M8 reflections: pixels with a reflection term (within the roughness limit)
+static const uint kGIReflectionHits = 12;    // ... rays that hit geometry (the rest see the sky)
+static const uint kGIReflectionDeeperHits = 13;  // ... hits of the reflected surface's continuation rays
+static const uint kGIReflectionRays = 14;        // ... reflection rays traced (a quarter or so at half resolution)
 
 ConstantBuffer<GIConstants> C : register(b0);
 
@@ -113,6 +120,14 @@ float3 GetAmbient(float3 a_normal)
 {
 	const float4 basis = ShEvaluate(a_normal);
 	return max(0.0, float3(dot(C.AmbientSHR, basis), dot(C.AmbientSHG, basis), dot(C.AmbientSHB, basis)));
+}
+
+// Independent of Random2 for each a_salt: a per-pixel offset plus the R2 sequence over frames.
+float2 Random2Salted(uint2 a_pixel, uint a_frame, uint a_salt)
+{
+	const uint h = Hash(Hash(a_pixel.x | (a_pixel.y << 16)) ^ a_salt);
+	const float2 base = float2(h & 0xFFFFu, h >> 16) / 65536.0;
+	return frac(base + float2(0.7548776662, 0.5698402910) * float(a_frame & 1023u));
 }
 
 // CS's Color::RGBToYCoCg (Color.hlsli).

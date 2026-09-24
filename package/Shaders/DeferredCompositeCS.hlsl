@@ -31,6 +31,12 @@ TextureCube<float3> EnvTexture : register(t6);
 TextureCube<float3> EnvReflectionsTexture : register(t7);
 
 SamplerState LinearSampler : register(s0);
+
+#	if defined(SKYRIM_RT)
+// Skyrim RT reflections: rgb the ray-traced light along the reflection lobe (linear, denoised), a = 1 where traced.
+// Bound only when traced this frame; where a = 1 it takes the place of the cubemap reflection below.
+Texture2D<float4> SkyrimRTReflections : register(t17);
+#	endif
 #endif
 
 #if defined(SKYLIGHTING)
@@ -306,6 +312,17 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		}
 
 		finalIrradiance += ssgiIlSpecular;
+#	endif
+
+#	if defined(SKYRIM_RT)
+		// Skyrim RT reflections: the traced scene (and the sky where rays escape) replaces the cubemaps and their
+		// occlusion; reflectance still carries the material's split-sum weight.
+		uint rtReflectionsWidth, rtReflectionsHeight;
+		SkyrimRTReflections.GetDimensions(rtReflectionsWidth, rtReflectionsHeight);
+		if (rtReflectionsWidth > 0) {
+			const float4 rtReflection = SkyrimRTReflections[dispatchID.xy];
+			finalIrradiance = lerp(finalIrradiance, rtReflection.rgb, rtReflection.a);
+		}
 #	endif
 
 		color += reflectance * finalIrradiance;

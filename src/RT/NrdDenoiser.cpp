@@ -142,15 +142,16 @@ namespace RT
 		return false;
 	}
 
-	bool NrdDenoiser::Init(ID3D12Device* a_device, uint32_t a_width, uint32_t a_height)
+	bool NrdDenoiser::Init(ID3D12Device* a_device, uint32_t a_width, uint32_t a_height, nrd::Denoiser a_denoiser)
 	{
 		device = a_device;
 		width = a_width;
 		height = a_height;
+		denoiser = a_denoiser;
 
-		const nrd::DenoiserDesc denoiser{ kDiffuse, nrd::Denoiser::REBLUR_DIFFUSE };
+		const nrd::DenoiserDesc denoiserDesc{ kIdentifier, denoiser };
 		nrd::InstanceCreationDesc creation{};
-		creation.denoisers = &denoiser;
+		creation.denoisers = &denoiserDesc;
 		creation.denoisersNum = 1;
 		if (const auto result = nrd::CreateInstance(creation, instance); result != nrd::Result::SUCCESS)
 			return Fail(std::format("nrd::CreateInstance failed ({})", static_cast<uint32_t>(result)));
@@ -243,8 +244,10 @@ namespace RT
 		constantsCpu = static_cast<uint8_t*>(mapped);
 
 		const auto* library = nrd::GetLibraryDesc();
-		logger::info("[SkyrimRT] NRD {}.{}.{} ready: REBLUR_DIFFUSE, {} pipelines, pools {} permanent + {} transient, {}x{}",
-			library->versionMajor, library->versionMinor, library->versionBuild, desc.pipelinesNum, desc.permanentPoolSize, desc.transientPoolSize, width, height);
+		logger::info("[SkyrimRT] NRD {}.{}.{} ready: {}, {} pipelines, pools {} permanent + {} transient, {}x{}",
+			library->versionMajor, library->versionMinor, library->versionBuild, nrd::GetDenoiserString(denoiser), desc.pipelinesNum, desc.permanentPoolSize,
+			desc.transientPoolSize, width, height);
+		ready = true;
 		return true;
 	}
 
@@ -263,8 +266,10 @@ namespace RT
 		case T::IN_VIEWZ:
 			return a_resources.viewZ;
 		case T::IN_DIFF_RADIANCE_HITDIST:
+		case T::IN_SPEC_RADIANCE_HITDIST:
 			return a_resources.radianceHitDist;
 		case T::OUT_DIFF_RADIANCE_HITDIST:
+		case T::OUT_SPEC_RADIANCE_HITDIST:
 			return a_resources.outRadianceHitDist;
 		default:
 			return nullptr;
@@ -275,11 +280,11 @@ namespace RT
 		const nrd::ReblurSettings& a_settings, const Resources& a_resources)
 	{
 		lastDispatchCount = 0;
-		if (nrd::SetCommonSettings(*instance, a_common) != nrd::Result::SUCCESS || nrd::SetDenoiserSettings(*instance, kDiffuse, &a_settings) != nrd::Result::SUCCESS)
+		if (!ready || nrd::SetCommonSettings(*instance, a_common) != nrd::Result::SUCCESS || nrd::SetDenoiserSettings(*instance, kIdentifier, &a_settings) != nrd::Result::SUCCESS)
 			return;
 		const nrd::DispatchDesc* dispatches = nullptr;
 		uint32_t dispatchCount = 0;
-		if (nrd::GetComputeDispatches(*instance, &kDiffuse, 1, dispatches, dispatchCount) != nrd::Result::SUCCESS)
+		if (nrd::GetComputeDispatches(*instance, &kIdentifier, 1, dispatches, dispatchCount) != nrd::Result::SUCCESS)
 			return;
 
 		for (auto* io : { a_resources.motionVectors, a_resources.normalRoughness, a_resources.viewZ, a_resources.radianceHitDist, a_resources.outRadianceHitDist })

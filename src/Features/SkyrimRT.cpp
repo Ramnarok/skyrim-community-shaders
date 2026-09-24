@@ -1,5 +1,6 @@
 #include "SkyrimRT.h"
 
+#include "Features/DynamicCubemaps.h"
 #include "Features/InverseSquareLighting.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
@@ -55,7 +56,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIHistory,
 	GIBouncesInterior,
 	GIBouncesExterior,
-	GIView)
+	GIView,
+	GIReflections,
+	GIReflectionMaxRoughness,
+	GIReflectionHalfResolution)
 
 namespace
 {
@@ -341,10 +345,16 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.pointLightShadows = settings.GIPointLightShadows;
 	params.inverseSquare = globals::features::inverseSquareLighting.loaded;
 	params.skyLight = settings.GISkyLight && !params.interior;
+	// The composite has a reflection term (REFLECTANCE, t5) only with Dynamic Cubemaps.
+	params.reflections = settings.GIReflections && globals::features::dynamicCubemaps.loaded;
+	params.reflectionMaxRoughness = settings.GIReflectionMaxRoughness;
+	params.reflectionHalfResolution = settings.GIReflectionHalfResolution;
 	a_outputs = RT::SubmitGI(params);
 	const bool traced = a_outputs.ao && a_outputs.y && a_outputs.coCg;
 	// The flag SRV tells the composite the GI carries the sky: any bound view works, only its presence is read.
 	a_outputs.skyLight = traced && params.skyLight ? a_outputs.ao : nullptr;
+	if (!traced)
+		a_outputs.reflections = nullptr;
 	return traced;
 }
 
@@ -517,8 +527,23 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_history_tooltip"), "How many frames the denoiser blends. Higher is smoother but reacts more slowly to change."));
 
-	const char* giViewNames[] = { T(TKEY("shadow_view_off"), "Off"), T(TKEY("gi_view_noisy"), "Bounce light, noisy"), T(TKEY("gi_view_denoised"), "Bounce light, denoised"), T(TKEY("gi_view_ao"), "Ambient occlusion") };
-	int giView = static_cast<int>(std::min<uint32_t>(settings.GIView, 3));
+	ImGui::Checkbox(T(TKEY("gi_reflections"), "Ray-traced reflections"), &settings.GIReflections);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_reflections_tooltip"), "Reflective surfaces (wet ground, True PBR materials, skin, hair and dynamic-cubemap materials) reflect the traced scene instead of the cubemaps. The sky in reflections is the game's ambient light, without clouds."));
+	if (!globals::features::dynamicCubemaps.loaded)
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("gi_reflections_need_cubemaps"), "Requires the Dynamic Cubemaps feature: without it surfaces have no reflection term to replace."));
+	else if (const auto* stats = RT::GetGIStats(); settings.GIReflections && stats && !stats->reflectionsFailure.empty())
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s: %s", T(TKEY("gi_reflections_unavailable"), "Unavailable"), stats->reflectionsFailure.c_str());
+	ImGui::SliderFloat(T(TKEY("gi_reflection_max_roughness"), "Reflection max roughness"), &settings.GIReflectionMaxRoughness, 0.05f, 1.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_reflection_max_roughness_tooltip"), "Rougher surfaces keep the cubemap reflection. Lower values trace fewer pixels."));
+	ImGui::Checkbox(T(TKEY("gi_reflection_half_resolution"), "Half-resolution reflections"), &settings.GIReflectionHalfResolution);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_reflection_half_resolution_tooltip"), "Trace one reflection ray per 2x2 pixels and let the denoiser fill in the rest: about a quarter of the cost, slightly softer reflections. In rain almost every surface reflects."));
+
+	const char* giViewNames[] = { T(TKEY("shadow_view_off"), "Off"), T(TKEY("gi_view_noisy"), "Bounce light, noisy"), T(TKEY("gi_view_denoised"), "Bounce light, denoised"), T(TKEY("gi_view_ao"), "Ambient occlusion"),
+		T(TKEY("gi_view_reflections_noisy"), "Reflections, noisy"), T(TKEY("gi_view_reflections_denoised"), "Reflections, denoised") };
+	int giView = static_cast<int>(std::min<uint32_t>(settings.GIView, 5));
 	if (ImGui::Combo(T(TKEY("gi_view"), "GI debug view"), &giView, giViewNames, IM_ARRAYSIZE(giViewNames)))
 		settings.GIView = static_cast<uint32_t>(giView);
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -529,6 +554,11 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 		ImGui::Text("%s: %u (%s %.1f%%, %s %.1f%%)", T(TKEY("gi_point_light_count"), "Point lights"), stats->pointLights, T(TKEY("gi_point_light_sampled"), "hits in range"),
 			stats->LightSampledHitPercent(), T(TKEY("gi_point_light_occluded"), "occluded"), stats->LightOccludedPercent());
 		ImGui::Text("%s: %.3f / %.3f / %.3f ms", T(TKEY("gi_timings"), "Trace / denoise / resolve"), stats->traceMs.Average(), stats->denoiseMs.Average(), stats->resolveMs.Average());
+		if (stats->reflectionsLastSlot && stats->renderWidth && stats->renderHeight) {
+			ImGui::Text("%s: %.1f%% %s, %.1f%% %s (%.3f / %.3f ms)", T(TKEY("gi_reflections_stats"), "Reflections"),
+				100.0f * stats->counters[RT::kGIReflectionTraced] / (static_cast<float>(stats->renderWidth) * stats->renderHeight), T(TKEY("gi_reflections_pixels"), "of pixels"),
+				stats->ReflectionHitPercent(), T(TKEY("gi_reflections_hit"), "hit geometry"), stats->reflectionTraceMs.Average(), stats->reflectionDenoiseMs.Average());
+		}
 		ImGui::Text("%s: %.3f ms", T(TKEY("gi_frame_cost"), "Frame cost (GI hand-off)"), stats->roundTripMs.Average());
 		if (const auto* interop = RT::GetInteropStats())
 			ImGui::Text("%s: %.2f ms", T(TKEY("frame_time"), "Frame time (toggle a feature to compare)"), interop->frameMs.Average());

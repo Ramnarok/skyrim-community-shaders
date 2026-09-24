@@ -24,6 +24,10 @@ namespace RT
 		kGISkyVisible,       ///< M8: misses whose continuation to 50,000 units reached the sky (sky light on)
 		kGITexturedHits,     ///< M8: hits shaded with their texture from the albedo atlas (else the average albedo)
 		kGIDeeperHits,       ///< M8 multi-bounce: hits of continuation rays (second bounce and deeper)
+		kGIReflectionTraced,      ///< M8 reflections: pixels with a reflection term (within the roughness limit)
+		kGIReflectionHits,        ///< ... rays that hit geometry (the rest see the sky)
+		kGIReflectionDeeperHits,  ///< ... hits of the reflected surfaces' continuation rays
+		kGIReflectionRays,        ///< ... reflection rays traced (one per 2x2 block at half resolution)
 		kGICounterCount
 	};
 
@@ -48,7 +52,18 @@ namespace RT
 		TimingSeries totalMs;
 		TimingSeries roundTripMs;  ///< D3D11 GPU timeline of the GI hand-off: its frame-time cost
 
+		// M8 reflections (set up the first time they're wanted).
+		bool reflectionsAvailable = false;
+		std::string reflectionsFailure;  ///< why reflections couldn't be set up, if they couldn't
+		bool reflectionsLastSlot = false;  ///< the last collected frame traced reflections (counters and timings are theirs)
+		uint64_t reflectionFramesTraced = 0;
+		uint64_t reflectionHistoryResets = 0;
+		uint32_t reflectionDispatches = 0;
+		TimingSeries reflectionTraceMs;
+		TimingSeries reflectionDenoiseMs;
+
 		float HitPercent() const { return counters[kGITraced] ? 100.0f * counters[kGIHits] / counters[kGITraced] : 0.0f; }
+		float ReflectionHitPercent() const { return counters[kGIReflectionRays] ? 100.0f * counters[kGIReflectionHits] / counters[kGIReflectionRays] : 0.0f; }
 		float SunLitHitPercent() const { return counters[kGIHits] ? 100.0f * counters[kGISunLitHits] / counters[kGIHits] : 0.0f; }
 		float LightSampledHitPercent() const { return counters[kGIHits] ? 100.0f * counters[kGILightSampled] / counters[kGIHits] : 0.0f; }
 		float LightOccludedPercent() const { return counters[kGILightSampled] ? 100.0f * counters[kGILightOccluded] / counters[kGILightSampled] : 0.0f; }
@@ -67,6 +82,8 @@ namespace RT
 	 * @brief M6 one-bounce diffuse GI: a RayQuery trace from the finished G-buffer (reusing this frame's TLAS), NRD
 	 * REBLUR_DIFFUSE, and a resolve into the three textures DeferredCompositeCS reads from Screen-Space GI.
 	 * Recorded into the frame's second D3D11 -> D3D12 hand-off, from Deferred::DeferredPasses.
+	 * M8 reflections ride the same hand-off: a glossy trace from the pixels with a reflection term, NRD REBLUR_SPECULAR
+	 * (a second instance), and a resolve into the texture the composite reads at t17.
 	 */
 	class GlobalIllumination
 	{
@@ -87,8 +104,10 @@ namespace RT
 		/**
 		 * @brief D3D11 side, before the fence signal: copies the G-buffer normals and motion vectors into shared
 		 * textures (created on first use with the game targets' formats). False if they aren't available.
+		 * With a_reflections, also sets reflections up the first time (textures, NRD REBLUR_SPECULAR, pipelines) and
+		 * copies Deferred's REFLECTANCE target; Record traces reflections only when that succeeded.
 		 */
-		bool CopyInputs();
+		bool CopyInputs(bool a_reflections);
 
 		/** @brief Records trace, REBLUR and resolve. The TLAS and instance data must be this frame's (Prepass round trip). */
 		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
@@ -98,7 +117,13 @@ namespace RT
 		void CollectResults(uint32_t a_slot);
 		void ReadDumpImages(std::vector<DumpImage>& a_out);
 
-		GIOutputs GetOutputs() const { return { ao.srv11.get(), y.srv11.get(), coCg.srv11.get() }; }
+		/** @brief This frame's composite inputs; reflections only when Record traced them this frame. */
+		GIOutputs GetOutputs() const
+		{
+			GIOutputs outputs{ ao.srv11.get(), y.srv11.get(), coCg.srv11.get() };
+			outputs.reflections = reflectionsRecorded ? reflections.srv11.get() : nullptr;
+			return outputs;
+		}
 		ID3D11ShaderResourceView* GetViewSRV() const { return view.srv11.get(); }
 		GIStats& GetStats() { return stats; }
 		const GIStats& GetStats() const { return stats; }
@@ -106,10 +131,12 @@ namespace RT
 	private:
 		bool Fail(std::string a_reason);
 		bool CreateTexture(DXGI_FORMAT a_format, const wchar_t* a_name, winrt::com_ptr<ID3D12Resource>& a_out);
+		bool CreatePipeline(const char* a_file, const wchar_t* a_name, winrt::com_ptr<ID3D12PipelineState>& a_out, std::string& a_error);
 		bool CreatePipelines();
+		bool InitReflections();
 		void WriteDescriptors();
 		void FillNrdSettings(const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const GIParams& a_params,
-			bool a_historyValid, nrd::CommonSettings& a_common, nrd::ReblurSettings& a_reblur) const;
+			bool a_historyValid, bool a_everCleared, nrd::CommonSettings& a_common, nrd::ReblurSettings& a_reblur) const;
 
 		ID3D12Device5* device = nullptr;
 		ID3D11Device5* d3d11Device = nullptr;
@@ -137,10 +164,27 @@ namespace RT
 
 		NrdDenoiser denoiser;
 
+		// M8 reflections, created the first time they're wanted (InitReflections).
+		SharedTexture reflectance;  // Deferred's REFLECTANCE target, copied
+		winrt::com_ptr<ID3D12Resource> specularViewZ;  // REBLUR_SPECULAR inputs/outputs (D3D12 only, resting in NON_PIXEL_SHADER_RESOURCE)
+		winrt::com_ptr<ID3D12Resource> specularNormalRoughness;
+		winrt::com_ptr<ID3D12Resource> specularNoisy;
+		winrt::com_ptr<ID3D12Resource> specularDenoised;
+		SharedTexture reflections;  // composite input (t17), resting in COMMON
+		NrdDenoiser specularDenoiser;
+		winrt::com_ptr<ID3D12PipelineState> reflectionTracePipeline;
+		winrt::com_ptr<ID3D12PipelineState> reflectionResolvePipeline;
+		bool reflectionsInitTried = false;
+		bool reflectionsReady = false;
+		bool reflectionsRecorded = false;  // this frame's Record traced reflections
+		bool specularHaveHistory = false;
+		bool specularEverCleared = false;
+		uint32_t specularHistoryGameFrame = 0;
+
 		winrt::com_ptr<ID3D12RootSignature> rootSignature;
 		winrt::com_ptr<ID3D12PipelineState> tracePipeline;
 		winrt::com_ptr<ID3D12PipelineState> resolvePipeline;
-		winrt::com_ptr<ID3D12DescriptorHeap> heap;  // [0..63] mesh pages, then the trace and resolve tables
+		winrt::com_ptr<ID3D12DescriptorHeap> heap;  // [0..63] mesh pages, then the trace and resolve tables, atlases, reflection tables
 		uint32_t descriptorSize = 0;
 		std::array<uint64_t, kMeshPageSlots> describedPageSerials{};
 
@@ -155,9 +199,15 @@ namespace RT
 		uint64_t timestampFrequency = 0;
 		bool slotPending[kFramesInFlight]{};
 		uint32_t slotDispatches[kFramesInFlight]{};
+		bool slotReflections[kFramesInFlight]{};
+		uint32_t slotReflectionDispatches[kFramesInFlight]{};
 
+		// Dump images: GI noisy, denoised, AO, then (M8) reflections noisy and resolved when traced.
+		static constexpr uint32_t kDumpImages = 5;
 		winrt::com_ptr<ID3D12Resource> dumpReadback;
-		std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, 3> dumpFootprints{};
+		uint64_t dumpReadbackBytes = 0;
+		std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, kDumpImages> dumpFootprints{};
+		uint32_t dumpImageCount = 0;
 		uint32_t dumpWidth = 0;
 		uint32_t dumpHeight = 0;
 		bool dumpCaptured = false;

@@ -358,7 +358,7 @@ void Deferred::DeferredPasses()
 	{
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
-		ID3D11ShaderResourceView* srvs[17]{
+		ID3D11ShaderResourceView* srvs[18]{
 			specular.SRV,                                                                                    // t0  SpecularTexture
 			albedo.SRV,                                                                                      // t1  AlbedoTexture
 			normalRoughness.SRV,                                                                             // t2  NormalRoughnessTexture
@@ -376,6 +376,7 @@ void Deferred::DeferredPasses()
 			ibl.loaded ? ibl.envIBLTexture->srv.get() : nullptr,                                             // t14 EnvIBLTexture
 			ibl.loaded ? ibl.skyIBLTexture->srv.get() : nullptr,                                             // t15 SkyIBLTexture
 			useRTGI && !interior ? rtGI.skyLight : nullptr,                                                  // t16 SkyrimRTSkyLight (presence only)
+			useRTGI && dynamicCubemaps.loaded ? rtGI.reflections : nullptr,                                  // t17 SkyrimRTReflections
 		};
 
 		if (dynamicCubemaps.loaded)
@@ -399,7 +400,7 @@ void Deferred::DeferredPasses()
 
 	// Clear
 	{
-		ID3D11ShaderResourceView* views[17]{};
+		ID3D11ShaderResourceView* views[18]{};
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
 		ID3D11UnorderedAccessView* uavs[3]{ nullptr, nullptr, nullptr };
@@ -619,7 +620,8 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 		if (globals::features::terrainBlending.loaded)
 			defines.push_back({ "TERRAIN_BLENDING", nullptr });
 
-		// Skyrim RT sky light (exteriors): t16 bound means the GI inputs carry the sky, so the ambient is dropped.
+		// Skyrim RT: t16 bound means the GI inputs carry the sky (the ambient is scaled by them); t17 bound holds its
+		// ray-traced reflections.
 		if (globals::features::skyrimRT.loaded)
 			defines.push_back({ "SKYRIM_RT", nullptr });
 
@@ -649,6 +651,10 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 		// (R24_UNORM_X8_TYPELESS game depth) to `Texture2D<float>` (R32_FLOAT blendedDepth).
 		if (globals::features::terrainBlending.loaded)
 			defines.push_back({ "TERRAIN_BLENDING", nullptr });
+
+		// Skyrim RT reflections (t17); sky light stays exterior-only (t16 is never bound here).
+		if (globals::features::skyrimRT.loaded)
+			defines.push_back({ "SKYRIM_RT", nullptr });
 
 		mainCompositeInteriorCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
 	}

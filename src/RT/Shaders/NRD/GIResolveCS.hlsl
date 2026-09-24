@@ -61,4 +61,6 @@ float3 ToneMap(float3 a_color)
 		OutView[pixel] = float4(ToneMap(radiance), 1.0);
 	else if (C.ViewMode == 3)
 		OutView[pixel] = float4((1.0 - occlusion).xxx, 1.0);
+	else if (C.ViewMode >= 4)
+		OutView[pixel] = float4(0.0, 0.0, 0.0, 1.0);  // reflection views: ReflectionResolveCS writes over this when it runs
 }

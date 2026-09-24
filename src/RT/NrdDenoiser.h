@@ -10,16 +10,18 @@
 namespace RT
 {
 	/**
-	 * @brief Drives NVIDIA NRD's REBLUR_DIFFUSE directly on the sidecar's D3D12 device (no NRI): one shared root
-	 * signature, NRD's texture pools, a per-frame-slot descriptor and constant ring, and resource-state tracking.
-	 * Built only with SKYRIMRT_NRD (NVIDIA RTX SDKs License: private builds only, see cmake/SkyrimRTNRD.cmake).
+	 * @brief Drives one NVIDIA NRD denoiser (REBLUR_DIFFUSE for GI, M8 REBLUR_SPECULAR for reflections) directly on the
+	 * sidecar's D3D12 device (no NRI): one shared root signature, NRD's texture pools, a per-frame-slot descriptor and
+	 * constant ring, and resource-state tracking. One instance per denoiser, so each keeps its own history and can be
+	 * skipped on frames it isn't needed. Built only with SKYRIMRT_NRD (NVIDIA RTX SDKs License: private builds only, see
+	 * cmake/SkyrimRTNRD.cmake).
 	 */
 	class NrdDenoiser
 	{
 	public:
 		static constexpr uint32_t kFramesInFlight = 3;
 		static constexpr uint32_t kMaxDispatchesPerFrame = 64;
-		static constexpr nrd::Identifier kDiffuse = 0;
+		static constexpr nrd::Identifier kIdentifier = 0;
 
 		/** @brief The application's NRD inputs/outputs. They must be in NON_PIXEL_SHADER_RESOURCE on entry and are left there. */
 		struct Resources
@@ -27,8 +29,8 @@ namespace RT
 			ID3D12Resource* motionVectors = nullptr;       // IN_MV
 			ID3D12Resource* normalRoughness = nullptr;     // IN_NORMAL_ROUGHNESS
 			ID3D12Resource* viewZ = nullptr;               // IN_VIEWZ
-			ID3D12Resource* radianceHitDist = nullptr;     // IN_DIFF_RADIANCE_HITDIST
-			ID3D12Resource* outRadianceHitDist = nullptr;  // OUT_DIFF_RADIANCE_HITDIST
+			ID3D12Resource* radianceHitDist = nullptr;     // IN_DIFF_RADIANCE_HITDIST or IN_SPEC_RADIANCE_HITDIST
+			ID3D12Resource* outRadianceHitDist = nullptr;  // OUT_DIFF_RADIANCE_HITDIST or OUT_SPEC_RADIANCE_HITDIST
 		};
 
 		NrdDenoiser() = default;
@@ -36,11 +38,15 @@ namespace RT
 		NrdDenoiser& operator=(const NrdDenoiser&) = delete;
 		~NrdDenoiser();
 
-		/** @param a_width, a_height NRD's resource size (the full texture size; the render region may be smaller). */
-		bool Init(ID3D12Device* a_device, uint32_t a_width, uint32_t a_height);
+		/**
+		 * @param a_width, a_height NRD's resource size (the full texture size; the render region may be smaller).
+		 * @param a_denoiser REBLUR_DIFFUSE or REBLUR_SPECULAR.
+		 */
+		bool Init(ID3D12Device* a_device, uint32_t a_width, uint32_t a_height, nrd::Denoiser a_denoiser);
+		bool IsReady() const { return ready; }
 		const std::string& GetFailureReason() const { return failureReason; }
 
-		/** @brief Records every REBLUR dispatch for this frame into a_list. */
+		/** @brief Records every dispatch of the denoiser for this frame into a_list. */
 		void Record(ID3D12GraphicsCommandList* a_list, uint32_t a_slot, const nrd::CommonSettings& a_common,
 			const nrd::ReblurSettings& a_settings, const Resources& a_resources);
 
@@ -52,6 +58,7 @@ namespace RT
 
 		ID3D12Device* device = nullptr;
 		nrd::Instance* instance = nullptr;
+		nrd::Denoiser denoiser = nrd::Denoiser::REBLUR_DIFFUSE;
 		uint32_t width = 0;
 		uint32_t height = 0;
 
@@ -71,6 +78,7 @@ namespace RT
 		uint64_t constantSliceBytes = 0;
 
 		uint32_t lastDispatchCount = 0;
+		bool ready = false;
 		std::string failureReason;
 	};
 }
