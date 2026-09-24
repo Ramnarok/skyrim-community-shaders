@@ -34,22 +34,6 @@ struct GIConstants
 	float DirectionalLightMult; // Linear Lighting
 };
 
-// One of Light Limit Fix's lights (RT::GIPointLight).
-struct GIPointLight
-{
-	float3 Position;  // camera-relative, like the TLAS
-	float Radius;
-	float3 Color;  // Color::PointLight(color) x fade
-	float InvRadius;
-	float FadeZone;
-	float SizeBias;
-	uint Flags;  // LightLimitFix::LightFlags
-	float Pad;
-};
-
-static const uint kLightFlagDisabled = 1u << 9;       // LightLimitFix::LightFlags
-static const uint kLightFlagInverseSquare = 1u << 10;
-
 // Counter slots, mirrored in GlobalIllumination.h
 static const uint kGITraced = 0;
 static const uint kGIHits = 1;

@@ -160,6 +160,7 @@ target_link_libraries(
         Tracy::TracyClient
         Streamline
         d3d12.lib
+        dxguid.lib  # SkyrimRT: CLSID_D3D12DeviceFactory (independent sidecar device), DRED/debug CLSIDs
         Microsoft::DirectX-Headers
         ${DETOURS_LIBRARY}
         Microsoft::Effects11

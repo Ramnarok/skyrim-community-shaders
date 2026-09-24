@@ -1,0 +1,99 @@
+// SkyrimRT M8: Light Limit Fix's point lights as the traces see them (RT::PointLight), with the falloff Lighting.hlsl
+// applies and the light sampling shared by the GI bounce and the point-light shadow trace.
+
+#ifndef SKYRIMRT_POINT_LIGHTS_HLSLI
+#define SKYRIMRT_POINT_LIGHTS_HLSLI
+
+struct PointLight
+{
+	float3 Position;  // camera-relative, like the TLAS
+	float Radius;
+	float3 Color;  // Color::PointLight(color) x fade
+	float InvRadius;
+	float FadeZone;
+	float SizeBias;
+	uint Flags;  // LightLimitFix::LightFlags
+	float Pad;
+};
+
+static const uint kLightFlagPortalStrict = 1u << 0;  // LightLimitFix::LightFlags
+static const uint kLightFlagShadow = 1u << 1;
+static const uint kLightFlagDisabled = 1u << 9;
+static const uint kLightFlagInverseSquare = 1u << 10;
+
+// Visibility rays stop this far short of the light: lights sit inside their own fixture (lantern frames, sconces,
+// braziers), which would otherwise shadow every surface they light. Measured in M8: under 2.5% of occluded samples
+// are blocked within 32 units of the light.
+static const float kLightClearance = 16.0;  // game units
+
+// Lighting.hlsl's point-light falloff: InverseSquareLighting::GetAttenuation when that feature is loaded, else
+// 1 - (d / r)^2.
+float PointLightAttenuation(float a_distance, PointLight a_light, bool a_inverseSquare)
+{
+	const float falloff = saturate(a_distance * a_light.InvRadius);
+	const float regular = 1.0 - falloff * falloff;
+	if (!a_inverseSquare)
+		return regular;
+	static const float kScaledUnitsSq = 0.8 * 70.0 * 70.0;  // InverseSquareLighting::SCALED_UNITS_SQ
+	const float t = saturate((a_light.Radius - a_distance) * a_light.FadeZone);
+	const float inverseSquare = kScaledUnitsSq / (a_distance * a_distance + a_light.SizeBias) * (t * t * (3.0 - 2.0 * t));
+	const float enabled = (a_light.Flags & kLightFlagDisabled) ? 0.0 : 1.0;
+	return ((a_light.Flags & kLightFlagInverseSquare) ? inverseSquare : regular) * enabled;
+}
+
+struct PointLightSample
+{
+	bool Valid;          // some light is in range and facing the surface
+	float3 ToLight;      // from the surface position to the chosen light
+	float3 Irradiance;   // the chosen light's unshadowed irradiance, divided by its selection probability
+};
+
+// Picks one light in proportion to its unshadowed contribution (luminance of colour x attenuation x N.L) in a single
+// streaming pass (weighted reservoir with one random number), skipping lights with any of a_skipFlags. With the
+// estimate Irradiance x V, the result is exact wherever every light is visible; visibility is the only noise.
+PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_count, uint a_skipFlags, bool a_inverseSquare,
+	float3 a_position, float3 a_normal, float a_u)
+{
+	PointLightSample result;
+	result.Valid = false;
+	result.ToLight = 0.0;
+	result.Irradiance = 0.0;
+	float total = 0.0;
+	float u = a_u;
+	float chosenWeight = 0.0;
+	[loop] for (uint i = 0; i < a_count; i++)
+	{
+		const PointLight light = a_lights[i];
+		if (light.Flags & a_skipFlags)
+			continue;
+		const float3 toLight = light.Position - a_position;
+		const float distanceSq = dot(toLight, toLight);
+		if (distanceSq >= light.Radius * light.Radius)
+			continue;
+		const float cosine = dot(a_normal, toLight);  // x distance
+		if (cosine <= 0.0)
+			continue;
+		const float distance = sqrt(distanceSq);
+		const float3 irradiance = max(light.Color, 0.0) * (PointLightAttenuation(distance, light, a_inverseSquare) * cosine / max(distance, 1e-4));
+		const float weight = dot(irradiance, float3(0.2126, 0.7152, 0.0722));
+		if (!(weight > 0.0))
+			continue;
+		total += weight;
+		const float p = weight / total;
+		if (u < p) {
+			result.Irradiance = irradiance;
+			result.ToLight = toLight;
+			chosenWeight = weight;
+			u /= p;
+		} else {
+			u = (u - p) / (1.0 - p);
+		}
+	}
+	if (chosenWeight > 0.0) {
+		result.Valid = true;
+		result.Irradiance *= total / chosenWeight;
+	}
+	return result;
+}
+
+#endif

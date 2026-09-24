@@ -41,6 +41,44 @@ namespace RT
 			return a_device->CreateCommittedResource(&heap, a_flags, &desc, a_state, nullptr, IID_PPV_ARGS(a_out));
 		}
 
+		std::string BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP a_op)
+		{
+			switch (a_op) {
+			case D3D12_AUTO_BREADCRUMB_OP_SETMARKER:
+				return "SetMarker";
+			case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT:
+				return "BeginEvent";
+			case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT:
+				return "EndEvent";
+			case D3D12_AUTO_BREADCRUMB_OP_DISPATCH:
+				return "Dispatch";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION:
+				return "CopyBufferRegion";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION:
+				return "CopyTextureRegion";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE:
+				return "CopyResource";
+			case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW:
+				return "ClearUnorderedAccessView";
+			case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER:
+				return "ResourceBarrier";
+			case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA:
+				return "ResolveQueryData";
+			case D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION:
+				return "BeginSubmission";
+			case D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION:
+				return "EndSubmission";
+			case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE:
+				return "BuildRaytracingAccelerationStructure";
+			case D3D12_AUTO_BREADCRUMB_OP_EMITRAYTRACINGACCELERATIONSTRUCTUREPOSTBUILDINFO:
+				return "EmitRaytracingAccelerationStructurePostbuildInfo";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYRAYTRACINGACCELERATIONSTRUCTURE:
+				return "CopyRaytracingAccelerationStructure";
+			default:
+				return std::format("op#{}", static_cast<int>(a_op));
+			}
+		}
+
 		float ElapsedMs(LARGE_INTEGER a_start, LARGE_INTEGER a_end, LARGE_INTEGER a_frequency)
 		{
 			return static_cast<float>(static_cast<double>(a_end.QuadPart - a_start.QuadPart) * 1000.0 / static_cast<double>(a_frequency.QuadPart));
@@ -144,9 +182,56 @@ namespace RT
 			}
 		}
 
+		StartWatchdog();
 		logger::info("[SkyrimRT] Sidecar running: shared fence OK, test texture created in {} ({}x{})",
 			spike.textureCreatedInD3D12 ? "D3D12, opened in D3D11" : "D3D11, opened in D3D12", kPatternSize, kPatternSize);
 		return true;
+	}
+
+	void Sidecar::StartWatchdog()
+	{
+		watchdog = std::jthread([this](std::stop_token a_stop) { WatchdogLoop(a_stop); });
+	}
+
+	void Sidecar::WatchdogLoop(std::stop_token a_stop)
+	{
+		using Clock = std::chrono::steady_clock;
+		uint64_t lastCompleted = 0;
+		auto lastProgress = Clock::now();
+		while (!a_stop.stop_requested()) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+			// ID3D12Device and ID3D12Fence are free-threaded; the render thread keeps using them meanwhile.
+			const HRESULT removedReason = device->GetDeviceRemovedReason();
+			const uint64_t completed = fence->GetCompletedValue();  // UINT64_MAX once the device is removed
+			const uint64_t awaited = awaitedFenceValue.load();
+			if (removedReason != S_OK) {
+				// A removed device's fences read UINT64_MAX to every opener, D3D11 included (measured), so every D3D11
+				// wait on ours is already released; the render thread notices on its next round trip.
+				logger::critical("[SkyrimRT] Watchdog: D3D12 device removed ({}) while D3D11 awaited fence value {}; D3D11 sees the fence at {:#x}",
+					FormatHResult(removedReason), awaited, d3d11Fence->GetCompletedValue());
+				hangRescued = true;
+				return;
+			}
+			const auto now = Clock::now();
+			if (completed != lastCompleted || completed >= awaited) {
+				lastCompleted = completed;
+				lastProgress = now;
+				continue;
+			}
+			if (now - lastProgress <= std::chrono::seconds(kStallSeconds))
+				continue;
+			// GPU waits never time out, so a queue stuck on a fence would never TDR: remove the device ourselves, which
+			// sets its fences to UINT64_MAX and releases D3D11. The sidecar has its own device (RT::CreateSidecarDevice),
+			// so frame generation's device, the one the game presents through, is unaffected.
+			logger::critical("[SkyrimRT] Watchdog: D3D12 made no progress for {} s (fence {} of {} awaited by D3D11); removing the sidecar device",
+				kStallSeconds, completed, awaited);
+			device5->RemoveDevice();
+			logger::critical("[SkyrimRT] Watchdog: device removed ({}); D3D11 sees the fence at {:#x}; ray tracing is off until restart",
+				FormatHResult(device->GetDeviceRemovedReason()), d3d11Fence->GetCompletedValue());
+			hangRescued = true;
+			return;
+		}
 	}
 
 	bool Sidecar::CreatePatternTexture()
@@ -435,31 +520,98 @@ namespace RT
 	{
 		stats.d3d12RemovedReason = device->GetDeviceRemovedReason();
 		stats.d3d11RemovedReason = d3d11Device->GetDeviceRemovedReason();
-		if (stats.d3d12RemovedReason == S_OK && stats.d3d11RemovedReason == S_OK)
+		if (stats.d3d12RemovedReason == S_OK && stats.d3d11RemovedReason == S_OK && !hangRescued)
 			return;
 
 		deviceRemoved = true;
 		stats.deviceRemoved = true;
-		logger::critical("[SkyrimRT] Device removed: D3D12 {} D3D11 {}; interop stopped", FormatHResult(stats.d3d12RemovedReason), FormatHResult(stats.d3d11RemovedReason));
+		logger::critical("[SkyrimRT] Device removed: D3D12 {} D3D11 {}; interop stopped{}", FormatHResult(stats.d3d12RemovedReason), FormatHResult(stats.d3d11RemovedReason),
+			hangRescued ? " (seen first by the watchdog)" : "");
+		LogDeviceRemovedDetails();
+	}
 
-#ifndef NDEBUG
-		winrt::com_ptr<ID3D12DeviceRemovedExtendedData> dred;
-		if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(dred.put())))) {
-			D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
-			if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
-				for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext) {
-					const uint32_t done = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
-					logger::critical("[SkyrimRT] DRED: list '{}' on queue '{}': {} of {} ops completed",
-						node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "?",
-						node->pCommandQueueDebugNameA ? node->pCommandQueueDebugNameA : "?",
-						done, node->BreadcrumbCount);
-				}
-			}
-			D3D12_DRED_PAGE_FAULT_OUTPUT pageFault{};
-			if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault)))
-				logger::critical("[SkyrimRT] DRED: page fault VA {:#x}", pageFault.PageFaultVA);
+	void Sidecar::BeginMarkerLog(ID3D12GraphicsCommandList* a_list)
+	{
+		auto& log = markerLogs[nextMarkerLog];
+		nextMarkerLog = (nextMarkerLog + 1) % markerLogs.size();
+		log.list = a_list;
+		log.names.clear();
+		CurrentPassMarkerLog() = &log;
+	}
+
+	void Sidecar::EndMarkerLog()
+	{
+		CurrentPassMarkerLog() = nullptr;
+	}
+
+	void Sidecar::LogDeviceRemovedDetails()
+	{
+		// DRED is on in debug builds and with SkyrimRT's "GPU hang diagnostics" setting (RT::EnableDebugLayer).
+		winrt::com_ptr<ID3D12DeviceRemovedExtendedData2> dred;
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(dred.put())))) {
+			logger::critical("[SkyrimRT] DRED: unavailable (enable GPU hang diagnostics and restart to record where the GPU stopped)");
+			return;
 		}
-#endif
+		D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs{};
+		if (FAILED(dred->GetAutoBreadcrumbsOutput1(&breadcrumbs)) || !breadcrumbs.pHeadAutoBreadcrumbNode) {
+			logger::critical("[SkyrimRT] DRED: no command list was executing (e.g. the queue was stuck on a fence wait), or GPU hang diagnostics are off");
+		}
+		auto narrow = [](const wchar_t* a_text) { return a_text ? stl::utf16_to_utf8(a_text).value_or("?") : std::string("?"); };
+		for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext) {
+			const uint32_t done = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+			logger::critical("[SkyrimRT] DRED: list '{}' on queue '{}': {} of {} ops completed", narrow(node->pCommandListDebugNameW),
+				narrow(node->pCommandQueueDebugNameW), done, node->BreadcrumbCount);
+			if (done >= node->BreadcrumbCount || !node->pCommandHistory)
+				continue;
+			// The pass the GPU was in: the last marker at or before the first unfinished op. DRED's own context strings
+			// when it has them, else the nth SetMarker op matched to the nth name recorded for a list with that many.
+			std::vector<uint32_t> markerOps;
+			for (uint32_t i = 0; i < node->BreadcrumbCount; i++) {
+				if (node->pCommandHistory[i] == D3D12_AUTO_BREADCRUMB_OP_SETMARKER)
+					markerOps.push_back(i);
+			}
+			const PassMarkerLog* names = nullptr;
+			for (const auto& log : markerLogs) {
+				if (log.list == node->pCommandList && log.names.size() == markerOps.size())
+					names = &log;  // lists of one kind record the same markers every frame, so any match names them
+			}
+			std::string lastMarker = "(none)";
+			for (uint32_t c = 0; c < node->BreadcrumbContextsCount; c++) {
+				const auto& context = node->pBreadcrumbContexts[c];
+				if (context.BreadcrumbIndex <= done && context.pContextString)
+					lastMarker = narrow(context.pContextString);
+			}
+			for (size_t m = 0; m < markerOps.size() && markerOps[m] <= done; m++)
+				lastMarker = names ? narrow(names->names[m]) : std::format("marker #{} (op {})", m, markerOps[m]);
+			logger::critical("[SkyrimRT] DRED:   stopped in pass '{}' ({} markers at ops {})", lastMarker, markerOps.size(),
+				[&] {
+					std::string s;
+					for (size_t m = 0; m < markerOps.size(); m++)
+						s += std::format("{}{}{}", m ? ", " : "", markerOps[m], names ? std::format(" '{}'", narrow(names->names[m])) : "");
+					return s;
+				}());
+			const uint32_t first = done > 8 ? done - 8 : 0;
+			const uint32_t last = std::min(node->BreadcrumbCount, done + 8);
+			for (uint32_t i = first; i < last; i++) {
+				std::string marker;
+				for (uint32_t c = 0; c < node->BreadcrumbContextsCount; c++) {
+					if (node->pBreadcrumbContexts[c].BreadcrumbIndex == i && node->pBreadcrumbContexts[c].pContextString)
+						marker = " '" + narrow(node->pBreadcrumbContexts[c].pContextString) + "'";
+				}
+				if (const auto it = std::ranges::find(markerOps, i); marker.empty() && names && it != markerOps.end())
+					marker = " '" + narrow(names->names[it - markerOps.begin()]) + "'";
+				logger::critical("[SkyrimRT] DRED:   {} op {} {}{}", i < done ? "done" : (i == done ? ">>> " : "    "), i,
+					BreadcrumbOpName(node->pCommandHistory[i]), marker);
+			}
+		}
+		D3D12_DRED_PAGE_FAULT_OUTPUT1 pageFault{};
+		if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&pageFault)) && pageFault.PageFaultVA) {
+			logger::critical("[SkyrimRT] DRED: page fault at VA {:#x}", pageFault.PageFaultVA);
+			for (auto* node = pageFault.pHeadExistingAllocationNode; node; node = node->pNext)
+				logger::critical("[SkyrimRT] DRED:   existing allocation there: {}", node->ObjectNameA ? node->ObjectNameA : "?");
+			for (auto* node = pageFault.pHeadRecentFreedAllocationNode; node; node = node->pNext)
+				logger::critical("[SkyrimRT] DRED:   recently freed allocation there: {}", node->ObjectNameA ? node->ObjectNameA : "?");
+		}
 	}
 
 	void Sidecar::CollectTimings(uint32_t a_slot)
@@ -546,6 +698,11 @@ namespace RT
 				data.haveShadows = dumpShadowsTraced;
 				data.shadows = raytracer.GetSunShadows().GetStats();
 			}
+			if (raytracer.PointShadowsReady()) {
+				data.pointShadowsAvailable = true;
+				data.havePointShadows = dumpPointShadowsTraced;
+				data.pointShadows = raytracer.GetPointShadows().GetStats();
+			}
 		}
 		if (const auto* skinned = raytracerReady ? raytracer.GetSkinned() : nullptr) {
 			data.haveSkinned = true;
@@ -589,6 +746,21 @@ namespace RT
 		return shadows.GetMaskSRV();
 	}
 
+	ID3D11ShaderResourceView* Sidecar::AcquirePointLightShadowMask(uint32_t a_gameFrame)
+	{
+		if (!raytracerReady || !raytracer.PointShadowsReady())
+			return nullptr;
+		auto& shadows = raytracer.GetPointShadows();
+		const bool fresh = pointShadowTracedEver && (lastPointShadowGameFrame == a_gameFrame || lastPointShadowGameFrame + 1 == a_gameFrame);
+		if (fresh) {
+			pointMaskClearedWhileStale = false;
+		} else if (!pointMaskClearedWhileStale) {
+			shadows.ClearMask();
+			pointMaskClearedWhileStale = true;
+		}
+		return shadows.GetMaskSRV();
+	}
+
 	void Sidecar::OnPresent(uint32_t a_gameFrame)
 	{
 		LARGE_INTEGER now;
@@ -601,13 +773,13 @@ namespace RT
 			return;
 
 		// No-op when SkyrimRT::Prepass already ran this frame's round trip.
-		Submit(a_gameFrame, FrameCamera{}, false, nullptr, false);
+		Submit(a_gameFrame, FrameCamera{}, false, nullptr, nullptr, false);
 		if (deviceRemoved)
 			return;
 
 		auto* ctx = d3d11Context.get();
 		if (dumpStage == DumpStage::kCaptureOn) {
-			const bool anyRT = dumpShadowsTraced || dumpGITraced;
+			const bool anyRT = dumpShadowsTraced || dumpPointShadowsTraced || dumpGITraced;
 			captureOn.Begin(d3d11Device.get(), ctx, anyRT ? "final_rt_on" : "final");
 			if (anyRT) {
 				dumpStage = DumpStage::kSuppressing;
@@ -624,7 +796,8 @@ namespace RT
 		FinishDumpIfReady();
 	}
 
-	void Sidecar::Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows, bool a_buildForGI)
+	void Sidecar::Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
+		const PointShadowParams* a_pointShadows, bool a_buildForGI)
 	{
 		if (deviceRemoved || (haveSubmitted && lastSubmitGameFrame == a_gameFrame))
 			return;
@@ -666,15 +839,17 @@ namespace RT
 
 		// Trace only when the camera was captured for this very frame (SkyrimRT::Prepass), so matrices, depth and
 		// transforms all describe the same frame.
-		const bool buildScene = raytracerReady && inWorld && a_camera.valid && a_camera.gameFrame == a_gameFrame && (a_debugTrace || a_shadows || a_buildForGI);
+		const bool buildScene = raytracerReady && inWorld && a_camera.valid && a_camera.gameFrame == a_gameFrame && (a_debugTrace || a_shadows || a_pointShadows || a_buildForGI);
 		const bool debugTrace = buildScene && a_debugTrace;
 		const SunShadowParams* shadows = (buildScene && a_shadows && raytracer.SunShadowsReady()) ? a_shadows : nullptr;
+		const PointShadowParams* pointShadows = (buildScene && a_pointShadows && raytracer.PointShadowsReady()) ? a_pointShadows : nullptr;
 		const bool dumpThisFrame = dumpRequested && dumpStage == DumpStage::kIdle;
 		const bool compareShadowMap = dumpThisFrame && shadows;
 
 		auto* allocator = allocators[slot].get();
 		allocator->Reset();
 		commandList->Reset(allocator, pipeline.get());
+		BeginMarkerLog(commandList.get());
 		commandList->SetComputeRootSignature(rootSignature.get());
 		ID3D12DescriptorHeap* heaps[] = { descriptorHeap.get() };
 		commandList->SetDescriptorHeaps(1, heaps);
@@ -688,6 +863,7 @@ namespace RT
 			uint32_t width;
 			uint32_t height;
 		} constants{ ElapsedMs(startTime, now, qpcFrequency) / 1000.0f, framesSubmitted, kPatternSize, kPatternSize };
+		SetPassMarker(commandList.get(), L"SkyrimRT: interop test pattern");
 		commandList->SetComputeRoot32BitConstants(0, 4, &constants, 0);
 		commandList->SetComputeRootDescriptorTable(1, descriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
@@ -713,7 +889,8 @@ namespace RT
 		// opaque pass lights with this frame's mask.
 		if (buildScene)
 			raytracer.Record(commandList.get(), slot, framesSubmitted, meshCache, candidates, skinnedScene, exclusions, loadedArea, a_camera,
-				debugTrace, shadows, compareShadowMap, dumpThisFrame);
+				debugTrace, shadows, pointShadows, compareShadowMap, dumpThisFrame);
+		EndMarkerLog();
 		commandList->Close();
 
 		// D3D11 -> D3D12: everything the game queued so far (including last frame's reads of the shared textures)
@@ -730,6 +907,11 @@ namespace RT
 		ctx->Flush();  // let the D3D12 queue start as soon as possible instead of at Present
 
 		queue->Wait(fence.get(), toD3D12);
+		if (simulateHang.exchange(false)) {
+			// Debug (RT::SimulateGpuHang): wait on a value nothing signals, as a hung queue would, until the watchdog removes the device.
+			logger::warn("[SkyrimRT] Simulating a GPU hang: the D3D12 queue now waits until the watchdog steps in");
+			queue->Wait(fence.get(), kSimulatedHangValue);
+		}
 		ID3D12CommandList* lists[] = { commandList.get() };
 		queue->ExecuteCommandLists(1, lists);
 		const uint64_t toD3D11 = ++fenceValue;
@@ -737,6 +919,7 @@ namespace RT
 		slotFenceValues[slot] = toD3D11;
 
 		// D3D12 -> D3D11: the overlay samples the pattern after this point in the D3D11 queue.
+		awaitedFenceValue = toD3D11;
 		ctx->Wait(d3d11Fence.get(), toD3D11);
 		ctx->End(d3d11End[slot].get());
 		ctx->End(d3d11Disjoint[slot].get());
@@ -745,8 +928,11 @@ namespace RT
 		// M3: stream new meshes into the cache. The upload list runs after the signal D3D11 waits on, so uploads
 		// never lengthen the D3D11 round trip.
 		uploadList->Reset(allocator, nullptr);
+		BeginMarkerLog(uploadList.get());
+		SetPassMarker(uploadList.get(), L"SkyrimRT: mesh uploads");
 		const uint64_t uploadFence = fenceValue + 1;
 		const bool uploadsRecorded = meshCache.Update(candidates, framesSubmitted, stats.lastCompletedFenceValue, uploadList.get(), uploadFence);
+		EndMarkerLog();
 		uploadList->Close();
 		if (uploadsRecorded) {
 			ID3D12CommandList* uploadLists[] = { uploadList.get() };
@@ -758,6 +944,10 @@ namespace RT
 		if (shadows) {
 			shadowTracedEver = true;
 			lastShadowGameFrame = a_gameFrame;
+		}
+		if (pointShadows) {
+			pointShadowTracedEver = true;
+			lastPointShadowGameFrame = a_gameFrame;
 		}
 		if (buildScene) {
 			sceneBuilt = true;
@@ -773,6 +963,7 @@ namespace RT
 				alphaAtlas.CaptureForDump();
 			dumpHasTrace = debugTrace;
 			dumpShadowsTraced = shadows != nullptr;
+			dumpPointShadowsTraced = pointShadows != nullptr;
 			dumpGITraced = false;  // set by SubmitGI later this frame
 			dumpRequested = false;
 			dumpStage = DumpStage::kCaptureOn;
@@ -845,8 +1036,10 @@ namespace RT
 
 		const bool captureDump = dumpStage == DumpStage::kCaptureOn && dumpGameFrame == a_gameFrame;
 		commandList->Reset(allocators[slot].get(), nullptr);
+		BeginMarkerLog(commandList.get());
 		gi->Record(commandList.get(), slot, raytracer.GetTlasAddress(), raytracer.GetInstanceDataAddress(slot), meshCache.GetMeshPool(), raytracer.GetSkinned(),
 			sceneCamera, sceneRenderWidth, sceneRenderHeight, a_params, captureDump);
+		EndMarkerLog();
 		commandList->Close();
 
 		ctx->Begin(giDisjoint[slot].get());
@@ -862,6 +1055,7 @@ namespace RT
 		queue->Signal(fence.get(), toD3D11);
 		slotFenceValues[slot] = toD3D11;
 
+		awaitedFenceValue = toD3D11;
 		ctx->Wait(d3d11Fence.get(), toD3D11);
 		ctx->End(giEnd[slot].get());
 		ctx->End(giDisjoint[slot].get());

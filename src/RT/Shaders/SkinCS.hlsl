@@ -57,5 +57,14 @@ float3 TransformByBone(uint a_bone, float3 a_position)
 	}
 	skinned = total > 0.0 ? skinned / total : TransformByBone(0, position);
 
+	// DXR treats a triangle with a NaN coordinate as inactive, and a refit must keep every triangle as active or inactive
+	// as it was built: a position that turns non-finite between build and refit is undefined behaviour (a GPU hang
+	// candidate). Scene.cpp rejects non-finite palettes; this is the backstop. The range limit keeps a garbage bone from
+	// stretching the BLAS bounds across the world.
+	static const float kMaxCoordinate = 1000000.0;  // game units, camera-relative; the loaded cells span ~50,000
+	if (any(!isfinite(skinned)))
+		skinned = 0.0;
+	skinned = clamp(skinned, -kMaxCoordinate, kMaxCoordinate);
+
 	Output.Store3(vertex * 12, asuint(skinned));
 }

@@ -24,6 +24,26 @@ namespace RT
 		kShadowCounterCount
 	};
 
+	/** @brief Counter slots of the M8 point-light variant (PointLightShadowTraceCS.hlsl, SunShadowCommon.hlsli). */
+	enum PointShadowCounter : uint32_t
+	{
+		kPointTraced,           ///< non-sky pixels
+		kPointOccluded,         ///< pixels whose sampled light was blocked
+		kPointSampled,          ///< pixels with an RT-shadowed light in range and facing
+		kPointOccluderNear32,   ///< occluded by something within 32 units of the light
+		kPointOccluderNear64,   ///< 32-64 units from it
+		kPointOccluderNear128,  ///< 64-128 units from it (the rest is farther)
+		kPointCounterCount
+	};
+	static_assert(static_cast<uint32_t>(kPointCounterCount) <= static_cast<uint32_t>(kShadowCounterCount));
+
+	/** @brief What a SunShadows instance traces: the M5 sun, or the M8 unshadowed point lights (same denoise passes). */
+	enum class ShadowKind
+	{
+		kSun,
+		kPointLights
+	};
+
 	struct SunShadowStats
 	{
 		bool haveResult = false;
@@ -34,6 +54,10 @@ namespace RT
 		bool haveComparison = false;
 		float toSun[3]{};
 		float coneHalfAngleDegrees = 0.0f;
+		uint32_t pointLights = 0;  ///< M8 point-light variant: lights uploaded last traced frame
+		uint32_t pointLightsShadowMapped = 0;  ///< ... of which the game shadow-maps (not traced)
+		uint32_t pointLightsPortalStrict = 0;  ///< ... culled by room, unshadowed (not traced)
+		uint32_t pointLightsTraced = 0;        ///< ... the rest: the lights the mask covers
 		uint32_t textureWidth = 0;
 		uint32_t textureHeight = 0;
 		uint32_t renderWidth = 0;  ///< region of the mask written by the last traced frame
@@ -56,11 +80,15 @@ namespace RT
 	 * @brief M5 ray-traced sun shadows: trace (1 cone-jittered ray per pixel from the depth pre-pass), temporal
 	 * accumulation and a spatial filter, producing an R8 visibility mask shared with D3D11. The mask replaces the
 	 * Screen-Space Shadows input at PS t45 and multiplies the game's shadow-map term in Lighting.hlsl.
+	 *
+	 * M8: a second instance (ShadowKind::kPointLights) swaps the trace for PointLightShadowTraceCS, which estimates the
+	 * visibility ratio of the unshadowed point lights (bound at PS t46), and reuses the temporal and spatial passes.
 	 */
 	class SunShadows
 	{
 	public:
 		static constexpr uint32_t kFramesInFlight = 3;
+		static constexpr uint32_t kMaxPointLights = 1024;  ///< LightLimitFix::MAX_LIGHTS
 		static constexpr float kMaxRayDistance = 50000.0f;
 		static constexpr float kDepthTolerance = 0.02f;
 		static constexpr float kPlaneTolerance = 0.01f;
@@ -70,9 +98,11 @@ namespace RT
 		 * @param a_rasterDepth The R32 copy of the scene depth the Raytracer shares with D3D11 (read by every pass).
 		 * @param a_copyCS D3D11 copy shader (CopyDepthCS) reused to copy the game's shadow mask on comparison frames.
 		 * @param a_alphaAtlas M7c alpha atlas, or nullptr (then nothing is alpha-tested).
+		 * @param a_kind What this instance traces.
 		 */
 		bool Init(ID3D12Device5* a_device, ID3D11Device5* a_d3d11Device, ID3D11DeviceContext4* a_d3d11Context,
-			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D11ComputeShader* a_copyCS, ID3D12Resource* a_alphaAtlas);
+			uint32_t a_width, uint32_t a_height, ID3D12Resource* a_rasterDepth, ID3D11ComputeShader* a_copyCS, ID3D12Resource* a_alphaAtlas,
+			ShadowKind a_kind = ShadowKind::kSun);
 		const std::string& GetFailureReason() const { return failureReason; }
 		void SetTimestampFrequency(uint64_t a_frequency) { timestampFrequency = a_frequency; }
 
@@ -88,6 +118,11 @@ namespace RT
 			const BufferPool& a_meshPool, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const SunShadowParams& a_params,
 			bool a_compareShadowMap, bool a_captureDump);
 
+		/** @brief M8 (ShadowKind::kPointLights only): as Record, tracing towards the unshadowed point lights. */
+		void RecordPointLights(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
+			const BufferPool& a_meshPool, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const PointShadowParams& a_params,
+			bool a_captureDump);
+
 		/** @brief Reads the slot's counters and timestamps once its fence value has completed (never waits). */
 		void CollectResults(uint32_t a_slot);
 
@@ -101,11 +136,34 @@ namespace RT
 		ID3D11ShaderResourceView* GetViewSRV() const { return view.srv11.get(); }
 		const SunShadowStats& GetStats() const { return stats; }
 
+		ShadowKind GetKind() const { return kind; }
+
 	private:
+		/** @brief What differs per frame between the sun and point-light variants. */
+		struct PassSettings
+		{
+			float toSun[3]{};
+			float tanHalfAngle = 0.0f;
+			bool alphaTestedCasters = true;
+			float normalBias = 1.0f;
+			float distanceBias = 0.002f;
+			uint32_t maxHistory = 24;
+			float spatialRadius = 3.0f;
+			uint32_t viewMode = 0;
+			uint32_t pointLightCount = 0;
+			bool inverseSquare = false;
+		};
+
+		void RecordPasses(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
+			const BufferPool& a_meshPool, const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const PassSettings& a_settings,
+			bool a_compareShadowMap, bool a_captureDump);
+		std::wstring ResourceName(const wchar_t* a_suffix) const;
 		bool CreateTexture(DXGI_FORMAT a_format, const wchar_t* a_name, winrt::com_ptr<ID3D12Resource>& a_out);
 		bool CreatePipelines();
 		bool CreateDescriptors();
 		bool Fail(std::string a_reason);
+
+		ShadowKind kind = ShadowKind::kSun;
 
 		ID3D12Device5* device = nullptr;
 		ID3D11Device5* d3d11Device = nullptr;
@@ -115,7 +173,7 @@ namespace RT
 		uint32_t width = 0;
 		uint32_t height = 0;
 
-		SharedTexture mask;             // R8 final visibility, bound at PS t45 by the feature
+		SharedTexture mask;             // R8 final visibility, bound by the feature at PS t45 (sun) or t46 (point lights)
 		SharedTexture view;             // RGBA8 debug view for the overlay
 		SharedTexture gameShadowMask;   // R8 copy of the game's kSHADOW_MASK (comparison frames only)
 		winrt::com_ptr<ID3D12Resource> rawVisibility;  // R8, D3D12 only

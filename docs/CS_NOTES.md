@@ -157,14 +157,14 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 
 ## SkyrimRT feature (M1)
 
-- Feature: `src/Features/SkyrimRT.{h,cpp}`; ini `features/Skyrim RT/Shaders/Features/SkyrimRT.ini` (0-1-0, `Alpha = True`). No shader defines yet.
+- Feature: `src/Features/SkyrimRT.{h,cpp}`; ini `features/Skyrim RT/Shaders/Features/SkyrimRT.ini` (0-1-0, `Alpha = True`). No shader defines until M8 (`SKYRIM_RT`, below).
 - D3D12 code: `src/RT/RT.{h,cpp}`. `RT::Init(globals::d3d::device)` runs from `SkyrimRT::SetupResources()`: IDXGIDevice → adapter → name + LUID → probe `D3D12CreateDevice(FL 12_0)` → `D3D12_FEATURE_D3D12_OPTIONS5.RaytracingTier`. The probe device is released; no D3D12 object stays resident until M2.
 - Below DXR 1.1 (or probe failure) the feature sets `loaded = false` + `failedLoadedMessage`, following the HorizonFix pattern.
 - Jake's machine (2026-09-23): RTX 4080 SUPER, LUID `00000000:0000D324`, driver reports a raytracing tier **above 1.1** (enum value > 11, most likely 1.2). The Windows SDK 10.0.26100 headers name only up to `TIER_1_1`, so `RT::GetTierName` derives `major.minor` from the enum value.
 
 ## SkyrimRT sidecar (M2)
 
-- `src/RT/Sidecar.{h,cpp}`: persistent D3D12 device (our own, not Upscaling's), DIRECT queue, one shared fence used both ways, 3 frame slots (a busy slot is skipped, never CPU-waited). `src/RT/DebugDump.{h,cpp}`: F10 → `frame_<n>.json` + `debug_testpattern_<n>.png` on a worker thread (WIC via DirectXTex, COM initialised on that thread).
+- `src/RT/Sidecar.{h,cpp}`: persistent D3D12 device. **Until 2026-09-24 this was in fact the process-wide singleton that Upscaling's DX12SwapChain created, since `D3D12CreateDevice` returns one device per adapter. Now its own, through `ID3D12DeviceFactory` (`RT::CreateSidecarDevice`)**, DIRECT queue, one shared fence used both ways, 3 frame slots (a busy slot is skipped, never CPU-waited). `src/RT/DebugDump.{h,cpp}`: F10 → `frame_<n>.json` + `debug_testpattern_<n>.png` on a worker thread (WIC via DirectXTex, COM initialised on that thread).
 - Per-frame hook: `SkyrimRT::Reset()`, which `State::Reset()` calls first thing in the Present hook (`src/Hooks.cpp:385`), before `HDRDisplay::HandleSwapChainPresent` draws the ImGui overlay. So D3D11 `Wait` precedes the overlay's read in queue order, and next frame's `Signal` follows it.
 - `SkyrimRT` is an `OverlayFeature`: `OverlayRenderer::RenderFeatureOverlays` calls `DrawOverlay()` on every loaded overlay feature each frame; the feature decides visibility itself.
 - Debug layer/DRED (debug builds) are enabled in `SkyrimRT::Load()` because enabling them after any D3D12 device exists removes that device (CS's frame-gen device included).
@@ -210,6 +210,14 @@ When a shader of type T is compiled, every **loaded** feature with `HasShaderDef
 - Code: `src/RT/SunShadows.{h,cpp}` (three DXC passes: `SunShadowTraceCS`, `SunShadowTemporalCS`, `SunShadowSpatialCS`, plus `SunShadowCommon.hlsli`); `src/RT/SharedTexture.{h,cpp}` (the D3D11-created shared-texture helper, now shared with `Raytracer`); `src/RT/FrameCapture.{h,cpp}` (D3D11 `kFRAMEBUFFER` → staging, polled with `D3D11_MAP_FLAG_DO_NOT_WAIT`).
 - `cmake/SkyrimRTShaders.cmake` now passes `-I src/RT/Shaders` and makes every `.hlsl` depend on the `.hlsli` files.
 - Dump sequence (F10): the next round trip copies the masks, and on shadow frames also the game's `kSHADOW_MASK` for a confusion matrix. The following Present captures `final_rt_on`. SSS then takes over for 3 frames (`Sidecar::IsSunShadowSuppressed`), and the Present of the third captures `final_rt_off`. The JSON is written once the fence and both captures are done.
+
+## SkyrimRT point-light shadows (M8)
+
+- **First shader define:** `SkyrimRT::GetShaderDefineName()` = `SKYRIM_RT`, Lighting shaders only. Adding it changes every Lighting permutation's cache key, so the first launch after it recompiles CS's shader cache.
+- **Edit to upstream `package/Shaders/Lighting.hlsl`:** it includes `SkyrimRT/PointLightShadows.hlsli` under `SKYRIM_RT && LIGHT_LIMIT_FIX`; in the LLF loop (`DEFERRED` only), lights without `Shadow`/`PortalStrict` multiply `lightShadow` by the t46 mask. `lightShadow` scales that light's diffuse, specular and transmission (via `CreateDirectLightingContext`). `shadowComponent`, which gates EMAT parallax shadows, is unchanged.
+- **Light Limit Fix's HLSL flags** are `LightLimitFix::LightFlags::*` (`features/Light Limit Fix/Shaders/LightLimitFix/Common.hlsli`). Portal-strict lights also arrive per geometry through `StrictLights` (PS b3), and `IsLightIgnored` culls clustered ones by `RoomIndex`, a per-draw value.
+- **Unbound SRVs:** in D3D11, `Load` on an unbound slot returns 0 and `GetDimensions` returns 0 × 0. The t46 reader uses that to fall back to lit.
+- **Validating a Lighting.hlsl edit without Python/hlslkit:** the Windows SDK's `fxc.exe /T ps_5_0 /E main /I build\ALL\aio\Shaders` with the `PSHADER` common defines from `.github/configs/shader-validation.yaml` plus the permutation's defines, on `build\ALL\aio\Shaders\Lighting.hlsl`.
 
 ## SkyrimRT actors and foliage (M7)
 

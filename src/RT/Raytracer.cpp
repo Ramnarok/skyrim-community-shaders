@@ -283,6 +283,9 @@ namespace RT
 
 		// M5. A failure here only disables sun shadows; the debug trace keeps working.
 		sunShadowsReady = sunShadows.Init(device, d3d11Device, d3d11Context, width, height, rasterDepth.resource12.get(), copyDepthCS.get(), alphaAtlas);
+		// M8. A failure only leaves the game's point lights unshadowed, as before.
+		pointShadowsReady = pointShadows.Init(device, d3d11Device, d3d11Context, width, height, rasterDepth.resource12.get(), copyDepthCS.get(), alphaAtlas,
+			ShadowKind::kPointLights);
 		// M7. A failure only keeps actors out of the TLAS.
 		skinnedReady = skinned.Init(device);
 		return true;
@@ -292,6 +295,7 @@ namespace RT
 	{
 		timestampFrequency = a_frequency;
 		sunShadows.SetTimestampFrequency(a_frequency);
+		pointShadows.SetTimestampFrequency(a_frequency);
 		skinned.SetTimestampFrequency(a_frequency);
 	}
 
@@ -336,7 +340,7 @@ namespace RT
 
 	void Raytracer::Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, uint64_t a_frame, MeshCache& a_cache,
 		const std::vector<GeometryCandidate>& a_candidates, const SkinnedScene& a_skinned, const std::vector<ExclusionBound>& a_exclusions,
-		const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
+		const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows, const PointShadowParams* a_pointShadows,
 		bool a_compareShadowMap, bool a_captureDump)
 	{
 		uint8_t* upload = uploadCpu[a_slot];
@@ -347,9 +351,11 @@ namespace RT
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot + 0);
 
 		// 1. BLAS builds for newly resident meshes (scratch below the TLAS / exclusion reservations).
+		SetPassMarker(a_list, L"SkyrimRT: BLAS builds");
 		uint64_t scratchUsed = 0;
 		a_cache.BuildBLASes(a_list, a_frame, scratchVA, kScratchBytes - tlasScratchBytes - exclusionScratchBytes, scratchUsed);
 		// M7: skin this frame's actors and build/refit their BLASes (same scratch range, same barrier below).
+		SetPassMarker(a_list, L"SkyrimRT: skinning + BLAS refit");
 		if (skinnedReady)
 			skinned.Record(a_list, a_slot, a_frame, a_cache, a_candidates, a_skinned, adjust, scratchVA, kScratchBytes - tlasScratchBytes - exclusionScratchBytes, scratchUsed);
 
@@ -381,6 +387,7 @@ namespace RT
 				record.uvPage, record.uvOffset, record.uvStride, 0 };
 		}
 
+		SetPassMarker(a_list, L"SkyrimRT: exclusion BLAS");
 		// 3. Exclusion AABBs (camera-relative) as one procedural BLAS, instanced with an identity transform.
 		const uint32_t exclusionCount = static_cast<uint32_t>(std::min<size_t>(a_exclusions.size(), kMaxExclusions));
 		auto* aabbs = reinterpret_cast<D3D12_RAYTRACING_AABB*>(upload + kAabbOffset);
@@ -418,6 +425,7 @@ namespace RT
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot + 1);
 
 		// 4. TLAS, rebuilt every frame.
+		SetPassMarker(a_list, L"SkyrimRT: TLAS build");
 		{
 			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
 			build.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
@@ -435,10 +443,12 @@ namespace RT
 		const uint32_t renderWidth = std::min(a_camera.renderWidth, width);
 		const uint32_t renderHeight = std::min(a_camera.renderHeight, height);
 		const bool shadows = a_shadows && sunShadowsReady;
+		const bool pointShadowsTraced = a_pointShadows && pointShadowsReady;
 		// M7c: D3D11 filled new atlas tiles before the fence signal; readable by the traces until back to COMMON below.
-		const bool readsAtlas = alphaAtlas && (a_debugTrace || shadows);
+		const bool readsAtlas = alphaAtlas && (a_debugTrace || shadows || pointShadowsTraced);
 		if (readsAtlas)
 			Transition(a_list, alphaAtlas, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		SetPassMarker(a_list, L"SkyrimRT: debug trace");
 		if (a_debugTrace)
 			RecordDebugTrace(a_list, a_slot, a_cache, instanceCount, exclusionCount, a_area, a_camera, renderWidth, renderHeight, a_captureDump);
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, a_slot * kTimestampsPerSlot + 3);
@@ -448,6 +458,10 @@ namespace RT
 		if (shadows)
 			sunShadows.Record(a_list, a_slot, tlas->GetGPUVirtualAddress(), uploadVA + kInstanceDataOffset, a_cache.GetMeshPool(), a_camera,
 				renderWidth, renderHeight, *a_shadows, a_compareShadowMap, a_captureDump);
+		// 8. M8 point-light shadows, same inputs.
+		if (pointShadowsTraced)
+			pointShadows.RecordPointLights(a_list, a_slot, tlas->GetGPUVirtualAddress(), uploadVA + kInstanceDataOffset, a_cache.GetMeshPool(), a_camera,
+				renderWidth, renderHeight, *a_pointShadows, a_captureDump);
 		if (readsAtlas)
 			Transition(a_list, alphaAtlas, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
 
@@ -542,6 +556,8 @@ namespace RT
 	{
 		if (sunShadowsReady)
 			sunShadows.CollectResults(a_slot);
+		if (pointShadowsReady)
+			pointShadows.CollectResults(a_slot);
 		if (skinnedReady)
 			skinned.CollectResults(a_slot);
 		if (!slotPending[a_slot])
@@ -585,6 +601,8 @@ namespace RT
 	{
 		if (sunShadowsReady)
 			sunShadows.ReadDumpImages(a_out);
+		if (pointShadowsReady)
+			pointShadows.ReadDumpImages(a_out);
 		if (!dumpCaptured || !dumpReadback || !dumpWidth || !dumpHeight)
 			return;
 		dumpCaptured = false;

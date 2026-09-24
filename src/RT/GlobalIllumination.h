@@ -38,7 +38,7 @@ namespace RT
 		GIParams params;           ///< pointLights is cleared (the span doesn't outlive SubmitGI)
 		uint32_t pointLights = 0;  ///< point lights uploaded for the bounce last frame
 		uint32_t pointLightsDropped = 0;  ///< beyond kMaxPointLights
-		std::vector<GIPointLight> lastPointLights;  ///< last frame's uploaded lights, for the dump
+		std::vector<PointLight> lastPointLights;  ///< last frame's uploaded lights, for the dump
 		TimingSeries traceMs;
 		TimingSeries denoiseMs;
 		TimingSeries resolveMs;

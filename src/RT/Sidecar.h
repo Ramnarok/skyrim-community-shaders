@@ -41,7 +41,8 @@ namespace RT
 		 * D3D11 → D3D12 (test pattern; with a_debugTrace and/or a_shadows the BLAS/TLAS build, M4 debug trace and
 		 * M5 sun shadows) → D3D11, then mesh uploads. SkyrimRT::Prepass calls it before the opaque pass.
 		 */
-		void Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows, bool a_buildForGI);
+		void Submit(uint32_t a_gameFrame, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
+			const PointShadowParams* a_pointShadows, bool a_buildForGI);
 
 		/**
 		 * @brief M6: the frame's second hand-off, from Deferred::DeferredPasses once the G-buffer is complete: GI trace,
@@ -71,13 +72,18 @@ namespace RT
 		 */
 		void RequestDebugDump() { dumpRequested = true; }
 
-		/** @brief True while a dump is capturing its RT-off reference frame (sun shadows and GI both handed back). */
+		/** @brief True while a dump is capturing its RT-off reference frame (sun shadows, point-light shadows and GI all handed back). */
 		bool IsSunShadowSuppressed() const { return dumpStage == DumpStage::kSuppressing; }
 
 		bool CanTraceSunShadows() const { return !deviceRemoved && raytracerReady && raytracer.SunShadowsReady(); }
 
 		/** @brief The RT sun-shadow mask for this frame's lighting, cleared to lit first if it wasn't traced recently. */
 		ID3D11ShaderResourceView* AcquireSunShadowMask(uint32_t a_gameFrame);
+
+		bool CanTracePointLightShadows() const { return !deviceRemoved && raytracerReady && raytracer.PointShadowsReady(); }
+
+		/** @brief M8: the RT point-light shadow mask for this frame, cleared to lit first if it wasn't traced recently. */
+		ID3D11ShaderResourceView* AcquirePointLightShadowMask(uint32_t a_gameFrame);
 
 		ID3D11ShaderResourceView* GetTestPatternSRV() const { return framesSubmitted > 0 ? patternSRV11.get() : nullptr; }
 		const InteropStats& GetStats() const { return stats; }
@@ -87,6 +93,7 @@ namespace RT
 		const MeshCacheStats& GetMeshCacheStats() const { return meshCache.GetStats(); }
 		const Raytracer* GetRaytracer() const { return raytracerReady ? &raytracer : nullptr; }
 		const SunShadows* GetSunShadows() const { return (raytracerReady && raytracer.SunShadowsReady()) ? &raytracer.GetSunShadows() : nullptr; }
+		const SunShadows* GetPointShadows() const { return (raytracerReady && raytracer.PointShadowsReady()) ? &raytracer.GetPointShadows() : nullptr; }
 		const std::string& GetFailureReason() const { return failureReason; }
 
 	private:
@@ -96,6 +103,12 @@ namespace RT
 		void RunSharedBufferSpike();
 		bool WaitForFenceBlocking(uint64_t a_value);  // Init-time only, never on the frame path.
 		void CheckDeviceRemoved();
+		void LogDeviceRemovedDetails();
+		/** @brief Starts collecting SetPassMarker names for a_list (render thread), so a DRED report can name passes. */
+		void BeginMarkerLog(ID3D12GraphicsCommandList* a_list);
+		void EndMarkerLog();
+		std::array<PassMarkerLog, 8> markerLogs;  // the last lists recorded (a hung list is at most a few frames old)
+		uint32_t nextMarkerLog = 0;
 		void CollectTimings(uint32_t a_slot);
 		void FinishDumpIfReady();
 
@@ -149,6 +162,7 @@ namespace RT
 		uint32_t dumpGameFrame = 0;
 		uint32_t suppressUntilFrame = 0;
 		bool dumpShadowsTraced = false;
+		bool dumpPointShadowsTraced = false;
 		FrameCapture captureOn;
 		FrameCapture captureOff;
 
@@ -186,6 +200,10 @@ namespace RT
 		bool shadowTracedEver = false;
 		uint32_t lastShadowGameFrame = 0;
 		bool maskClearedWhileStale = false;
+		// M8, the same for the point-light mask.
+		bool pointShadowTracedEver = false;
+		uint32_t lastPointShadowGameFrame = 0;
+		bool pointMaskClearedWhileStale = false;
 
 		LARGE_INTEGER qpcFrequency{};
 		LARGE_INTEGER lastPresent{};
@@ -211,5 +229,25 @@ namespace RT
 		InteropStats stats;
 		SpikeResults spike;
 		std::string failureReason;
+
+		// GPU hang recovery. D3D11 queues a GPU wait for each value D3D12 signals back. A removed D3D12 device's fences
+		// read UINT64_MAX everywhere, so a TDR (0x887A0006) releases those waits by itself, provided the sidecar has its
+		// own device (RT::CreateSidecarDevice): sharing the process-wide one also removed the device frame generation
+		// presents through, which froze the game. A queue stuck on a fence never TDRs, so the watchdog thread removes
+		// the device after kStallSeconds without fence progress. Ray tracing then stays off until restart.
+		void StartWatchdog();
+		void WatchdogLoop(std::stop_token a_stop);
+		std::atomic<uint64_t> awaitedFenceValue{ 0 };  // highest value D3D11 has been told to wait on
+		std::atomic<bool> hangRescued{ false };        // the watchdog saw the device removed, or removed it
+		std::atomic<bool> simulateHang{ false };
+
+	public:
+		static constexpr uint32_t kStallSeconds = 5;  ///< no fence progress for this long while D3D11 waits = hung
+		static constexpr uint64_t kSimulatedHangValue = 1ull << 61;  ///< never reached by the frame loop
+		/** @brief Debug: the next round trip's queue waits on a value nothing signals (see RT::SimulateGpuHang). */
+		void SimulateHang() { simulateHang = true; }
+
+	private:
+		std::jthread watchdog;  // last member: stopped and joined before the objects it reads are destroyed
 	};
 }

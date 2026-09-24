@@ -16,6 +16,20 @@ namespace RT
 			}
 		}
 
+		// A bone palette row (3x4, absolute world space) that skinning can use: finite, a rotation-and-scale part no
+		// larger than a 1000x scale, and a translation within 10^7 units (Skyrim's worldspaces span ~10^6).
+		bool IsSanePaletteRow(const float (&a_row)[12])
+		{
+			for (int r = 0; r < 3; r++) {
+				for (int c = 0; c < 4; c++) {
+					const float v = a_row[r * 4 + c];
+					if (!std::isfinite(v) || std::abs(v) > (c == 3 ? 1.0e7f : 1.0e3f))
+						return false;
+				}
+			}
+			return true;
+		}
+
 		bool IsUnderTree(const RE::NiAVObject* a_object)
 		{
 			for (auto* node = a_object ? a_object->parent : nullptr; node; node = node->parent) {
@@ -195,6 +209,13 @@ namespace RT
 						std::memcpy(row, restRow, sizeof(row));
 					else
 						TransformTo3x4(*boneWorld * skinData->GetBoneDataSkinToBone(bone), row);
+					// A non-finite or absurd bone (seen on dying actors' skeletons is the suspicion) would make the refit
+					// invalid (SkinCS.hlsl): skip the partition this frame, keeping its last good BLAS.
+					if (!IsSanePaletteRow(row)) {
+						usable = false;
+						a_out.stats.skinnedInvalidPoses++;
+						break;
+					}
 					a_out.skinned.palettes.insert(a_out.skinned.palettes.end(), row, row + 12);
 				}
 				if (!usable) {

@@ -22,6 +22,10 @@ struct SkyrimRT : OverlayFeature
 	virtual inline std::string GetShortName() override { return "SkyrimRT"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
 
+	/** @brief M8: Lighting.hlsl reads the point-light shadow mask at PS t46 (SkyrimRT/PointLightShadows.hlsli). */
+	virtual inline std::string_view GetShaderDefineName() override { return "SKYRIM_RT"; }
+	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Lighting; }
+
 	/** @brief Returns a localized description and list of key features for the UI summary panel. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
@@ -43,6 +47,7 @@ struct SkyrimRT : OverlayFeature
 		uint32_t DebugView = 3;       ///< 0 depth, 1 instance, 2 normal, 3 depth-mismatch diff
 		bool AlphaTest = true;        ///< M7c: alpha-test foliage in every trace (else solid cards)
 		bool TreeRestPose = true;        ///< M7: trace trees without sway (their bones hold the last culling camera's pose)
+		bool GPUHangDiagnostics = true;  ///< DRED breadcrumbs + page faults in every build (read at startup)
 		bool SunShadows = true;       ///< M5: ray-traced sun shadows in place of Screen-Space Shadows
 		float SunAngularRadius = 0.5f;  ///< degrees; penumbra width
 		bool AlphaTestedShadows = true;
@@ -51,6 +56,8 @@ struct SkyrimRT : OverlayFeature
 		uint32_t ShadowHistory = 24;
 		float ShadowSpatialRadius = 3.0f;
 		uint32_t ShadowView = 0;  ///< overlay: 0 off, 1 raw, 2 denoised
+		bool PointLightShadows = true;  ///< M8: ray-traced shadows for the game's unshadowed point lights (PS t46)
+		uint32_t PointShadowView = 0;   ///< overlay: 0 off, 1 raw, 2 denoised
 		bool GlobalIllumination = true;  ///< M6: ray-traced GI in place of Screen-Space GI (builds with NRD only)
 		float GIIntensity = 1.0f;
 		float GIAOStrength = 1.0f;
@@ -80,6 +87,9 @@ struct SkyrimRT : OverlayFeature
 	 */
 	bool ProvidesSunShadowMask();
 
+	/** @brief M8: whether this frame traces the point-light shadow mask Lighting.hlsl reads at PS t46. */
+	bool ProvidesPointLightShadowMask();
+
 	/**
 	 * @brief Before the opaque pass: captures the main camera, runs the RT round trip (debug trace and/or sun
 	 * shadows) and binds the sun-shadow mask at PS t45.
@@ -100,7 +110,7 @@ struct SkyrimRT : OverlayFeature
 
 	/** @brief Composites the D3D12-written test pattern into the top-right corner. */
 	virtual void DrawOverlay() override;
-	virtual bool IsOverlayVisible() const override { return settings.Enabled && (settings.ShowTestPattern || settings.TraceDebugView || settings.ShadowView != 0 || settings.GIView != 0); }
+	virtual bool IsOverlayVisible() const override { return settings.Enabled && (settings.ShowTestPattern || settings.TraceDebugView || settings.ShadowView != 0 || settings.PointShadowView != 0 || settings.GIView != 0); }
 
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
@@ -108,6 +118,7 @@ struct SkyrimRT : OverlayFeature
 
 private:
 	void DrawSunShadowSettings();
+	void DrawPointLightShadowSettings();
 	void DrawGlobalIlluminationSettings();
 
 	bool dumpKeyWasDown = false;

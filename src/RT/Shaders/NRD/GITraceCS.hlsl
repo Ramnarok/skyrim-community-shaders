@@ -6,13 +6,14 @@
 
 #include "GICommon.hlsli"
 #include "MeshData.hlsli"
+#include "PointLights.hlsli"
 
 RaytracingAccelerationStructure Scene : register(t0);
 Texture2D<float> Depth : register(t1);
 Texture2D<float4> GBufferNormal : register(t2);  // CS's NORMALROUGHNESS: xy octahedral view-space normal, z glossiness
 Texture2D<float2> GameMotionVectors : register(t3);  // kMOTION_VECTOR: prevUV - currUV, NRD's convention already
 StructuredBuffer<InstanceData> Instances : register(t5);  // root SRV
-StructuredBuffer<GIPointLight> PointLights : register(t6);  // root SRV: Light Limit Fix's lights this frame
+StructuredBuffer<PointLight> PointLights : register(t6);  // root SRV: Light Limit Fix's lights this frame
 RWTexture2D<float> OutViewZ : register(u0);
 RWTexture2D<float4> OutNormalRoughness : register(u1);
 RWTexture2D<float2> OutMotionVectors : register(u2);
@@ -22,9 +23,6 @@ RWByteAddressBuffer Counters : register(u4);
 static const float kSunRayLength = 50000.0;  // as the sun-shadow trace (SunShadows::kMaxRayDistance)
 static const float kSelfHitMin = 2.0;         // game units
 static const float kSelfHitRelative = 0.01;   // of view distance: Raytracer::kMismatchThreshold
-// Point-light visibility rays stop this far short of the light: lights sit inside their own fixture (lantern frames,
-// sconces, braziers), which would otherwise shadow every surface they light.
-static const float kLightClearance = 16.0;  // game units
 
 void Count(uint a_slot, bool a_condition)
 {
@@ -85,66 +83,20 @@ bool Occluded(float3 a_origin, float3 a_direction, float a_length)
 	return OccluderDistance(a_origin, a_direction, a_length) >= 0.0;
 }
 
-// Lighting.hlsl's point-light falloff: InverseSquareLighting::GetAttenuation when that feature is loaded, else
-// 1 - (d / r)^2.
-float PointLightAttenuation(float a_distance, GIPointLight a_light)
-{
-	const float falloff = saturate(a_distance * a_light.InvRadius);
-	const float regular = 1.0 - falloff * falloff;
-	if (!C.InverseSquare)
-		return regular;
-	static const float kScaledUnitsSq = 0.8 * 70.0 * 70.0;  // InverseSquareLighting::SCALED_UNITS_SQ
-	const float t = saturate((a_light.Radius - a_distance) * a_light.FadeZone);
-	const float inverseSquare = kScaledUnitsSq / (a_distance * a_distance + a_light.SizeBias) * (t * t * (3.0 - 2.0 * t));
-	const float enabled = (a_light.Flags & kLightFlagDisabled) ? 0.0 : 1.0;
-	return ((a_light.Flags & kLightFlagInverseSquare) ? inverseSquare : regular) * enabled;
-}
-
-// Point-light irradiance at a hit (N.L x colour x attenuation, as Lighting.hlsl sums it), estimated with one light:
-// a single streaming pass picks a light in proportion to its unshadowed contribution, and one visibility ray is
-// traced to it. Where every light is visible the estimate is exact; visibility is the only noise.
+// Point-light irradiance at a hit (N.L x colour x attenuation, as Lighting.hlsl sums it), estimated with one light
+// (SamplePointLight) and one visibility ray to it.
 float3 SamplePointLights(float3 a_position, float3 a_normal, float3 a_origin, float a_u, out bool a_sampled, out bool a_occluded, out float a_occluderToLight)
 {
 	a_sampled = false;
 	a_occluded = false;
 	a_occluderToLight = -1.0;
-	float total = 0.0;
-	float u = a_u;
-	float3 chosenIrradiance = 0.0;
-	float chosenWeight = 0.0;
-	float3 chosenToLight = 0.0;
-	[loop] for (uint i = 0; i < C.PointLightCount; i++)
-	{
-		const GIPointLight light = PointLights[i];
-		const float3 toLight = light.Position - a_position;
-		const float distanceSq = dot(toLight, toLight);
-		if (distanceSq >= light.Radius * light.Radius)
-			continue;
-		const float cosine = dot(a_normal, toLight);  // x distance
-		if (cosine <= 0.0)
-			continue;
-		const float distance = sqrt(distanceSq);
-		const float3 irradiance = max(light.Color, 0.0) * (PointLightAttenuation(distance, light) * cosine / max(distance, 1e-4));
-		const float weight = dot(irradiance, float3(0.2126, 0.7152, 0.0722));
-		if (!(weight > 0.0))
-			continue;
-		total += weight;
-		const float p = weight / total;
-		if (u < p) {
-			chosenIrradiance = irradiance;
-			chosenWeight = weight;
-			chosenToLight = toLight;
-			u /= p;
-		} else {
-			u = (u - p) / (1.0 - p);
-		}
-	}
-	if (!(chosenWeight > 0.0))
+	const PointLightSample light = SamplePointLight(PointLights, C.PointLightCount, 0u, C.InverseSquare != 0, a_position, a_normal, a_u);
+	if (!light.Valid)
 		return 0.0;
 
 	a_sampled = true;
 	if (C.PointLightShadows) {
-		const float3 toLight = chosenToLight + a_position - a_origin;
+		const float3 toLight = light.ToLight + a_position - a_origin;
 		const float distance = length(toLight);
 		const float rayLength = distance - kLightClearance;
 		const float occluder = rayLength > 0.0 ? OccluderDistance(a_origin, toLight / distance, rayLength) : -1.0;
@@ -154,7 +106,7 @@ float3 SamplePointLights(float3 a_position, float3 a_normal, float3 a_origin, fl
 			return 0.0;
 		}
 	}
-	return chosenIrradiance * (total / chosenWeight);
+	return light.Irradiance;
 }
 
 // Radiance leaving a hit, in the space Screen-Space GI gathers kMAIN in (Color::RadianceToLinear).

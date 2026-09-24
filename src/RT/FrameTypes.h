@@ -1,7 +1,35 @@
 #pragma once
 
+#include <d3d12.h>
+
 namespace RT
 {
+	/** @brief The pass markers recorded into one command list, in order (the names are string literals). */
+	struct PassMarkerLog
+	{
+		const ID3D12GraphicsCommandList* list = nullptr;
+		std::vector<const wchar_t*> names;
+	};
+
+	/** @brief The log the render thread's SetPassMarker calls append to while the sidecar records a list, or nullptr. */
+	inline PassMarkerLog*& CurrentPassMarkerLog()
+	{
+		static thread_local PassMarkerLog* log = nullptr;
+		return log;
+	}
+
+	/**
+	 * @brief Names the next commands in a D3D12 list. DRED records each SetMarker as a breadcrumb op but, on the
+	 * RTX 4080 SUPER, not its string (measured 2026-09-24), so the names are also kept on the CPU (PassMarkerLog):
+	 * Sidecar::LogDeviceRemovedDetails matches the nth SetMarker op with the nth name.
+	 */
+	inline void SetPassMarker(ID3D12GraphicsCommandList* a_list, const wchar_t* a_name)
+	{
+		a_list->SetMarker(0, a_name, static_cast<UINT>((std::wcslen(a_name) + 1) * sizeof(wchar_t)));
+		if (auto* log = CurrentPassMarkerLog(); log && log->list == a_list)
+			log->names.push_back(a_name);
+	}
+
 	/** @brief Camera of the frame being traced, captured from CS's per-frame buffer in SkyrimRT::Prepass(). */
 	struct FrameCamera
 	{

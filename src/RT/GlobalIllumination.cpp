@@ -54,7 +54,7 @@ namespace RT
 		constexpr uint64_t kConstantsOffset = 0;
 		constexpr uint64_t kZeroOffset = 512;
 		constexpr uint64_t kPointLightsOffset = 1024;
-		constexpr uint64_t kUploadBytes = kPointLightsOffset + sizeof(GIPointLight) * GlobalIllumination::kMaxPointLights;
+		constexpr uint64_t kUploadBytes = kPointLightsOffset + sizeof(PointLight) * GlobalIllumination::kMaxPointLights;
 		constexpr uint64_t kCounterBytes = 64;
 		constexpr uint32_t kTimestampsPerSlot = 4;
 
@@ -422,7 +422,7 @@ namespace RT
 		c->interior = a_params.interior ? 1u : 0u;
 		const uint32_t pointLightCount = static_cast<uint32_t>(std::min<size_t>(a_params.pointLights.size(), kMaxPointLights));
 		if (pointLightCount)
-			std::memcpy(uploadCpu[a_slot] + kPointLightsOffset, a_params.pointLights.data(), sizeof(GIPointLight) * pointLightCount);
+			std::memcpy(uploadCpu[a_slot] + kPointLightsOffset, a_params.pointLights.data(), sizeof(PointLight) * pointLightCount);
 		c->pointLightCount = pointLightCount;
 		c->pointLightShadows = a_params.pointLightShadows ? 1u : 0u;
 		c->inverseSquare = a_params.inverseSquare ? 1u : 0u;
@@ -459,6 +459,7 @@ namespace RT
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 0);
 
 		// 1. Trace: NRD's noisy input and guides.
+		SetPassMarker(a_list, L"SkyrimRT: GI trace");
 		Barriers(a_list, { TransitionBarrier(counters.get(), kCommon, D3D12_RESOURCE_STATE_COPY_DEST) });
 		a_list->CopyBufferRegion(counters.get(), 0, uploads[a_slot].get(), kZeroOffset, kCounterBytes);
 		Barriers(a_list, { TransitionBarrier(counters.get(), D3D12_RESOURCE_STATE_COPY_DEST, kUAV),
@@ -484,6 +485,7 @@ namespace RT
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1);
 
 		// 2. REBLUR.
+		SetPassMarker(a_list, L"SkyrimRT: GI REBLUR");
 		nrd::CommonSettings common{};
 		nrd::ReblurSettings reblur{};
 		FillNrdSettings(a_camera, a_renderWidth, a_renderHeight, a_params, historyValid, common, reblur);
@@ -492,6 +494,7 @@ namespace RT
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 2);
 
 		// 3. Resolve into the composite's Screen-Space GI inputs.
+		SetPassMarker(a_list, L"SkyrimRT: GI resolve");
 		Barriers(a_list, { TransitionBarrier(ao.resource12.get(), kCommon, kUAV),
 							 TransitionBarrier(y.resource12.get(), kCommon, kUAV),
 							 TransitionBarrier(coCg.resource12.get(), kCommon, kUAV),

@@ -33,7 +33,7 @@ namespace RT
 
 	uint64_t SkinnedMeshes::KeyHash::operator()(const Key& a_key) const noexcept
 	{
-		return ankerl::unordered_dense::detail::wyhash::hash(reinterpret_cast<uint64_t>(a_key.skinInstance) * 31 + a_key.partition);
+		return ankerl::unordered_dense::detail::wyhash::hash((reinterpret_cast<uint64_t>(a_key.skinInstance) * 31 + a_key.partition) * 31 + reinterpret_cast<uint64_t>(a_key.mesh));
 	}
 
 	bool SkinnedMeshes::Init(ID3D12Device5* a_device)
@@ -132,6 +132,7 @@ namespace RT
 		stats.blasBuiltLastFrame = 0;
 		stats.blasRefitLastFrame = 0;
 		stats.blasSkippedScratch = 0;
+		stats.duplicatePartitions = 0;
 		stats.verticesLastFrame = 0;
 		stats.dynamicPartitions = 0;
 		stats.dynamicUploadsLastFrame = 0;
@@ -175,6 +176,8 @@ namespace RT
 		work.reserve(a_scene.partitions.size());
 		uint64_t uploadUsed = 0;
 		uint8_t* upload = uploadCpu[a_slot];
+		ankerl::unordered_dense::set<Key, KeyHash> keysThisFrame;
+		keysThisFrame.reserve(a_scene.partitions.size());
 
 		for (size_t i = 0; i < a_scene.partitions.size(); i++) {
 			const auto& partition = a_scene.partitions[i];
@@ -183,7 +186,14 @@ namespace RT
 				stats.waitingForMesh++;
 				continue;
 			}
-			const Key key{ partition.skinInstance, partition.partitionIndex };
+			const Key key{ partition.skinInstance, partition.partitionIndex, a_candidates[partition.candidateIndex].rendererData };
+			// Each entry gets at most one skin + build per frame: two BuildRaytracingAccelerationStructure calls on the
+			// same BLAS in one list, with no barrier between them, race (and a refit reading a BLAS another build is
+			// writing is undefined). A GPU-hang candidate, so a repeat is skipped and counted.
+			if (!keysThisFrame.insert(key).second) {
+				stats.duplicatePartitions++;
+				continue;
+			}
 			auto& existing = entries[key];
 			// A different mesh behind the same skin instance (re-equipped armour, address reuse): start over with
 			// fresh allocations, retiring the old ones until frames in flight are done with them.

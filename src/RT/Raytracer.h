@@ -99,11 +99,11 @@ namespace RT
 
 		/**
 		 * @brief Records BLAS builds and the TLAS build, then the M4 debug trace (a_debugTrace) and the M5 sun shadows
-		 * (a_shadows non-null), with their result readbacks, into a_list.
+		 * (a_shadows non-null) and the M8 point-light shadows (a_pointShadows non-null), with their result readbacks, into a_list.
 		 */
 		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, uint64_t a_frame, MeshCache& a_cache,
 			const std::vector<GeometryCandidate>& a_candidates, const SkinnedScene& a_skinned, const std::vector<ExclusionBound>& a_exclusions,
-			const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows,
+			const LoadedArea& a_area, const FrameCamera& a_camera, bool a_debugTrace, const SunShadowParams* a_shadows, const PointShadowParams* a_pointShadows,
 			bool a_compareShadowMap, bool a_captureDump);
 
 		/** @brief Reads the slot's counters and timestamps once its fence value has completed (never waits). */
@@ -124,9 +124,12 @@ namespace RT
 		ID3D12Resource* GetRasterDepth() const { return rasterDepth.resource12.get(); }
 		ID3D11ComputeShader* GetCopyDepthShader() const { return copyDepthCS.get(); }
 		bool SunShadowsReady() const { return sunShadowsReady; }
+		bool PointShadowsReady() const { return pointShadowsReady; }
 		const SkinnedMeshes* GetSkinned() const { return skinnedReady ? &skinned : nullptr; }
 		SunShadows& GetSunShadows() { return sunShadows; }
 		const SunShadows& GetSunShadows() const { return sunShadows; }
+		SunShadows& GetPointShadows() { return pointShadows; }
+		const SunShadows& GetPointShadows() const { return pointShadows; }
 
 	private:
 		bool CreatePipeline();
@@ -189,6 +192,8 @@ namespace RT
 
 		SunShadows sunShadows;
 		bool sunShadowsReady = false;
+		SunShadows pointShadows;  // M8: ShadowKind::kPointLights
+		bool pointShadowsReady = false;
 		SkinnedMeshes skinned;
 		bool skinnedReady = false;
 

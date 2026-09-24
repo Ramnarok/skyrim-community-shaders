@@ -30,6 +30,9 @@ namespace RT
 		TraceStats trace;
 		bool haveShadows = false;  ///< the dump frame traced M5 sun shadows (mask images and the RT on/off pair)
 		SunShadowStats shadows;
+		bool pointShadowsAvailable = false;  ///< M8 point-light shadows set up
+		bool havePointShadows = false;       ///< the dump frame traced them
+		SunShadowStats pointShadows;         ///< counters per PointShadowCounter
 		bool giCompiledIn = false;  ///< built with SKYRIMRT_NRD
 		bool giAvailable = false;   ///< GI set up successfully
 		bool haveGI = false;        ///< the dump frame traced M6 GI

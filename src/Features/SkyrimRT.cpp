@@ -28,6 +28,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	DebugView,
 	AlphaTest,
 	TreeRestPose,
+	GPUHangDiagnostics,
 	SunShadows,
 	SunAngularRadius,
 	AlphaTestedShadows,
@@ -36,6 +37,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ShadowHistory,
 	ShadowSpatialRadius,
 	ShadowView,
+	PointLightShadows,
+	PointShadowView,
 	GlobalIllumination,
 	GIIntensity,
 	GIAOStrength,
@@ -126,9 +129,9 @@ namespace
 	// Light Limit Fix's lights for this frame (built in its Prepass, earlier in the feature list), with the colour
 	// Lighting.hlsl ends up multiplying by attenuation and N.L: Color::PointLight(color) x Color::VanillaNormalization
 	// x fade. Positions are already relative to FrameBuffer::CameraPosAdjust, the TLAS origin.
-	std::span<const RT::GIPointLight> GatherPointLights(bool a_linearLighting)
+	std::span<const RT::PointLight> GatherPointLights(bool a_linearLighting)
 	{
-		static std::vector<RT::GIPointLight> lights;
+		static std::vector<RT::PointLight> lights;
 		lights.clear();
 		const auto& lightLimitFix = globals::features::lightLimitFix;
 		if (!lightLimitFix.loaded)
@@ -141,7 +144,7 @@ namespace
 			if (!(source.radius > 0.0f))
 				continue;
 			const bool isLinear = source.lightFlags.any(LightLimitFix::LightFlags::Linear);
-			RT::GIPointLight& light = lights.emplace_back();
+			RT::PointLight& light = lights.emplace_back();
 			light.position[0] = source.positionWS.data.x;
 			light.position[1] = source.positionWS.data.y;
 			light.position[2] = source.positionWS.data.z;
@@ -177,7 +180,7 @@ namespace
 
 void SkyrimRT::Load()
 {
-	RT::EnableDebugLayer();
+	RT::EnableDebugLayer(settings.GPUHangDiagnostics);
 }
 
 void SkyrimRT::SetupResources()
@@ -215,13 +218,30 @@ bool SkyrimRT::ProvidesSunShadowMask()
 	return providesMask;
 }
 
+bool SkyrimRT::ProvidesPointLightShadowMask()
+{
+	// Lighting.hlsl reads t46 in its Light Limit Fix loop only (SKYRIM_RT && LIGHT_LIMIT_FIX), deferred pass only.
+	return loaded && settings.Enabled && settings.PointLightShadows && globals::features::lightLimitFix.loaded &&
+	       RT::CanTracePointLightShadows() && !RT::IsSunShadowSuppressed();
+}
+
 void SkyrimRT::Prepass()
 {
+	// PS t46 is read by every deferred Lighting permutation (SKYRIM_RT); an unbound slot reads as lit, so it is
+	// unbound whenever this frame doesn't provide the mask, never left holding a stale one.
+	ID3D11ShaderResourceView* pointMask = nullptr;
+	struct BindPointMask
+	{
+		ID3D11ShaderResourceView*& srv;
+		~BindPointMask() { globals::d3d::context->PSSetShaderResources(46, 1, &srv); }
+	} bindPointMask{ pointMask };
+
 	if (!settings.Enabled)
 		return;
 	const bool shadows = ProvidesSunShadowMask();
+	const bool pointShadows = ProvidesPointLightShadowMask();
 	const bool gi = WantsGlobalIllumination();
-	if (!shadows && !gi && !settings.TraceDebugView)
+	if (!shadows && !pointShadows && !gi && !settings.TraceDebugView)
 		return;
 
 	// Same sources ScreenSpaceShadows uses in its Prepass: CS's cached per-frame buffer and the
@@ -242,9 +262,21 @@ void SkyrimRT::Prepass()
 	params.maxHistory = settings.ShadowHistory;
 	params.spatialRadius = settings.ShadowSpatialRadius;
 	params.viewMode = settings.ShadowView;
+	RT::PointShadowParams pointParams;
+	if (pointShadows) {
+		const auto& linearLighting = globals::features::linearLighting;
+		pointParams.lights = GatherPointLights(linearLighting.loaded && linearLighting.settings.enableLinearLighting);
+		pointParams.inverseSquare = globals::features::inverseSquareLighting.loaded;
+		pointParams.alphaTestedCasters = settings.AlphaTestedShadows;
+		pointParams.normalBias = settings.ShadowNormalBias;
+		pointParams.distanceBias = settings.ShadowDistanceBias;
+		pointParams.maxHistory = settings.ShadowHistory;
+		pointParams.spatialRadius = settings.ShadowSpatialRadius;
+		pointParams.viewMode = settings.PointShadowView;
+	}
 	RT::SetAlphaTest(settings.AlphaTest);
 	RT::SetTreeRestPose(settings.TreeRestPose);
-	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr, gi);
+	RT::OnPrepass(settings.TraceDebugView, traceShadows ? &params : nullptr, pointShadows ? &pointParams : nullptr, gi);
 
 	// Screen-Space Shadows skipped its pass for this frame, so the slot is ours. A mask that couldn't be traced
 	// recently comes back cleared to lit.
@@ -252,6 +284,8 @@ void SkyrimRT::Prepass()
 		if (auto* mask = RT::AcquireSunShadowMask())
 			globals::d3d::context->PSSetShaderResources(45, 1, &mask);
 	}
+	if (pointShadows)
+		pointMask = RT::AcquirePointLightShadowMask();
 }
 
 bool SkyrimRT::WantsGlobalIllumination()
@@ -351,6 +385,23 @@ void SkyrimRT::DrawOverlay()
 			ImGui::Text("%s: %.1f%% (%.3f ms)", settings.ShadowView == 1 ? T(TKEY("shadow_view_raw"), "RT sun shadow, raw") : T(TKEY("shadow_view_denoised"), "RT sun shadow, denoised"),
 				shadowStats->ShadowedPercent(), shadowStats->totalMs.Average());
 			ImGui::Image((void*)shadowView, size, ImVec2(0.0f, 0.0f), uvMax);
+		}
+		ImGui::End();
+	}
+
+	// Point-light shadow view, bottom centre.
+	auto* pointView = settings.PointShadowView != 0 && ProvidesPointLightShadowMask() ? RT::GetPointLightShadowViewSRV() : nullptr;
+	const auto* pointStats = RT::GetPointLightShadowStats();
+	if (pointView && pointStats && pointStats->renderWidth > 0 && pointStats->renderHeight > 0) {
+		constexpr float kWidth = 640.0f;
+		const ImVec2 size(kWidth, kWidth * pointStats->renderHeight / pointStats->renderWidth);
+		const ImVec2 uvMax(static_cast<float>(pointStats->renderWidth) / pointStats->textureWidth, static_cast<float>(pointStats->renderHeight) / pointStats->textureHeight);
+		ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - kMargin), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+		ImGui::SetNextWindowBgAlpha(0.6f);
+		if (ImGui::Begin("##SkyrimRTPointShadowView", nullptr, kFlags)) {
+			ImGui::Text("%s (%.3f ms)", settings.PointShadowView == 1 ? T(TKEY("point_shadow_view_raw"), "RT point-light shadow, raw") : T(TKEY("point_shadow_view_denoised"), "RT point-light shadow, denoised"),
+				pointStats->totalMs.Average());
+			ImGui::Image((void*)pointView, size, ImVec2(0.0f, 0.0f), uvMax);
 		}
 		ImGui::End();
 	}
@@ -488,6 +539,36 @@ void SkyrimRT::DrawSunShadowSettings()
 	}
 }
 
+void SkyrimRT::DrawPointLightShadowSettings()
+{
+	ImGui::Checkbox(T(TKEY("point_shadows"), "Ray-traced point-light shadows"), &settings.PointLightShadows);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("point_shadows_tooltip"), "Trace shadows for the torches, candles and fires the game draws without shadows, so their light no longer passes through walls, counters and floors. Lights that already have a shadow map keep it. Uses the sun-shadow filter settings."));
+
+	if (!globals::features::lightLimitFix.loaded)
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("point_shadows_needs_llf"), "Requires the Light Limit Fix feature: the lighting shaders read the result in its light loop."));
+	else if (settings.PointLightShadows && settings.Enabled && !RT::CanTracePointLightShadows())
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("sun_shadows_unavailable"), "Unavailable: the ray tracing pipeline could not be set up. See CommunityShaders.log."));
+
+	const char* viewNames[] = { T(TKEY("shadow_view_off"), "Off"), T(TKEY("point_shadow_view_raw"), "RT point-light shadow, raw"), T(TKEY("point_shadow_view_denoised"), "RT point-light shadow, denoised") };
+	int view = static_cast<int>(std::min<uint32_t>(settings.PointShadowView, 2));
+	if (ImGui::Combo(T(TKEY("point_shadow_view"), "Point-light shadow debug view"), &view, viewNames, IM_ARRAYSIZE(viewNames)))
+		settings.PointShadowView = static_cast<uint32_t>(view);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("point_shadow_view_tooltip"), "Show the ray-traced point-light visibility at the bottom centre: white is lit, black is shadowed."));
+
+	if (const auto* stats = RT::GetPointLightShadowStats(); stats && stats->haveResult) {
+		const auto& c = stats->counters;
+		ImGui::Text("%s: %s", T(TKEY("shadow_active"), "Active this frame"), ProvidesPointLightShadowMask() ? T(TKEY("yes"), "yes") : T(TKEY("no"), "no"));
+		ImGui::Text("%s: %u (%s %u, %s %u, %s %u)", T(TKEY("point_shadow_lights"), "Point lights"), stats->pointLights,
+			T(TKEY("point_shadow_traced"), "traced"), stats->pointLightsTraced, T(TKEY("point_shadow_shadow_mapped"), "shadow-mapped"), stats->pointLightsShadowMapped,
+			T(TKEY("point_shadow_portal_strict"), "room-limited"), stats->pointLightsPortalStrict);
+		ImGui::Text("%s: %.1f%% (%s %.1f%%)", T(TKEY("point_shadow_sampled"), "Pixels lit by a traced light"), c[RT::kPointTraced] ? 100.0f * c[RT::kPointSampled] / c[RT::kPointTraced] : 0.0f,
+			T(TKEY("gi_point_light_occluded"), "occluded"), c[RT::kPointSampled] ? 100.0f * c[RT::kPointOccluded] / c[RT::kPointSampled] : 0.0f);
+		ImGui::Text("%s: %.3f / %.3f / %.3f ms", T(TKEY("shadow_timings"), "Trace / temporal / spatial"), stats->traceMs.Average(), stats->temporalMs.Average(), stats->spatialMs.Average());
+	}
+}
+
 void SkyrimRT::DrawSettings()
 {
 	if (ImGui::TreeNodeEx(T(TKEY("general"), "General"), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -527,6 +608,17 @@ void SkyrimRT::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("write_dump_tooltip"), "Writes frame_<n>.json and PNGs of the debug views, the shadow masks and the final frame with ray-traced shadows on and off to Documents\\My Games\\Skyrim Special Edition\\SKSE\\SkyrimRT."));
 
+		ImGui::Checkbox(T(TKEY("gpu_hang_diagnostics"), "GPU hang diagnostics (restart to apply)"), &settings.GPUHangDiagnostics);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("gpu_hang_diagnostics_tooltip"), "Record where the GPU was (DirectX Device Removed Extended Data) so a ray tracing hang can be traced to its pass in CommunityShaders.log. Small GPU cost; applies to the ray tracing device only."));
+
+		ImGui::BeginDisabled(!settings.Enabled || !RT::IsRunning());
+		if (ImGui::Button(T(TKEY("simulate_hang"), "Simulate GPU hang")))
+			RT::SimulateGpuHang();
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("simulate_hang_tooltip"), "Test the hang recovery: the ray tracing device stops as if it had hung. The game should freeze for about 5 seconds and then continue without ray tracing until restart."));
+
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();
@@ -534,6 +626,13 @@ void SkyrimRT::DrawSettings()
 
 	if (ImGui::TreeNodeEx(T(TKEY("sun_shadows_section"), "Sun shadows"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		DrawSunShadowSettings();
+		ImGui::Spacing();
+		ImGui::Spacing();
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("point_shadows_section"), "Point-light shadows"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		DrawPointLightShadowSettings();
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();

@@ -29,6 +29,7 @@ We do not trace primary visibility for final output.
   - Measured in M2 (2026-09-23, RTX 4080 SUPER): shared **textures must be created in D3D11** (`MISC_SHARED | MISC_SHARED_NTHANDLE`) and opened in D3D12. The reverse (D3D12 shared heap → `OpenSharedResource1`) fails with `E_INVALIDARG`.
   - **Buffers cannot be shared in either direction** (D3D11 rejects shared buffers with `E_INVALIDARG`; a D3D12 shared-heap buffer won't open in D3D11). Geometry reaches D3D12 via CPU upload instead (ARCHITECTURE §2).
 - **World coordinates are large.** Build the TLAS camera-relative to avoid float precision loss.
+- **`D3D12CreateDevice` returns one device per adapter** (measured 2026-09-24). With CS's frame generation active, that device presents the game's frames. The sidecar must create its own through `ID3D12DeviceFactory` (`RT::CreateSidecarDevice`); otherwise a ray tracing hang kills presentation. A removed device's fences read `UINT64_MAX` everywhere, which releases D3D11's waits on them.
 
 ## Rules for working in this codebase
 
@@ -71,13 +72,14 @@ Claude Code can build but cannot play Skyrim. Each milestone therefore needs mac
    - `debug_<view>_<n>.png`: images of the debug views.
 
    Claude reads these directly with its file tools.
-2. **Log file.** The SKSE log for the plugin lives in `Documents/My Games/Skyrim Special Edition/SKSE/`. Read it after each test run.
+2. **Log file.** The SKSE log for the plugin lives in `Documents/My Games/Skyrim Special Edition/SKSE/`. Read it after each test run. `CommunityShaders.log` is rewritten on every launch, so a test that needs a restart in the middle loses the first session's log: read it before restarting, or say so in the test steps.
 3. **Test runs.** When a test run is needed, give Jake exact steps, e.g. "load save X, stand in Whiterun market, press F10, quit". Wait for him to confirm, then read the dump.
 4. **Prefer numeric checks over eyeballing.** Example: RT-traced depth vs. raster depth mismatch percentage (ROADMAP M4).
 
 If the device is removed or the game crashes:
 - Read the SKSE log and any crash log (e.g. from Crash Logger SSE) before changing code.
-- Enable the D3D12 debug layer and DRED in debug builds.
+- A frozen screen with sound still playing is a GPU hang, not a crash: Crash Logger writes nothing. Look for `Device removed` and the `DRED:` lines in `CommunityShaders.log`. DRED is on in every build through the "GPU hang diagnostics" setting, and the log names the pass the GPU stopped in (`SetPassMarker`). Since 2026-09-24 the sidecar has its own device, so its hang shouldn't freeze the game ("Watchdog:" lines). If the game freezes while our device reports no removal, the hang is elsewhere (e.g. frame generation's device).
+- The D3D12 debug layer is debug-build only, and debug builds log to the debugger, not the file.
 
 ## Key references
 

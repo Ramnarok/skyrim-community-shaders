@@ -180,6 +180,39 @@ namespace RT
 			};
 		}
 
+		json PointShadowsJson(const DebugDumpData& a_data)
+		{
+			const auto& s = a_data.pointShadows;
+			const auto& c = s.counters;
+			json images = json::array();
+			for (const auto& image : a_data.images) {
+				if (image.name.starts_with("point_shadow_"))
+					images.push_back(std::format("debug_{}_{}.png", image.name, a_data.gameFrame));
+			}
+			const uint32_t farther = c[kPointOccluded] - c[kPointOccluderNear32] - c[kPointOccluderNear64] - c[kPointOccluderNear128];
+			return {
+				{ "available", a_data.pointShadowsAvailable },
+				{ "traced_dump_frame", a_data.havePointShadows },
+				{ "have_result", s.haveResult },
+				{ "frames_traced", s.framesTraced },
+				{ "history_resets", s.historyResets },
+				{ "lights_uploaded", s.pointLights },
+			{ "lights_by_kind", { { "traced", s.pointLightsTraced }, { "shadow_mapped", s.pointLightsShadowMapped }, { "portal_strict", s.pointLightsPortalStrict } } },
+				{ "note", "lights without the Shadow, PortalStrict or Disabled flag are ray-traced; raw = visibility of one light picked by unshadowed contribution" },
+				{ "pixels", { { "traced", c[kPointTraced] }, { "sampled_light", c[kPointSampled] }, { "occluded", c[kPointOccluded] } } },
+				{ "sampled_percent", c[kPointTraced] ? 100.0 * c[kPointSampled] / c[kPointTraced] : 0.0 },
+				{ "occluded_percent_of_sampled", c[kPointSampled] ? 100.0 * c[kPointOccluded] / c[kPointSampled] : 0.0 },
+				{ "occluded_by_distance_to_light", { { "under_32", c[kPointOccluderNear32] }, { "32_to_64", c[kPointOccluderNear64] }, { "64_to_128", c[kPointOccluderNear128] }, { "128_and_over", farther } } },
+				{ "timings_ms",
+					{ { "trace", TimingJson(s.traceMs) },
+						{ "temporal", TimingJson(s.temporalMs) },
+						{ "spatial", TimingJson(s.spatialMs) },
+						{ "total_passes", TimingJson(s.totalMs) },
+						{ "note", "inside the Prepass round trip: timings_ms.d3d11_round_trip is the frame-time cost" } } },
+				{ "images", images },
+			};
+		}
+
 		json SkinnedJson(const DebugDumpData& a_data)
 		{
 			const auto& k = a_data.skinned;
@@ -187,13 +220,13 @@ namespace RT
 			return {
 				{ "available", a_data.haveSkinned },
 				{ "scene", { { "shapes", s.skinnedShapes }, { "partitions", s.skinnedPartitions }, { "bones", s.skinnedBones }, { "half_position_partitions", s.skinnedHalfPositions },
-							   { "rejected_shapes", s.skinnedRejectedShapes }, { "rejected_partitions", s.skinnedRejectedPartitions }, { "dynamic_shapes", s.dynamicShapes }, { "dynamic_rejected_shapes", s.dynamicRejectedShapes } } },
+							   { "rejected_shapes", s.skinnedRejectedShapes }, { "rejected_partitions", s.skinnedRejectedPartitions }, { "invalid_pose_partitions", s.skinnedInvalidPoses }, { "dynamic_shapes", s.dynamicShapes }, { "dynamic_rejected_shapes", s.dynamicRejectedShapes } } },
 				{ "dynamic", { { "partitions", k.dynamicPartitions }, { "uploads_last_frame", k.dynamicUploadsLastFrame }, { "upload_kb_last_frame", k.dynamicUploadBytesLastFrame / 1024.0 }, { "waiting", k.dynamicWaiting } } },
 				{ "tlas_instances", k.instances },
 				{ "skinned_last_frame", k.skinnedLastFrame },
 				{ "vertices_last_frame", k.verticesLastFrame },
 				{ "waiting_for_mesh", k.waitingForMesh },
-				{ "blas", { { "built_last_frame", k.blasBuiltLastFrame }, { "refit_last_frame", k.blasRefitLastFrame }, { "skipped_scratch", k.blasSkippedScratch }, { "total_built", k.totalBuilt }, { "failed", k.failed } } },
+				{ "blas", { { "built_last_frame", k.blasBuiltLastFrame }, { "refit_last_frame", k.blasRefitLastFrame }, { "skipped_scratch", k.blasSkippedScratch }, { "duplicate_partitions_skipped", k.duplicatePartitions }, { "total_built", k.totalBuilt }, { "failed", k.failed } } },
 				{ "entries", k.entries },
 				{ "memory_mb", { { "output", k.outputBytes / (1024.0 * 1024.0) }, { "blas", k.blasBytes / (1024.0 * 1024.0) } } },
 				{ "timings_ms", { { "skin_and_blas", TimingJson(k.skinMs) } } },
@@ -301,6 +334,7 @@ namespace RT
 				{ "skinned", SkinnedJson(a_data) },
 				{ "global_illumination", GlobalIlluminationJson(a_data) },
 				{ "sun_shadows", SunShadowsJson(a_data) },
+				{ "point_light_shadows", PointShadowsJson(a_data) },
 				{ "trace", TraceJson(a_data) },
 				{ "scene", SceneJson(a_data) },
 				{ "mesh_cache", CacheJson(a_data.cache) },

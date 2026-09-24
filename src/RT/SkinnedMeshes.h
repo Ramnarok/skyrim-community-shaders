@@ -22,6 +22,7 @@ namespace RT
 		uint32_t blasBuiltLastFrame = 0;
 		uint32_t blasRefitLastFrame = 0;
 		uint32_t blasSkippedScratch = 0;  ///< builds/refits deferred (scratch budget): stale pose this frame
+		uint32_t duplicatePartitions = 0;  ///< partitions listed twice in one frame (skipped: two builds of one BLAS in one list would race)
 		uint32_t entries = 0;
 		uint64_t verticesLastFrame = 0;
 		uint64_t outputBytes = 0;
@@ -78,6 +79,7 @@ namespace RT
 		{
 			const void* skinInstance = nullptr;
 			uint32_t partition = 0;
+			const void* mesh = nullptr;  // the partition's bind-pose buffers: two meshes on one skin instance stay apart
 			bool operator==(const Key&) const = default;
 		};
 		struct KeyHash

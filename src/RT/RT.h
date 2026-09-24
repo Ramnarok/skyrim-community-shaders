@@ -36,6 +36,7 @@ namespace RT
 		LUID adapterLuid{};
 		D3D12_RAYTRACING_TIER raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
 		bool probed = false;       ///< The probe ran to completion (adapter found, D3D12 device created).
+		bool independentDevice = false;  ///< The sidecar has its own D3D12 device, not the process-wide singleton frame generation uses.
 		std::string failureReason;  ///< Why the probe or sidecar setup failed.
 	};
 
@@ -105,10 +106,10 @@ namespace RT
 	struct GIStats;
 
 	/**
-	 * @brief One point light for the GI bounce, from Light Limit Fix's per-frame light list (the lights Lighting.hlsl
-	 * evaluates). Layout matches GIPointLight in GICommon.hlsli.
+	 * @brief One point light for the traces (GI bounce, M8 point-light shadows), from Light Limit Fix's per-frame light
+	 * list (the lights Lighting.hlsl evaluates). Layout matches PointLight in Shaders/PointLights.hlsli.
 	 */
-	struct GIPointLight
+	struct PointLight
 	{
 		float position[3]{};  ///< camera-relative (FrameBuffer::CameraPosAdjust origin, as the TLAS)
 		float radius = 0.0f;
@@ -119,7 +120,23 @@ namespace RT
 		uint32_t flags = 0;  ///< LightLimitFix::LightFlags
 		float pad = 0.0f;
 	};
-	static_assert(sizeof(GIPointLight) == 48);
+	static_assert(sizeof(PointLight) == 48);
+
+	/**
+	 * @brief Per-frame M8 point-light shadow settings: ray-traced visibility for the game's unshadowed, non-portal-strict
+	 * point lights, as a ratio mask Lighting.hlsl reads at PS t46.
+	 */
+	struct PointShadowParams
+	{
+		std::span<const PointLight> lights;  ///< valid only during OnPrepass
+		bool inverseSquare = false;          ///< Inverse Square Lighting loaded: its attenuation applies
+		bool alphaTestedCasters = true;
+		float normalBias = 1.0f;       ///< as SunShadowParams
+		float distanceBias = 0.002f;
+		uint32_t maxHistory = 24;
+		float spatialRadius = 3.0f;
+		uint32_t viewMode = 0;  ///< debug view: 0 none, 1 raw, 2 denoised
+	};
 
 	/** @brief Per-frame GI inputs, filled by the SkyrimRT feature from the same sources CS's SharedData uses (M6). */
 	struct GIParams
@@ -140,7 +157,7 @@ namespace RT
 		uint32_t viewMode = 0;               ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion
 		bool interior = false;               ///< interior cell: the directional light is unshadowed, as in Lighting.hlsl
 		float directionalLightMult = 1.0f;   ///< Linear Lighting (used only when linearLighting is set)
-		std::span<const GIPointLight> pointLights;  ///< valid only during SubmitGI (not kept in GIStats::params)
+		std::span<const PointLight> pointLights;  ///< valid only during SubmitGI (not kept in GIStats::params)
 		bool pointLightShadows = true;             ///< trace a visibility ray to the sampled point light
 		bool inverseSquare = false;                ///< Inverse Square Lighting loaded: its attenuation applies (Lighting.hlsl ISL)
 	};
@@ -160,11 +177,18 @@ namespace RT
 	inline constexpr float kInteropBudgetMs = 0.5f;
 
 	/**
-	 * @brief Enables the D3D12 debug layer and DRED in debug builds; no-op in release builds.
+	 * @brief Enables the D3D12 debug layer (debug builds) and DRED (debug builds, or when a_hangDiagnostics is set):
+	 * breadcrumbs with pass markers and page-fault reporting, logged if the device is removed.
 	 * Must run before any D3D12 device exists in the process (CS may create one for frame generation),
 	 * so call it from Feature::Load().
 	 */
-	void EnableDebugLayer();
+	void EnableDebugLayer(bool a_hangDiagnostics);
+
+	/**
+	 * @brief Debug: makes the next round trip's D3D12 queue wait forever, as a GPU hang would, so the hang watchdog's
+	 * recovery can be tested. The game freezes for Sidecar::kStallSeconds, then carries on without ray tracing.
+	 */
+	void SimulateGpuHang();
 
 	/**
 	 * @brief Probes the game's adapter for DXR support and, when supported, creates the D3D12 sidecar.
@@ -186,10 +210,11 @@ namespace RT
 
 	/**
 	 * @brief Runs this frame's round trip before the opaque pass (from Feature::Prepass, after CaptureCamera): scene
-	 * extraction, BLAS/TLAS, the M4 debug trace (a_debugTrace) and M5 sun shadows (a_shadows non-null). D3D11 waits
-	 * for the result on the GPU timeline; the CPU never waits. At most one round trip runs per frame.
+	 * extraction, BLAS/TLAS, the M4 debug trace (a_debugTrace), M5 sun shadows (a_shadows non-null) and M8 point-light
+	 * shadows (a_pointShadows non-null). D3D11 waits for the result on the GPU timeline; the CPU never waits. At most
+	 * one round trip runs per frame.
 	 */
-	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows, bool a_buildForGI);
+	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows, const PointShadowParams* a_pointShadows, bool a_buildForGI);
 
 	/** @brief True when this build contains ray-traced GI (SKYRIMRT_NRD) and it was set up successfully. */
 	bool IsGIAvailable();
@@ -236,6 +261,18 @@ namespace RT
 	ID3D11ShaderResourceView* GetSunShadowViewSRV();
 
 	const SunShadowStats* GetSunShadowStats();
+
+	/** @brief True when the sidecar can trace M8 point-light shadows. */
+	bool CanTracePointLightShadows();
+
+	/** @brief SRV of the M8 point-light shadow mask for this frame (R8, 1 = lit), cleared to lit if stale; nullptr if unavailable. */
+	ID3D11ShaderResourceView* AcquirePointLightShadowMask();
+
+	/** @brief SRV of the point-light shadow debug view (RGBA8) when PointShadowParams::viewMode is set, or nullptr. */
+	ID3D11ShaderResourceView* GetPointLightShadowViewSRV();
+
+	/** @brief M8 point-light shadow stats (counters per PointShadowCounter), or nullptr. */
+	const SunShadowStats* GetPointLightShadowStats();
 
 	/** @brief Debug view (0 depth, 1 instance, 2 normal, 3 diff) written by the trace, or nullptr. */
 	ID3D11ShaderResourceView* GetDebugViewSRV(uint32_t a_view);

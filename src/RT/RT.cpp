@@ -14,29 +14,75 @@ namespace RT
 		std::unique_ptr<Sidecar> sidecar;
 		FrameCamera camera;
 
+		bool hangDiagnostics = false;  // EnableDebugLayer's DRED choice, applied to the sidecar's own device factory too
+
 		std::string WideToUtf8(const wchar_t* a_text)
 		{
 			return stl::utf16_to_utf8(a_text).value_or("<unicode conversion error>"s);
 		}
+
+		/**
+		 * D3D12 devices are per-adapter singletons: D3D12CreateDevice hands back the device CS's frame generation
+		 * already made (DX12SwapChain), the one the game presents through. Measured 2026-09-24 on the RTX 4080 SUPER:
+		 * the two calls return one object, and a removed device sets all its fences to UINT64_MAX. So a hang in our
+		 * passes removed the presenting device and froze the game. A device factory that doesn't store its device as
+		 * the singleton gives the sidecar its own: a hang then removes only ours, which releases every D3D11 wait on
+		 * our fence, and the game carries on without RT.
+		 */
+		winrt::com_ptr<ID3D12Device> CreateSidecarDevice(IDXGIAdapter* a_adapter, bool& a_independent, HRESULT& a_hr)
+		{
+			a_independent = false;
+			winrt::com_ptr<ID3D12DeviceFactory> factory;
+			a_hr = D3D12GetInterface(CLSID_D3D12DeviceFactory, IID_PPV_ARGS(factory.put()));
+			if (SUCCEEDED(a_hr))
+				a_hr = factory->SetFlags(D3D12_DEVICE_FACTORY_FLAG_DISALLOW_STORING_NEW_DEVICE_AS_SINGLETON);
+			if (SUCCEEDED(a_hr)) {
+				// The global debug/DRED settings (EnableDebugLayer) don't reach a factory's devices; configure it too.
+#ifndef NDEBUG
+				winrt::com_ptr<ID3D12Debug> debug;
+				if (SUCCEEDED(factory->GetConfigurationInterface(CLSID_D3D12Debug, IID_PPV_ARGS(debug.put()))))
+					debug->EnableDebugLayer();
+#endif
+				if (hangDiagnostics) {
+					winrt::com_ptr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
+					if (SUCCEEDED(factory->GetConfigurationInterface(CLSID_D3D12DeviceRemovedExtendedData, IID_PPV_ARGS(dred.put())))) {
+						dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+						dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+						dred->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+					} else {
+						logger::warn("[SkyrimRT] DRED can't be enabled on the sidecar's device factory");
+					}
+				}
+				winrt::com_ptr<ID3D12Device> device;
+				a_hr = factory->CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(device.put()));
+				if (SUCCEEDED(a_hr)) {
+					a_independent = true;
+					return device;
+				}
+			}
+			logger::warn("[SkyrimRT] No independent D3D12 device ({}): sharing the process-wide device, so a ray tracing hang would also stop the frame generation device", FormatHResult(a_hr));
+			winrt::com_ptr<ID3D12Device> device;
+			a_hr = D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(device.put()));
+			return SUCCEEDED(a_hr) ? device : nullptr;
+		}
 	}
 
-	void EnableDebugLayer()
+	void EnableDebugLayer(bool a_hangDiagnostics)
 	{
+		// The process-wide debug layer must be enabled before CS's frame generation (or anything else) creates a D3D12
+		// device: enabling it afterwards removes existing devices. The sidecar's own device gets its debug layer and
+		// DRED from its device factory (CreateSidecarDevice), so DRED doesn't touch frame generation's device.
 #ifndef NDEBUG
-		// Enabling the debug layer after a D3D12 device exists removes that device, so this must run
-		// before CS's frame generation (or anything else) creates one.
 		winrt::com_ptr<ID3D12Debug> debug;
 		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(debug.put())))) {
 			debug->EnableDebugLayer();
 			logger::info("[SkyrimRT] D3D12 debug layer enabled (debug build)");
 		}
-		winrt::com_ptr<ID3D12DeviceRemovedExtendedDataSettings> dred;
-		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(dred.put())))) {
-			dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-			dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-			logger::info("[SkyrimRT] DRED breadcrumbs and page-fault reporting enabled (debug build)");
-		}
+		a_hangDiagnostics = true;
 #endif
+		hangDiagnostics = a_hangDiagnostics;
+		if (a_hangDiagnostics)
+			logger::info("[SkyrimRT] GPU hang diagnostics on: DRED breadcrumbs, pass markers and page faults for the sidecar's device");
 	}
 
 	bool Init(ID3D11Device* a_device, ID3D11DeviceContext* a_context)
@@ -70,9 +116,12 @@ namespace RT
 		capabilities.adapterName = WideToUtf8(adapterDesc.Description);
 		capabilities.adapterLuid = adapterDesc.AdapterLuid;
 
-		winrt::com_ptr<ID3D12Device> device;
-		if (HRESULT hr = D3D12CreateDevice(adapter.get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(device.put())); FAILED(hr))
-			return fail(std::format("D3D12CreateDevice failed on {} ({})", capabilities.adapterName, FormatHResult(hr)));
+		bool independent = false;
+		HRESULT createHr = S_OK;
+		winrt::com_ptr<ID3D12Device> device = CreateSidecarDevice(adapter.get(), independent, createHr);
+		if (!device)
+			return fail(std::format("D3D12CreateDevice failed on {} ({})", capabilities.adapterName, FormatHResult(createHr)));
+		capabilities.independentDevice = independent;
 
 		D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
 		if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))))
@@ -80,11 +129,12 @@ namespace RT
 
 		capabilities.probed = true;
 
-		logger::info("[SkyrimRT] Adapter: {} | LUID {} | DXR tier {} (required {})",
+		logger::info("[SkyrimRT] Adapter: {} | LUID {} | DXR tier {} (required {}) | {} D3D12 device",
 			capabilities.adapterName,
 			FormatLuid(capabilities.adapterLuid),
 			GetTierName(capabilities.raytracingTier),
-			GetTierName(kRequiredTier));
+			GetTierName(kRequiredTier),
+			capabilities.independentDevice ? "independent" : "shared (process-wide singleton)");
 
 		if (!IsSupported())
 			return false;  // the device is released here; nothing D3D12 stays resident
@@ -115,10 +165,10 @@ namespace RT
 		camera.renderHeight = a_renderHeight;
 	}
 
-	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows, bool a_buildForGI)
+	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows, const PointShadowParams* a_pointShadows, bool a_buildForGI)
 	{
 		if (sidecar)
-			sidecar->Submit(globals::state->frameCount, camera, a_debugTrace, a_shadows, a_buildForGI);
+			sidecar->Submit(globals::state->frameCount, camera, a_debugTrace, a_shadows, a_pointShadows, a_buildForGI);
 	}
 
 	bool IsGICompiledIn()
@@ -210,6 +260,34 @@ namespace RT
 	const SunShadowStats* GetSunShadowStats()
 	{
 		const auto* shadows = sidecar ? sidecar->GetSunShadows() : nullptr;
+		return shadows ? &shadows->GetStats() : nullptr;
+	}
+
+	void SimulateGpuHang()
+	{
+		if (sidecar)
+			sidecar->SimulateHang();
+	}
+
+	bool CanTracePointLightShadows()
+	{
+		return sidecar && sidecar->CanTracePointLightShadows();
+	}
+
+	ID3D11ShaderResourceView* AcquirePointLightShadowMask()
+	{
+		return sidecar ? sidecar->AcquirePointLightShadowMask(globals::state->frameCount) : nullptr;
+	}
+
+	ID3D11ShaderResourceView* GetPointLightShadowViewSRV()
+	{
+		const auto* shadows = sidecar ? sidecar->GetPointShadows() : nullptr;
+		return (shadows && shadows->GetStats().haveResult) ? shadows->GetViewSRV() : nullptr;
+	}
+
+	const SunShadowStats* GetPointLightShadowStats()
+	{
+		const auto* shadows = sidecar ? sidecar->GetPointShadows() : nullptr;
 		return shadows ? &shadows->GetStats() : nullptr;
 	}
 

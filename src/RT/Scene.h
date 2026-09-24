@@ -107,6 +107,7 @@ namespace RT
 		uint32_t skinnedHalfPositions = 0;    ///< partitions whose positions are 4 x half
 		uint32_t skinnedRejectedShapes = 0;   ///< no usable skin data: excluded as before
 		uint32_t skinnedRejectedPartitions = 0;
+		uint32_t skinnedInvalidPoses = 0;  ///< partitions skipped for a non-finite or absurd bone this frame (refit safety)
 		uint32_t dynamicShapes = 0;          ///< M7b: dynamic (FaceGen) shapes extracted as skinned
 		uint32_t dynamicRejectedShapes = 0;  ///< dynamic shapes without usable skin or position data: excluded
 		uint32_t treeShapes = 0;          ///< skinned shapes under a BSTreeNode (their branches sway on bones)

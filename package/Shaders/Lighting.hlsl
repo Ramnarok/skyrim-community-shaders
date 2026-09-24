@@ -839,6 +839,10 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		include "InverseSquareLighting/InverseSquareLighting.hlsli"
 #	endif
 
+#	if defined(SKYRIM_RT) && defined(LIGHT_LIMIT_FIX)
+#		include "SkyrimRT/PointLightShadows.hlsli"
+#	endif
+
 #	if defined(TREE_ANIM)
 #		undef WETNESS_EFFECTS
 #	endif
@@ -2366,6 +2370,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #		else
 
+#			if defined(SKYRIM_RT) && defined(DEFERRED)
+	// Skyrim RT: ray-traced visibility of the unshadowed point lights (1 when not tracing).
+	const float skyrimRTPointLightShadow = inReflection ? 1.0 : SkyrimRT::GetPointLightShadow(input.Position);
+#			endif
+
 	uint numClusteredLights = 0;
 	uint totalLightCount = LightLimitFix::NumStrictLights;
 	uint clusterIndex = 0;
@@ -2414,6 +2423,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				lightShadow *= shadowComponent;
 			}
 		}
+#			if defined(SKYRIM_RT) && defined(DEFERRED)
+		if (SkyrimRT::IsPointLightRayTraced(light.lightFlags))
+			lightShadow *= skyrimRTPointLightShadow;
+#			endif
 
 		float3 normalizedLightDirection = normalize(lightDirection);
 		float lightAngle = dot(worldNormal.xyz, normalizedLightDirection.xyz);

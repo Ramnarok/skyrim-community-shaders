@@ -22,7 +22,9 @@ struct ShadowConstants
 	float PlaneTolerance; // spatial: relative distance from the centre pixel's plane still accepted
 	float CompareDistance;
 	uint ViewMode;  // 0 none, 1 raw, 2 denoised
-	uint3 Pad;
+	uint PointLightCount;  // M8 point-light shadows only
+	uint InverseSquare;    // M8: Inverse Square Lighting loaded
+	uint Pad;
 };
 
 static const uint kFlagCompareShadowMap = 1;
@@ -35,6 +37,14 @@ static const uint kCompareBothLit = 3;
 static const uint kCompareBothShadowed = 4;
 static const uint kCompareRtOnly = 5;
 static const uint kCompareMapOnly = 6;
+
+// Counter slots of the M8 point-light variant (PointLightShadowTraceCS), mirrored in SunShadows.h
+static const uint kPointTraced = 0;       // non-sky pixels
+static const uint kPointOccluded = 1;     // pixels whose sampled light was blocked
+static const uint kPointSampled = 2;      // pixels with an RT-shadowed light in range and facing
+static const uint kPointOccluderNear32 = 3;   // occluded, by the blocker's distance from the light (game units)
+static const uint kPointOccluderNear64 = 4;
+static const uint kPointOccluderNear128 = 5;
 
 ConstantBuffer<ShadowConstants> C : register(b0);
 
