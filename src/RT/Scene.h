@@ -197,7 +197,8 @@ namespace RT
 			uint32_t clippedShapes = 0;       ///< of the traced, bound reaching into the loaded cells (hits there rejected)
 			uint64_t triangles = 0;           ///< of the traced
 			uint32_t skippedTrees = 0;        ///< tree LOD billboards (instanced), not traced
-			uint32_t skippedAlphaTested = 0;  ///< alpha-tested, blended or decal LOD, not traced
+			uint32_t alphaTestedShapes = 0;   ///< of the traced, alpha-tested (object LOD; alpha-atlas tile when available)
+			uint32_t skippedBlendedDecal = 0; ///< alpha-blended or decal LOD, not traced
 			uint32_t skippedOther = 0;        ///< water, effects, no renderer data, skinned
 			uint32_t skippedHalfPositions = 0;  ///< positions stored as 4 x half (the BLAS reads float3), not traced
 			std::array<uint32_t, 32> byGeometryType{};  ///< every LOD shape seen, by BSGeometry::Type

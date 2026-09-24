@@ -219,7 +219,7 @@ bool PointInExclusion(float3 a_point, float3 a_direction, float a_margin)
 	const bool nearer = counted && hit && !matched && t < rasterT;
 	const bool farther = counted && hit && !matched && t >= rasterT;
 	const bool miss = counted && !hit;
-	const bool alphaTestedHit = counted && hit && (hitData.Flags & kInstanceLODClip) == 0 && (hitData.Alpha & 0xFFFu) != 0;
+	const bool alphaTestedHit = counted && hit && (hitData.Alpha & 0xFFFu) != 0;
 	const bool outsideMatched = outside && hit && relative <= C.MismatchThreshold;
 	const bool outsideNearer = outside && hit && !outsideMatched && t < rasterT;
 	const bool outsideFarther = outside && hit && !outsideMatched && t >= rasterT;

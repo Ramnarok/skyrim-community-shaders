@@ -41,8 +41,8 @@ namespace RT
 			return {
 				{ "walked", a_lod.walked },
 				{ "traced", { { "land_shapes", a_lod.terrainShapes }, { "object_shapes", a_lod.objectShapes }, { "clipped_to_outside_loaded_cells", a_lod.clippedShapes },
-								{ "triangles", a_lod.triangles } } },
-				{ "skipped", { { "tree_billboards", a_lod.skippedTrees }, { "alpha_tested_blended_decal", a_lod.skippedAlphaTested }, { "water_effects_other", a_lod.skippedOther }, { "half_positions", a_lod.skippedHalfPositions },
+								{ "alpha_tested", a_lod.alphaTestedShapes }, { "triangles", a_lod.triangles } } },
+				{ "skipped", { { "tree_billboards", a_lod.skippedTrees }, { "blended_decal", a_lod.skippedBlendedDecal }, { "water_effects_other", a_lod.skippedOther }, { "half_positions", a_lod.skippedHalfPositions },
 								 { "hidden_subtrees", a_lod.hiddenSubtrees } } },
 				{ "shapes_by_type", types },
 			};

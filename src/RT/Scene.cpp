@@ -191,8 +191,9 @@ namespace RT
 				lod.skippedOther++;
 				return;
 			}
-			if (candidate.alphaTested || candidate.alphaBlended || candidate.decal) {
-				lod.skippedAlphaTested++;
+			// Object LOD is alpha-tested (its atlas has alpha): traced with the alpha test like any alpha-tested mesh.
+			if (candidate.alphaBlended || candidate.decal) {
+				lod.skippedBlendedDecal++;
 				return;
 			}
 			// The BLAS and hit lookups read float3 positions (M3: every loaded mesh). LOD buffers weren't audited then, so a
@@ -223,6 +224,7 @@ namespace RT
 				candidate.lodClip = dx * dx + dy * dy <= bound.radius * bound.radius;
 			}
 			lod.clippedShapes += candidate.lodClip;
+			lod.alphaTestedShapes += candidate.alphaTested;
 			lod.triangles += candidate.triangleCount;
 			(landLOD ? lod.terrainShapes : lod.objectShapes)++;
 			a_out.candidates.push_back(candidate);

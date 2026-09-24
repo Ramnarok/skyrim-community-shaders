@@ -23,8 +23,8 @@ static const uint kInstanceTerrain = 1;
 static const uint kInstanceAlphaTested = 2;
 static const uint kInstanceActor = 8;
 static const uint kInstanceWindAnimated = 16;  // M7c: kTreeAnim, swayed by the game's vertex shader (not in the TLAS)
-static const uint kInstanceDistantLOD = 32;    // M8: distant land / object LOD (TES::lodLandRoot); Room and Alpha unused
-static const uint kInstanceLODClip = 64;       // M8: ... reaching into the loaded cells: Room / Alpha hold their rectangle
+static const uint kInstanceDistantLOD = 32;    // M8: distant land / object LOD (TES::lodLandRoot); not in a room
+static const uint kInstanceLODClip = 64;       // M8: ... reaching into the loaded cells: Room = index of the clip record
 
 // InstanceMask bits, mirrored in Raytracer.cpp
 static const uint kMaskStatic = 0x01;
@@ -40,17 +40,12 @@ int InstanceRoom(InstanceData a_data)
 	return (a_data.Flags & kInstanceDistantLOD) ? -1 : int(a_data.Room) - 1;
 }
 
-// M8: a corner of the LOD clip rectangle, camera-relative XY packed as two int16 in units of 2 (Raytracer.cpp PackClipCorner).
-float2 UnpackClipCorner(uint a_word)
+// M8: whether a hit lies outside the loaded cells, where the game draws the LOD. a_clip is the clip record (Raytracer.cpp,
+// one past the last instance): the loaded cells' camera-relative rectangle as floats in its first four words.
+bool OutsideLODClip(InstanceData a_clip, float3 a_position)
 {
-	return float2(int(a_word << 16) >> 16, int(a_word) >> 16) * 2.0;
-}
-
-// M8: whether a candidate hit on a clipped LOD instance lies outside the loaded cells, where the game draws the LOD.
-bool OutsideLODClip(InstanceData a_data, float3 a_position)
-{
-	const float2 lo = UnpackClipCorner(a_data.Room);
-	const float2 hi = UnpackClipCorner(a_data.Alpha);
+	const float2 lo = asfloat(uint2(a_clip.VertexPage, a_clip.VertexOffset));
+	const float2 hi = asfloat(uint2(a_clip.IndexPage, a_clip.IndexOffset));
 	return any(a_position.xy < lo) || any(a_position.xy > hi);
 }
 
@@ -120,12 +115,12 @@ bool AlphaTestPasses(InstanceData a_data, uint a_primitive, float2 a_barycentric
 	return alpha >= threshold;
 }
 
-// A non-opaque candidate that counts as a hit: an alpha-tested instance where its alpha test passes, or (M8) a clipped
-// distant-LOD instance outside the loaded cells.
-bool CandidatePasses(InstanceData a_data, uint a_primitive, float2 a_barycentrics, float3 a_position)
+// A non-opaque candidate that counts as a hit: (M8) a clipped distant-LOD instance only outside the loaded cells (a_clip:
+// the record its Room points at), then the alpha test where the instance has an atlas tile.
+bool CandidatePasses(InstanceData a_data, InstanceData a_clip, uint a_primitive, float2 a_barycentrics, float3 a_position)
 {
-	if (a_data.Flags & kInstanceLODClip)
-		return OutsideLODClip(a_data, a_position);
+	if ((a_data.Flags & kInstanceLODClip) && !OutsideLODClip(a_clip, a_position))
+		return false;
 	return AlphaTestPasses(a_data, a_primitive, a_barycentrics);
 }
 
@@ -134,10 +129,13 @@ bool CandidatePasses(InstanceData a_data, uint a_primitive, float2 a_barycentric
 // RAY_FLAG_FORCE_OPAQUE, and a StructuredBuffer<InstanceData> named Instances must be in scope.
 #define PROCEED_ALPHA_TESTED(a_query)                                                                                   \
 	while (a_query.Proceed()) {                                                                                         \
-		if (a_query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&                                                 \
-			CandidatePasses(Instances[a_query.CandidateInstanceID()], a_query.CandidatePrimitiveIndex(), a_query.CandidateTriangleBarycentrics(), \
-				a_query.WorldRayOrigin() + a_query.WorldRayDirection() * a_query.CandidateTriangleRayT())) \
-			a_query.CommitNonOpaqueTriangleHit();                                                                       \
+		if (a_query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {                                                 \
+			const InstanceData candidateData = Instances[a_query.CandidateInstanceID()];                                \
+			const InstanceData clipData = Instances[(candidateData.Flags & kInstanceLODClip) ? candidateData.Room : a_query.CandidateInstanceID()]; \
+			if (CandidatePasses(candidateData, clipData, a_query.CandidatePrimitiveIndex(), a_query.CandidateTriangleBarycentrics(), \
+					a_query.WorldRayOrigin() + a_query.WorldRayDirection() * a_query.CandidateTriangleRayT()))           \
+				a_query.CommitNonOpaqueTriangleHit();                                                                   \
+		}                                                                                                               \
 	}
 
 float4 UnpackRGBA8(uint a_packed)

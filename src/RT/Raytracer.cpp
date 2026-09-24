@@ -29,15 +29,7 @@ namespace RT
 
 		// InstanceData.Flags bits 5-6 (M8 distant LOD); bits 0-4 are the older flags, 8-31 the albedo word.
 		constexpr uint32_t kInstanceDataDistantLOD = 32;
-		constexpr uint32_t kInstanceDataLODClip = 64;  // Room / Alpha hold the loaded cells' rectangle: hits inside are rejected
-
-		// M8: a camera-relative XY pair as two int16 in units of 2 game units (±65,534 around the camera), for the LOD clip
-		// rectangle. The loaded cells lie within a few cells of the camera, so this never clamps in practice.
-		uint32_t PackClipCorner(float a_x, float a_y)
-		{
-			auto pack = [](float a_value) { return static_cast<uint32_t>(static_cast<uint16_t>(static_cast<int16_t>(std::clamp(std::round(a_value * 0.5f), -32768.0f, 32767.0f)))); };
-			return pack(a_x) | (pack(a_y) << 16);
-		}
+		constexpr uint32_t kInstanceDataLODClip = 64;  // Room = index of the clip record: hits inside the loaded cells are rejected
 
 		// Descriptor heap layout.
 		constexpr uint32_t kDepthDescriptor = 0;
@@ -396,22 +388,29 @@ namespace RT
 			uint32_t alpha = record.alpha;
 			uint32_t room = record.room;
 			// M8: distant LOD reaching into the loaded cells is non-opaque; every trace rejects its hits inside them
-			// (PROCEED_ALPHA_TESTED), where the game draws the loaded cells instead. LOD isn't alpha-tested or in a room.
+			// (PROCEED_ALPHA_TESTED), where the game draws the loaded cells instead. Its Room points at the clip record
+			// written after the last instance. LOD isn't in a room; object LOD is alpha-tested as usual.
 			if (record.distantLOD) {
 				flags |= kInstanceDataDistantLOD;
-				alpha = 0;
 				room = 0;
 				if (record.lodClip && a_area.bounded) {
 					flags |= kInstanceDataLODClip;
-					room = PackClipCorner(a_area.min.x - adjust.x, a_area.min.y - adjust.y);
-					alpha = PackClipCorner(a_area.max.x - adjust.x, a_area.max.y - adjust.y);
+					room = instanceCount;
 				}
 			}
-			desc.Flags = (record.distantLOD ? (flags & kInstanceDataLODClip) != 0 : alpha != 0) ? kInstanceFlagForceNonOpaque : 0u;
+			desc.Flags = (alpha != 0 || (flags & kInstanceDataLODClip) != 0) ? kInstanceFlagForceNonOpaque : 0u;
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;
 			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride, flags, record.albedo, alpha,
 				record.uvPage, record.uvOffset, record.uvStride, room };
+		}
+		// M8: the LOD clip record, one past the last instance (instanceCount < kMaxInstances): the loaded cells' rectangle,
+		// camera-relative, as float bits in its first four words. No TLAS instance refers to it.
+		{
+			const float clip[4] = { a_area.min.x - adjust.x, a_area.min.y - adjust.y, a_area.max.x - adjust.x, a_area.max.y - adjust.y };
+			InstanceGpu record{};
+			std::memcpy(&record, clip, sizeof(clip));
+			data[instanceCount] = record;
 		}
 
 		SetPassMarker(a_list, L"SkyrimRT: exclusion BLAS");
