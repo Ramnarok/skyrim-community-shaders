@@ -23,6 +23,7 @@ namespace RT
 		kGIOccluderNear128,  ///< ... 64-128 units from it (the rest is farther: walls)
 		kGISkyVisible,       ///< M8: misses whose continuation to 50,000 units reached the sky (sky light on)
 		kGITexturedHits,     ///< M8: hits shaded with their texture from the albedo atlas (else the average albedo)
+		kGIDeeperHits,       ///< M8 multi-bounce: hits of continuation rays (second bounce and deeper)
 		kGICounterCount
 	};
 

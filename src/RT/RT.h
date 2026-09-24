@@ -174,7 +174,8 @@ namespace RT
 		std::span<const PointLight> pointLights;  ///< valid only during SubmitGI (not kept in GIStats::params)
 		bool pointLightShadows = true;             ///< trace a visibility ray to the sampled point light
 		bool inverseSquare = false;                ///< Inverse Square Lighting loaded: its attenuation applies (Lighting.hlsl ISL)
-		bool skyLight = false;  ///< M8: misses that reach the sky carry its radiance, replacing the composite's ambient (exteriors)
+		bool skyLight = false;  ///< M8: misses that reach the sky carry its radiance; the composite scales its ambient by the traced / open-sky ratio (exteriors)
+		uint32_t bounces = 1;   ///< M8 multi-bounce: path vertices per GI ray (1 = the M6 single bounce, at most 3)
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 sky flag. */

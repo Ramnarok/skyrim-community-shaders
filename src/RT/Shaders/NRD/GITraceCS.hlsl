@@ -1,5 +1,6 @@
-// SkyrimRT M6: one-bounce diffuse GI, one cosine-weighted ray per pixel from the finished G-buffer (DXR 1.1 inline
-// RayQuery). The radiance leaving each hit follows the rule CS's deferred lighting uses for the surfaces Screen-Space
+// SkyrimRT M6: diffuse GI, one cosine-weighted ray per pixel from the finished G-buffer (DXR 1.1 inline RayQuery); M8
+// multi-bounce continues the path from each hit up to C.Bounces vertices, scaling each vertex's ambient by the light its
+// continuation brought in. The radiance leaving each hit follows the rule CS's deferred lighting uses for the surfaces Screen-Space
 // GI gathers: albedo x (sun x N.L x sun visibility + point lights + the game's directional ambient), in Skyrim gamma, then
 // Color::RadianceToLinear. The albedo is the hit's texture x vertex colour from the M8 albedo atlas, or the texture's
 // average (M6) until its tile is filled. Output is REBLUR's noisy input. Misses carry no radiance (the composite keeps
@@ -27,6 +28,8 @@ RWByteAddressBuffer Counters : register(u4);
 static const float kSunRayLength = 50000.0;  // as the sun-shadow trace (SunShadows::kMaxRayDistance)
 static const float kSelfHitMin = 2.0;         // game units
 static const float kSelfHitRelative = 0.01;   // of view distance: Raytracer::kMismatchThreshold
+static const uint kMaxBounces = 3;            // M8 multi-bounce: path vertices (GIParams::bounces is clamped to it)
+static const float kMaxAmbientScale = 4.0;    // as the composite's sky-light ratio
 
 void Count(uint a_slot, bool a_condition)
 {
@@ -113,18 +116,26 @@ float3 SamplePointLights(float3 a_position, float3 a_normal, float3 a_origin, fl
 	return light.Irradiance;
 }
 
-// Radiance leaving a hit, in the space Screen-Space GI gathers kMAIN in (Color::RadianceToLinear).
-float3 HitRadiance(float3 a_albedo, float3 a_normal, float a_sunVisibility, float3 a_pointLights)
+// One path vertex (a GI hit), split the way Lighting.hlsl builds the light leaving a surface: albedo x (direct + ambient)
+// in its colour space, converted at the end (Color::RadianceToLinear). With more than one bounce the ambient term is
+// scaled by the light the path traced onward (PathVertexRadiance).
+struct PathVertex
 {
-	const float sunCosine = saturate(dot(a_normal, C.ToSun.xyz));
-	if (C.LinearLighting) {
-		// Color::DirectionalLight's pi cancels Color::VanillaNormalization's 1/pi in the diffuse term.
-		const float3 albedo = pow(a_albedo, C.ColorGamma);
-		const float3 sun = pow(max(C.SunColor.rgb, 0.0), C.LightGamma) * C.DirectionalLightMult;
-		const float3 ambient = pow(GetAmbient(a_normal), C.AmbientGamma) * C.AmbientMult;
-		return albedo * (sun * sunCosine * a_sunVisibility + a_pointLights + ambient);
-	}
-	return SkyrimGammaToLinear(a_albedo * (C.SunColor.rgb * sunCosine * a_sunVisibility + a_pointLights + GetAmbient(a_normal)));
+	float3 albedo;   // colour space of the sum: Skyrim gamma, or Linear Lighting's colour gamma
+	float3 direct;   // sun x N.L x visibility + point lights
+	float3 ambient;  // the game's directional ambient at the normal
+	float3 openSky;  // linear light an unoccluded hemisphere returns at the normal (SkyRadiance integrated)
+	float3 normal;   // geometric, facing the incoming ray
+	float3 origin;   // hit position offset along the normal: where continuation and visibility rays start
+};
+
+// Radiance leaving a vertex, in the space Screen-Space GI gathers kMAIN in (Color::RadianceToLinear). a_ambientScale is 1
+// for the path's last vertex (the game's ambient stands in for every further bounce), else the traced incoming light over
+// a_vertex.openSky: the composite's sky-light ratio, applied at the hit.
+float3 PathVertexRadiance(PathVertex a_vertex, float3 a_ambientScale)
+{
+	const float3 sum = a_vertex.direct + a_vertex.ambient * a_ambientScale;
+	return C.LinearLighting ? a_vertex.albedo * sum : SkyrimGammaToLinear(a_vertex.albedo * sum);
 }
 
 // M8 sky light: radiance arriving from the sky in a_direction, such that its cosine-weighted mean over an unoccluded
@@ -141,6 +152,74 @@ float3 SkyRadiance(float3 a_direction)
 		return pow(ambient, C.AmbientGamma) * C.AmbientMult;
 	static const float kPBRLightingScale = 0.65;  // Color::PBRLightingScale without Linear Lighting
 	return SkyrimGammaToLinear(ambient * kPBRLightingScale);
+}
+
+// M8 multi-bounce: SkyRadiance integrated over an unoccluded hemisphere at a_normal: the game's ambient there, converted
+// like SkyRadiance (the composite's openSky).
+float3 OpenSkyRadiance(float3 a_normal)
+{
+	const float3 ambient = GetAmbient(a_normal);
+	if (C.LinearLighting)
+		return pow(ambient, C.AmbientGamma) * C.AmbientMult;
+	return SkyrimGammaToLinear(ambient * 0.65);
+}
+
+// M8 multi-bounce: what a continuation ray that found nothing within the GI ray length sees. Outdoors with sky light,
+// the sky if the ray gets clear to the sun's range (else distant blocked terrain: dark). Otherwise the neutral
+// environment, the game's ambient as sky radiance.
+float3 MissRadiance(float3 a_end, float3 a_direction)
+{
+	if (C.SkyLight)
+		return Occluded(a_end, a_direction, kSunRayLength) ? 0.0 : SkyRadiance(a_direction);
+	return SkyRadiance(a_direction);
+}
+
+// White noise for the deeper bounces, independent per pixel, frame and bounce.
+float2 RandomBounce(uint2 a_pixel, uint a_frame, uint a_bounce)
+{
+	const uint h = Hash(Hash(a_pixel.x | (a_pixel.y << 16)) ^ Hash(a_frame * 0x9E3779B9u + a_bounce * 0x85EBCA6Bu));
+	return float2(h & 0xFFFFu, h >> 16) / 65536.0;
+}
+
+float RandomLight(uint2 a_pixel, uint a_frame, uint a_bounce)
+{
+	return a_bounce == 0 ? Random1(a_pixel, a_frame) : float(Hash(Hash(a_pixel.x | (a_pixel.y << 16)) ^ Hash(a_frame * 0xC2B2AE35u + a_bounce)) >> 8) / 16777216.0;
+}
+
+// Shades a committed hit into a path vertex: albedo (texture x vertex colour), sun with a visibility ray, one sampled
+// point light with its visibility ray, and the game's ambient. The out parameters are the per-hit diagnostics.
+PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycentrics, float3x4 a_objectToWorld, float3 a_rayOrigin,
+	float3 a_direction, float a_t, uint2 a_pixel, uint a_bounce, out bool a_sunLit, out bool a_lightSampled, out bool a_lightOccluded, out float a_occluderToLight)
+{
+	PathVertex vertex;
+	float3 normal = GeometricNormal(a_instance, a_primitive, a_objectToWorld, a_direction);
+	if (all(normal == 0.0))
+		normal = -a_direction;
+	const float3 position = a_rayOrigin + a_direction * a_t;
+	vertex.normal = normal;
+	vertex.origin = position + normal * (C.NormalBias + a_t * C.DistanceBias);
+
+	// Lighting.hlsl shadows the directional light only through the sun's shadow mask (exteriors); indoors it is
+	// unshadowed, and a visibility ray would always hit the ceiling.
+	a_sunLit = false;
+	if (dot(normal, C.ToSun.xyz) > 0.0 && any(C.SunColor.rgb > 0.0))
+		a_sunLit = C.Interior || !Occluded(vertex.origin, C.ToSun.xyz, kSunRayLength);
+	const float3 pointLights = SamplePointLights(position, normal, vertex.origin, RandomLight(a_pixel, C.FrameIndex, a_bounce), int(a_instance.Room) - 1,
+		a_lightSampled, a_lightOccluded, a_occluderToLight);
+	const float sun = saturate(dot(normal, C.ToSun.xyz)) * (a_sunLit ? 1.0 : 0.0);
+	const float3 albedo = HitAlbedo(a_instance, a_primitive, a_barycentrics);
+	if (C.LinearLighting) {
+		// Color::DirectionalLight's pi cancels Color::VanillaNormalization's 1/pi in the diffuse term.
+		vertex.albedo = pow(albedo, C.ColorGamma);
+		vertex.direct = pow(max(C.SunColor.rgb, 0.0), C.LightGamma) * C.DirectionalLightMult * sun + pointLights;
+		vertex.ambient = pow(GetAmbient(normal), C.AmbientGamma) * C.AmbientMult;
+	} else {
+		vertex.albedo = albedo;
+		vertex.direct = C.SunColor.rgb * sun + pointLights;
+		vertex.ambient = GetAmbient(normal);
+	}
+	vertex.openSky = OpenSkyRadiance(normal);
+	return vertex;
 }
 
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID)
@@ -195,22 +274,54 @@ float3 SkyRadiance(float3 a_direction)
 	bool lightOccluded = false;
 	float occluderToLight = -1.0;
 	bool texturedHit = false;
+	uint deeperHits = 0;
 	if (hit) {
 		hitDistance = query.CommittedRayT();
 		const InstanceData instance = Instances[query.CommittedInstanceID()];
-		float3 hitNormal = GeometricNormal(instance, query.CommittedPrimitiveIndex(), query.CommittedObjectToWorld3x4(), direction);
-		if (all(hitNormal == 0.0))
-			hitNormal = -direction;
-		const float3 hitPosition = ray.Origin + direction * hitDistance;
-		// Lighting.hlsl shadows the directional light only through the sun's shadow mask (exteriors); indoors it is
-		// unshadowed, and a visibility ray would always hit the ceiling.
-		const float3 hitOrigin = hitPosition + hitNormal * (C.NormalBias + hitDistance * C.DistanceBias);
-		if (dot(hitNormal, C.ToSun.xyz) > 0.0 && any(C.SunColor.rgb > 0.0))
-			sunLit = C.Interior || !Occluded(hitOrigin, C.ToSun.xyz, kSunRayLength);
-		const float3 pointLights = SamplePointLights(hitPosition, hitNormal, hitOrigin, Random1(dispatchID.xy, C.FrameIndex),
-			int(instance.Room) - 1, lightSampled, lightOccluded, occluderToLight);
-		radiance = HitRadiance(HitAlbedo(instance, query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics()), hitNormal, sunLit ? 1.0 : 0.0, pointLights);
 		texturedHit = ((instance.Flags >> 8) & 0xFFFu) != 0;
+
+		// M8 multi-bounce: the path continues from each hit (a cosine-weighted ray around its geometric normal) up to
+		// C.Bounces vertices, then folds back from the last one.
+		PathVertex vertices[kMaxBounces];
+		vertices[0] = ShadeHit(instance, query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), query.CommittedObjectToWorld3x4(),
+			ray.Origin, direction, hitDistance, dispatchID.xy, 0, sunLit, lightSampled, lightOccluded, occluderToLight);
+		uint count = 1;
+		float3 incoming = 0.0;    // light arriving at the last vertex from a continuation that missed
+		bool continued = false;  // the last vertex traced a continuation (it missed)
+		const uint bounces = clamp(C.Bounces, 1u, kMaxBounces);
+		[loop] while (count < bounces)
+		{
+			RayDesc next;
+			next.Origin = vertices[count - 1].origin;
+			next.Direction = CosineSampleHemisphere(vertices[count - 1].normal, RandomBounce(dispatchID.xy, C.FrameIndex, count));
+			next.TMin = kSelfHitMin;
+			next.TMax = C.HitDistParams.w;
+			RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> nextQuery;
+			nextQuery.TraceRayInline(Scene, RAY_FLAG_NONE, C.CasterMask, next);
+			PROCEED_ALPHA_TESTED(nextQuery);
+			if (nextQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
+				incoming = MissRadiance(next.Origin + next.Direction * next.TMax, next.Direction);
+				continued = true;
+				break;
+			}
+			bool deeperSunLit, deeperSampled, deeperOccluded;
+			float deeperOccluderToLight;
+			vertices[count] = ShadeHit(Instances[nextQuery.CommittedInstanceID()], nextQuery.CommittedPrimitiveIndex(), nextQuery.CommittedTriangleBarycentrics(),
+				nextQuery.CommittedObjectToWorld3x4(), next.Origin, next.Direction, nextQuery.CommittedRayT(), dispatchID.xy, count,
+				deeperSunLit, deeperSampled, deeperOccluded, deeperOccluderToLight);
+			count++;
+			deeperHits++;
+		}
+
+		// Fold back: each vertex's ambient is scaled by what its continuation brought in over the open sky's light; the
+		// last vertex keeps the game's ambient unless its continuation missed.
+		[loop] for (int i = int(count) - 1; i >= 0; i--)
+		{
+			const float3 scale = continued ? clamp(incoming / max(vertices[i].openSky, 1e-4), 0.0, kMaxAmbientScale) : 1.0;
+			incoming = PathVertexRadiance(vertices[i], scale);
+			continued = true;
+		}
+		radiance = incoming;
 	}
 	// M8 sky light: a miss within the GI ray length isn't sky yet. It continues, as an any-hit visibility ray, to the
 	// sun's range: past it there's no geometry in the loaded cells (distant LOD isn't in the TLAS).
@@ -237,4 +348,7 @@ float3 SkyRadiance(float3 a_direction)
 	Count(kGIOccluderNear128, lightOccluded && occluderToLight >= 64.0 && occluderToLight < 128.0);
 	Count(kGISkyVisible, skyVisible);
 	Count(kGITexturedHits, texturedHit);
+	const uint deeperSum = WaveActiveSum(deeperHits);
+	if (WaveIsFirstLane() && deeperSum > 0)
+		Counters.InterlockedAdd(kGIDeeperHits * 4, deeperSum);
 }

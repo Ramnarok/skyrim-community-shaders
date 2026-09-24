@@ -68,6 +68,8 @@ struct SkyrimRT : OverlayFeature
 		bool GIInteriors = true;          ///< ray-traced GI in interiors (else Screen-Space GI there)
 		bool GIPointLights = true;        ///< bounce Light Limit Fix's point lights
 		bool GIPointLightShadows = true;  ///< trace visibility to the sampled point light
+		uint32_t GIBouncesInterior = 2;   ///< M8 multi-bounce indoors: path vertices per GI ray (1 = single bounce, at most 3)
+		uint32_t GIBouncesExterior = 1;   ///< M8 multi-bounce outdoors (measured: no visible gain under the sky, +0.5 ms per bounce)
 		bool GIAlbedoTextures = true;     ///< M8: GI hits sample their diffuse texture x vertex colour (else the texture's average)
 		bool GISkyLight = true;           ///< M8: rays that reach the sky carry its light; the game's ambient is scaled by the traced / open-sky ratio (exteriors)
 		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames

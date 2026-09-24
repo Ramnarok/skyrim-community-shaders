@@ -53,6 +53,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIAlbedoTextures,
 	GISkyLight,
 	GIHistory,
+	GIBouncesInterior,
+	GIBouncesExterior,
 	GIView)
 
 namespace
@@ -333,6 +335,7 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.maxAccumulatedFrames = settings.GIHistory;
 	params.viewMode = settings.GIView;
 	params.interior = Util::IsInterior();
+	params.bounces = std::clamp(params.interior ? settings.GIBouncesInterior : settings.GIBouncesExterior, 1u, 3u);
 	if (settings.GIPointLights)
 		params.pointLights = GatherPointLights(params.linearLighting);
 	params.pointLightShadows = settings.GIPointLightShadows;
@@ -502,6 +505,13 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("gi_interiors"), "Ray-traced GI in interiors"), &settings.GIInteriors);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_interiors_tooltip"), "Use ray-traced GI inside buildings and dungeons too. Interiors are lit mostly by point lights, so keep Bounce point lights on. When off, interiors use Screen-Space GI."));
+
+	ImGui::SliderInt(T(TKEY("gi_bounces_interior"), "Bounces (interiors)"), reinterpret_cast<int*>(&settings.GIBouncesInterior), 1, 3);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_bounces_interior_tooltip"), "How many times light bounces indoors before the game's ambient light stands in for the rest. A second bounce carries firelight to the far walls; a third adds little. Each extra bounce costs about as much again as the first."));
+	ImGui::SliderInt(T(TKEY("gi_bounces_exterior"), "Bounces (exteriors)"), reinterpret_cast<int*>(&settings.GIBouncesExterior), 1, 3);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_bounces_exterior_tooltip"), "The same outdoors. Under the open sky, sky light already covers what extra bounces would add, so one is usually enough."));
 
 	ImGui::SliderInt(T(TKEY("gi_history"), "Denoiser history (frames)"), reinterpret_cast<int*>(&settings.GIHistory), 1, 63);
 	if (auto _tt = Util::HoverTooltipWrapper())

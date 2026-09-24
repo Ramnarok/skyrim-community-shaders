@@ -292,6 +292,9 @@ namespace RT
 							  { "hit_point_light_sampled", g.counters[kGILightSampled] }, { "hit_point_light_occluded", g.counters[kGILightOccluded] } } },
 				{ "hit_percent", g.HitPercent() },
 				{ "sunlit_hit_percent", g.SunLitHitPercent() },
+				// M8 multi-bounce: continuation-ray hits per first hit (0 with one bounce; at most bounces - 1).
+				{ "multi_bounce", { { "bounces", p.bounces }, { "deeper_hits", g.counters[kGIDeeperHits] },
+									  { "deeper_hits_per_first_hit", g.counters[kGIHits] ? static_cast<double>(g.counters[kGIDeeperHits]) / g.counters[kGIHits] : 0.0 } } },
 				// M8 sky light: of all traced rays, those that missed and reached the sky (0 unless sky light is on).
 				{ "sky_light", { { "enabled", p.skyLight }, { "rays_to_sky", g.counters[kGISkyVisible] },
 								   { "rays_to_sky_percent", g.counters[kGITraced] ? 100.0 * g.counters[kGISkyVisible] / g.counters[kGITraced] : 0.0 } } },

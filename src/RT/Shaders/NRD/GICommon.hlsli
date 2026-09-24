@@ -32,7 +32,8 @@ struct GIConstants
 	uint PointLightShadows;     // trace a visibility ray to the sampled point light
 	uint InverseSquare;         // Inverse Square Lighting loaded: Lighting.hlsl uses its attenuation (ISL define)
 	float DirectionalLightMult; // Linear Lighting
-	uint SkyLight;              // M8: misses that reach the sky carry its radiance (exteriors); the composite drops the ambient
+	uint SkyLight;              // M8: misses that reach the sky carry its radiance (exteriors); the composite scales the ambient
+	uint Bounces;               // M8 multi-bounce: path vertices, 1 = the M6 single bounce
 };
 
 // Counter slots, mirrored in GlobalIllumination.h
@@ -46,6 +47,7 @@ static const uint kGIOccluderNear64 = 6;
 static const uint kGIOccluderNear128 = 7;
 static const uint kGISkyVisible = 8;       // misses whose continuation reached the sky (SkyLight)
 static const uint kGITexturedHits = 9;     // M8: hits shaded with the texture from the albedo atlas (else the average)
+static const uint kGIDeeperHits = 10;      // M8 multi-bounce: hits of continuation rays (second bounce and deeper)
 
 ConstantBuffer<GIConstants> C : register(b0);
 
