@@ -25,6 +25,8 @@ struct ShadowConstants
 	uint PointLightCount;  // M8 point-light shadows only
 	uint InverseSquare;    // M8: Inverse Square Lighting loaded
 	uint RoomTest;         // M8: some traced light is portal-strict: find each pixel's room with a primary ray
+	float PointLightSourceFraction;  // M9: a point light's source disc radius, as a fraction of its light radius (0 = point)
+	float3 PointLightPad;
 };
 
 static const uint kFlagCompareShadowMap = 1;
@@ -99,4 +101,22 @@ float2 Random2(uint2 a_pixel, uint a_frame)
 	const uint h = Hash(a_pixel.x | (a_pixel.y << 16));
 	const float2 base = float2(h & 0xFFFFu, h >> 16) / 65536.0;
 	return frac(base + float2(0.7548776662, 0.5698402910) * float(a_frame & 1023u));
+}
+
+// Uniform point on the unit disk (concentric mapping keeps the stratification of the input). The sun's cone (M5) and the
+// point lights' source discs (M9).
+float2 ConcentricDisk(float2 a_u)
+{
+	const float2 o = a_u * 2.0 - 1.0;
+	if (all(o == 0.0))
+		return float2(0.0, 0.0);
+	float r, theta;
+	if (abs(o.x) > abs(o.y)) {
+		r = o.x;
+		theta = 0.78539816 * (o.y / o.x);
+	} else {
+		r = o.y;
+		theta = 1.57079633 - 0.78539816 * (o.x / o.y);
+	}
+	return r * float2(cos(theta), sin(theta));
 }

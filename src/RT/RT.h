@@ -150,6 +150,8 @@ namespace RT
 		uint32_t maxHistory = 24;
 		float spatialRadius = 3.0f;
 		uint32_t viewMode = 0;  ///< debug view: 0 none, 1 raw, 2 denoised
+		/// M9: each light is a disc of radius sourceFraction x its light radius facing the surface (soft shadows); 0 = point.
+		float sourceFraction = 0.05f;
 	};
 
 	/** @brief Per-frame GI inputs, filled by the SkyrimRT feature from the same sources CS's SharedData uses (M6). */

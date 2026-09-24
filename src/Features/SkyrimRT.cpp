@@ -44,6 +44,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ShadowView,
 	PointLightShadows,
 	PointShadowView,
+	PointLightSourceSize,
 	GlobalIllumination,
 	GIIntensity,
 	GIAOStrength,
@@ -298,6 +299,7 @@ void SkyrimRT::Prepass()
 		pointParams.maxHistory = settings.ShadowHistory;
 		pointParams.spatialRadius = settings.ShadowSpatialRadius;
 		pointParams.viewMode = settings.PointShadowView;
+		pointParams.sourceFraction = settings.PointLightSourceSize;
 	}
 	RT::SetAlphaTest(settings.AlphaTest);
 	RT::SetAlbedoTextures(settings.GIAlbedoTextures);
@@ -648,7 +650,10 @@ void SkyrimRT::DrawPointLightShadowSettings()
 {
 	ImGui::Checkbox(T(TKEY("point_shadows"), "Ray-traced point-light shadows"), &settings.PointLightShadows);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("%s", T(TKEY("point_shadows_tooltip"), "Trace shadows for the torches, candles and fires the game draws without shadows, so their light no longer passes through walls, counters and floors. Lights that already have a shadow map keep it. Uses the sun-shadow filter settings."));
+		ImGui::Text("%s", T(TKEY("point_shadows_tooltip"), "Trace shadows for every torch, candle and fire, so their light no longer passes through walls, counters and floors. Replaces the game's point-light shadow maps too. Uses the sun-shadow filter settings."));
+	ImGui::SliderFloat(T(TKEY("point_light_source_size"), "Point-light source size"), &settings.PointLightSourceSize, 0.0f, 0.1f, "%.3f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("point_light_source_size_tooltip"), "How big a light's flame or glow is, as a fraction of its reach: shadows soften with the distance from what casts them. 0 gives hard shadows from a point."));
 
 	if (!globals::features::lightLimitFix.loaded)
 		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", T(TKEY("point_shadows_needs_llf"), "Requires the Light Limit Fix feature: the lighting shaders read the result in its light loop."));

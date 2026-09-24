@@ -300,6 +300,7 @@ namespace RT
 				{ "history_resets", s.historyResets },
 				{ "lights_uploaded", s.pointLights },
 			{ "lights_by_kind", { { "traced", s.pointLightsTraced }, { "traced_room_limited", s.pointLightsPortalStrict }, { "shadow_mapped_traced", s.pointLightsShadowMapped } } },
+				{ "source_disc_fraction_of_radius", s.pointLightSourceFraction },
 				{ "note", "every light but disabled ones is ray-traced (M9: the shadow-mapped ones too, in place of the game's shadow map), portal-strict ones only for pixels in their rooms (primary-ray instance); raw = visibility of one light picked by unshadowed contribution" },
 				{ "pixels", { { "traced", c[kPointTraced] }, { "sampled_light", c[kPointSampled] }, { "occluded", c[kPointOccluded] }, { "in_a_lit_room", c[kPointRoomKnown] } } },
 				{ "light_filters", { { "note", "pixels with a traced light: within its radius / and facing / and applying in the pixel's room" }, { "in_range", c[kPointAnyInRange] }, { "facing", c[kPointAnyFacing] }, { "in_room", c[kPointAnyInRoom] } } },

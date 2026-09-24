@@ -47,23 +47,6 @@ float3 ReconstructNormal(int2 a_pixel, float3 a_position, float3 a_toViewer)
 	return dot(normal, a_toViewer) < 0.0 ? -normal : normal;
 }
 
-// Uniform point on the unit disk (concentric mapping keeps the stratification of the input).
-float2 ConcentricDisk(float2 a_u)
-{
-	const float2 o = a_u * 2.0 - 1.0;
-	if (all(o == 0.0))
-		return float2(0.0, 0.0);
-	float r, theta;
-	if (abs(o.x) > abs(o.y)) {
-		r = o.x;
-		theta = 0.78539816 * (o.y / o.x);
-	} else {
-		r = o.y;
-		theta = 1.57079633 - 0.78539816 * (o.x / o.y);
-	}
-	return r * float2(cos(theta), sin(theta));
-}
-
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID)
 {
 	if (any(dispatchID.xy >= C.RenderSize))

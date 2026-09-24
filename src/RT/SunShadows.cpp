@@ -36,8 +36,10 @@ namespace RT
 			uint32_t pointLightCount;  // M8 point-light variant
 			uint32_t inverseSquare;
 			uint32_t roomTest;
+			float pointLightSourceFraction;  // M9: source disc radius / light radius (0 = point light)
+			float pointLightPad[3];
 		};
-		static_assert(sizeof(ShadowConstants) == 304);
+		static_assert(sizeof(ShadowConstants) == 320);
 
 		constexpr uint32_t kFlagCompareShadowMap = 1;
 
@@ -390,6 +392,7 @@ namespace RT
 		if (settings.pointLightCount)
 			std::memcpy(uploadCpu[a_slot] + kPointLightsOffset, a_params.lights.data(), sizeof(PointLight) * settings.pointLightCount);
 		settings.inverseSquare = a_params.inverseSquare;
+		settings.pointLightSourceFraction = std::clamp(a_params.sourceFraction, 0.0f, 0.2f);
 		// Which lights the trace covers (PointLightShadowTraceCS's kSkippedLights: all but disabled; M9: the shadow-mapped
 		// ones too); room-limited ones among them need the per-pixel room.
 		constexpr uint32_t kPortalStrict = 1u << 0;  // LightLimitFix::LightFlags
@@ -417,6 +420,7 @@ namespace RT
 		stats.pointLightsShadowMapped = shadowMapped;
 		stats.pointLightsPortalStrict = portalStrict;
 		stats.pointLightsTraced = settings.pointLightCount - disabled;
+		stats.pointLightSourceFraction = settings.pointLightSourceFraction;
 	}
 
 	void SunShadows::RecordPasses(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
@@ -461,6 +465,7 @@ namespace RT
 		constants->pointLightCount = a_settings.pointLightCount;
 		constants->inverseSquare = a_settings.inverseSquare ? 1u : 0u;
 		constants->roomTest = a_settings.roomTest ? 1u : 0u;
+		constants->pointLightSourceFraction = a_settings.pointLightSourceFraction;
 
 		const D3D12_GPU_VIRTUAL_ADDRESS uploadVA = uploads[a_slot]->GetGPUVirtualAddress();
 		auto table = [&](uint32_t a_table) {

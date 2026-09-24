@@ -66,6 +66,7 @@ struct PointLightSample
 	float3 ToLight;      // from the surface position to the chosen light
 	float3 Irradiance;   // the chosen light's unshadowed irradiance, divided by its selection probability
 	float Clearance;     // how far short of the chosen light its visibility ray stops (PointLightClearance)
+	float LightRadius;   // the chosen light's radius (M9: its source disc scales with it)
 };
 
 // Picks one light in proportion to its unshadowed contribution (luminance of colour x attenuation x N.L) in a single
@@ -80,6 +81,7 @@ PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_
 	result.ToLight = 0.0;
 	result.Irradiance = 0.0;
 	result.Clearance = kLightClearance;
+	result.LightRadius = 0.0;
 	float total = 0.0;
 	float u = a_u;
 	float chosenWeight = 0.0;
@@ -106,6 +108,7 @@ PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_
 			result.Irradiance = irradiance;
 			result.ToLight = toLight;
 			result.Clearance = PointLightClearance(light.Radius);
+			result.LightRadius = light.Radius;
 			chosenWeight = weight;
 			u /= p;
 		} else {

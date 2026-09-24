@@ -123,7 +123,17 @@ float Random1(uint2 a_pixel, uint a_frame)
 		if (light.Valid) {
 			sampled = true;
 			const float3 origin = position + normal * (C.NormalBias + distance * C.DistanceBias);
-			const float3 toLight = light.ToLight + position - origin;
+			float3 toLight = light.ToLight + position - origin;
+			// M9: the light is a small disc facing the surface, not a point: a random point on it per pixel and frame, so the
+			// denoised ratio has soft shadows that widen with the distance from the blocker (as the sun's cone).
+			const float sourceRadius = C.PointLightSourceFraction * light.LightRadius;
+			if (sourceRadius > 0.0) {
+				const float3 axis = normalize(toLight);
+				const float3 tangent = normalize(cross(axis, abs(axis.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0)));
+				const float3 bitangent = cross(axis, tangent);
+				const float2 disk = ConcentricDisk(Random2(dispatchID.xy, C.FrameIndex)) * sourceRadius;
+				toLight += tangent * disk.x + bitangent * disk.y;
+			}
 			const float lightDistance = length(toLight);
 			const float rayLength = lightDistance - light.Clearance;
 			if (rayLength > 0.0) {

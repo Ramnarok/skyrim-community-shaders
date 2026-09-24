@@ -70,6 +70,7 @@ namespace RT
 		uint32_t pointLightsShadowMapped = 0;  ///< ... of which the game shadow-maps (M9: traced too; Lighting.hlsl skips their shadow map)
 		uint32_t pointLightsPortalStrict = 0;  ///< ... of the traced, room-limited (portal-strict): traced where their rooms are
 		uint32_t pointLightsTraced = 0;        ///< ... all but disabled ones: the lights the mask covers
+		float pointLightSourceFraction = 0.0f;  ///< M9: source disc radius / light radius this frame
 		uint32_t textureWidth = 0;
 		uint32_t textureHeight = 0;
 		uint32_t renderWidth = 0;  ///< region of the mask written by the last traced frame
@@ -165,6 +166,7 @@ namespace RT
 			uint32_t pointLightCount = 0;
 			bool inverseSquare = false;
 			bool roomTest = false;  // some traced light is portal-strict: the trace finds each pixel's room
+			float pointLightSourceFraction = 0.0f;  // M9: source disc radius / light radius (0 = point light)
 		};
 
 		void RecordPasses(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
