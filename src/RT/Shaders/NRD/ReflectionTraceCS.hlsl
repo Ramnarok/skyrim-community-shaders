@@ -80,6 +80,16 @@ bool PrepareReflectionPixel(int2 a_pixel, out ReflectionPixel a_out)
 	const float4 gbuffer = GBufferNormal[a_pixel];
 	OutWaterViewZ[a_pixel] = 0.0;
 	OutMotionVectors[a_pixel] = GIMotionVectors[a_pixel];
+	// Diagnostic: on the G-buffer (static geometry mostly) StaticMotionVector must reproduce the game's motion vectors.
+	if (C.Water && depth < 1.0) {
+		const float2 game = GIMotionVectors[a_pixel] * float2(C.RenderSize);
+		const float2 ours = StaticMotionVector(PositionAt(a_pixel, depth)) * float2(C.RenderSize);
+		Count(kGIMotionChecked, true);
+		CountSum(kGIMotionGameSum, uint(min(length(game), 100.0) * 10.0));
+		CountSum(kGIMotionErrorSum, uint(min(length(ours - game), 100.0) * 10.0));
+		CountSum(kGIMotionErrorFlipYSum, uint(min(length(float2(ours.x, -ours.y) - game), 100.0) * 10.0));
+		CountSum(kGIMotionErrorNegatedSum, uint(min(length(-ours - game), 100.0) * 10.0));
+	}
 
 	// M8 water: a water plane in front of the opaque surface (the planes cover whole cells, under the land too) is the
 	// pixel's reflecting surface: a mirror with a little roughness, whatever the G-buffer below it holds.
@@ -184,7 +194,7 @@ void TraceReflection(int2 a_pixel, ReflectionPixel a_p, float a_scale, uint2 a_s
 		radiance = SkyRadiance(direction);
 	}
 
-	const float normHitDist = REBLUR_FrontEnd_GetNormHitDist(hitDistance, a_p.viewZ, C.HitDistParams.xyz, a_p.roughness);
+	const float normHitDist = REBLUR_FrontEnd_GetNormHitDist(hitDistance, a_p.viewZ, C.SpecularHitDistParams.xyz, a_p.roughness);
 	OutRadianceHitDist[a_pixel] = REBLUR_FrontEnd_PackRadianceAndNormHitDist(radiance * a_scale, normHitDist, true);
 
 	Count(kGIReflectionRays, true);

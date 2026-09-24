@@ -165,6 +165,21 @@ namespace RT
 		camera.renderHeight = a_renderHeight;
 	}
 
+	void CaptureCameraMotion(const float* a_viewProjUnjittered, const float* a_prevViewProjUnjittered, const float* a_prevPosAdjust)
+	{
+		std::memcpy(camera.viewProjUnjittered, a_viewProjUnjittered, sizeof(camera.viewProjUnjittered));
+		std::memcpy(camera.prevViewProjUnjittered, a_prevViewProjUnjittered, sizeof(camera.prevViewProjUnjittered));
+		camera.prevPosAdjust = { a_prevPosAdjust[0], a_prevPosAdjust[1], a_prevPosAdjust[2] };
+		// FrameBuffer::CameraProjUnjittered as captured holds the *inverse* unjittered projection (measured 2026-09-25:
+		// diagonal 0.839 / 0.472 where CameraViewProjUnjittered scales the view rows by 1.192 / 2.119). NRD was given it
+		// as its projection, which broke REBLUR_SPECULAR's reprojection. The true one is CameraViewProjUnjittered x
+		// CameraViewInverse (the view is a pure rotation about the camera-relative origin).
+		for (int r = 0; r < 4; r++)
+			for (int c = 0; c < 4; c++)
+				camera.projUnjittered[r * 4 + c] = camera.viewProjUnjittered[r * 4 + 0] * camera.viewInverse[0 * 4 + c] + camera.viewProjUnjittered[r * 4 + 1] * camera.viewInverse[1 * 4 + c] +
+				                                   camera.viewProjUnjittered[r * 4 + 2] * camera.viewInverse[2 * 4 + c] + camera.viewProjUnjittered[r * 4 + 3] * camera.viewInverse[3 * 4 + c];
+	}
+
 	void OnPrepass(bool a_debugTrace, const SunShadowParams* a_shadows, const PointShadowParams* a_pointShadows, bool a_buildForGI)
 	{
 		if (sidecar)

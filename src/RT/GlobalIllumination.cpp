@@ -49,11 +49,12 @@ namespace RT
 			uint32_t reflectionHalfResolution;  // ... one ray per 2x2 block
 			uint32_t water;         // M8 water: water planes in front of the G-buffer reflect too
 			float waterRoughness;  // ... with this roughness
-			uint32_t pad;
+			uint32_t waterDebug;   // ... diagnostic: magenta in place of the reflection
 			float viewProjUnjittered[16];  // M8 water: camera-relative world -> this frame's unjittered clip
 			float prevViewProj[16];        // ... -> the previous frame's unjittered clip (its view folded into this origin)
+			float specularHitDistParams[4];  // M8 reflections: REBLUR_SPECULAR's hit-distance normalization (xyz), w unused
 		};
-		static_assert(sizeof(GIConstants) == 528);
+		static_assert(sizeof(GIConstants) == 544);
 
 		constexpr uint32_t kMaskStatic = 0x01;  // InstanceMask bits, as Raytracer::Record assigns them
 		constexpr uint32_t kMaskTerrain = 0x02;
@@ -67,7 +68,7 @@ namespace RT
 		constexpr uint64_t kZeroOffset = 768;
 		constexpr uint64_t kPointLightsOffset = 1024;
 		constexpr uint64_t kUploadBytes = kPointLightsOffset + sizeof(PointLight) * GlobalIllumination::kMaxPointLights;
-		constexpr uint64_t kCounterBytes = 64;
+		constexpr uint64_t kCounterBytes = 128;
 		static_assert(kConstantsOffset + sizeof(GIConstants) <= kZeroOffset && kZeroOffset + kCounterBytes <= kPointLightsOffset);
 		static_assert(kGICounterCount * sizeof(uint32_t) <= kCounterBytes);
 		// Timestamps: start, GI trace, reflection trace, REBLUR_DIFFUSE, REBLUR_SPECULAR, resolves.
@@ -474,7 +475,7 @@ namespace RT
 	}
 
 	void GlobalIllumination::FillNrdSettings(const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const GIParams& a_params,
-		bool a_historyValid, bool a_everCleared, nrd::CommonSettings& a_common, nrd::ReblurSettings& a_reblur) const
+		bool a_historyValid, bool a_everCleared, bool a_specular, nrd::CommonSettings& a_common, nrd::ReblurSettings& a_reblur) const
 	{
 		// Camera-relative world space moves with the camera: the previous view matrix is expressed in this frame's
 		// origin by folding in the CameraPosAdjust delta.
@@ -502,7 +503,7 @@ namespace RT
 		                                             nrd::AccumulationMode::RESTART;
 
 		// NRD's defaults are in meters; only the hit-distance constant is a length.
-		a_reblur.hitDistanceParameters.A = 3.0f * kUnitsPerMeter;
+		a_reblur.hitDistanceParameters.A = a_specular ? kReflectionHitDistanceA : 3.0f * kUnitsPerMeter;
 		a_reblur.maxAccumulatedFrameNum = std::clamp<uint32_t>(a_params.maxAccumulatedFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 		a_reblur.maxFastAccumulatedFrameNum = std::min<uint32_t>(a_reblur.maxFastAccumulatedFrameNum, a_reblur.maxAccumulatedFrameNum);
 		a_reblur.historyFixFrameNum = std::min<uint32_t>(a_reblur.historyFixFrameNum, a_reblur.maxFastAccumulatedFrameNum > 0 ? a_reblur.maxFastAccumulatedFrameNum - 1 : 0);
@@ -535,6 +536,13 @@ namespace RT
 		c->hitDistParams[1] = 0.1f;
 		c->hitDistParams[2] = 20.0f;
 		c->hitDistParams[3] = std::max(a_params.rayLength, 1.0f);
+		// Reflections see far: a treeline or the sky (kSunRayLength) must not saturate the normalized hit distance, or
+		// REBLUR_SPECULAR decodes them as a few hundred units away and reprojects mirror reflections with the wrong
+		// parallax (water slid while the camera moved).
+		c->specularHitDistParams[0] = kReflectionHitDistanceA;  // must match the specular ReblurSettings::hitDistanceParameters
+		c->specularHitDistParams[1] = 0.1f;
+		c->specularHitDistParams[2] = 20.0f;
+		c->specularHitDistParams[3] = 0.0f;
 		c->renderSize[0] = a_renderWidth;
 		c->renderSize[1] = a_renderHeight;
 		c->frameIndex = frameIndex;
@@ -565,14 +573,62 @@ namespace RT
 		c->reflectionHalfResolution = a_params.reflectionHalfResolution ? 1u : 0u;
 		c->water = traceReflections && a_params.water ? 1u : 0u;
 		c->waterRoughness = a_params.waterRoughness;
+		c->waterDebug = a_params.waterDebug ? 1u : 0u;
 		{
-			// Water pixels' motion vectors, reprojected from the water surface (GI's follow the riverbed below it). Both
-			// matrices take this frame's camera-relative positions; unjittered, as the game's kMOTION_VECTOR.
-			const RE::NiPoint3 delta{ a_camera.posAdjust.x - prevPosAdjust.x, a_camera.posAdjust.y - prevPosAdjust.y, a_camera.posAdjust.z - prevPosAdjust.z };
-			float prevViewHere[16];
-			ViewTimesTranslation(historyValid ? prevView : a_camera.view, historyValid ? delta : RE::NiPoint3{}, prevViewHere);
-			Multiply4x4(a_camera.projUnjittered, a_camera.view, c->viewProjUnjittered);
-			Multiply4x4(historyValid ? prevProj : a_camera.projUnjittered, prevViewHere, c->prevViewProj);
+			// Water pixels' motion vectors, reprojected from the water surface (GI's follow the riverbed below it), with the
+			// matrices the game builds kMOTION_VECTOR with (MotionBlur::GetSSMotionVector). Composing them from the view and
+			// projection was off by 50-74 px while panning (dump check). The previous one expects positions relative to the
+			// previous CameraPosAdjust: this frame's camera-relative positions are moved by the delta first.
+			const RE::NiPoint3 gameDelta{ a_camera.posAdjust.x - a_camera.prevPosAdjust.x, a_camera.posAdjust.y - a_camera.prevPosAdjust.y, a_camera.posAdjust.z - a_camera.prevPosAdjust.z };
+			std::memcpy(c->viewProjUnjittered, a_camera.viewProjUnjittered, sizeof(c->viewProjUnjittered));
+			ViewTimesTranslation(a_camera.prevViewProjUnjittered, gameDelta, c->prevViewProj);
+
+			// Diagnostic: do our own compositions (and NRD's previous matrices) agree with the game's? Max element difference
+			// relative to the largest element of the game's matrix.
+			const auto relativeDifference = [](const float* a_ours, const float* a_game) {
+				float largest = 1e-6f, difference = 0.0f;
+				for (int i = 0; i < 16; i++) {
+					largest = std::max(largest, std::abs(a_game[i]));
+					difference = std::max(difference, std::abs(a_ours[i] - a_game[i]));
+				}
+				return difference / largest;
+			};
+			float composed[16];
+			Multiply4x4(a_camera.projUnjittered, a_camera.view, composed);
+			stats.cameraCheckProjTimesView = relativeDifference(composed, a_camera.viewProjUnjittered);
+			Multiply4x4(a_camera.view, a_camera.projUnjittered, composed);
+			stats.cameraCheckViewTimesProj = relativeDifference(composed, a_camera.viewProjUnjittered);
+			// Which composition reproduces the game's matrix, if any (a transposed input shows as one of these near 0)?
+			float projT[16], viewT[16];
+			for (int r = 0; r < 4; r++)
+				for (int col = 0; col < 4; col++) {
+					projT[col * 4 + r] = a_camera.projUnjittered[r * 4 + col];
+					viewT[col * 4 + r] = a_camera.view[r * 4 + col];
+				}
+			Multiply4x4(projT, a_camera.view, composed);
+			stats.cameraCheckVariants[0] = relativeDifference(composed, a_camera.viewProjUnjittered);  // P^T x V
+			Multiply4x4(a_camera.projUnjittered, viewT, composed);
+			stats.cameraCheckVariants[1] = relativeDifference(composed, a_camera.viewProjUnjittered);  // P x V^T
+			Multiply4x4(projT, viewT, composed);
+			stats.cameraCheckVariants[2] = relativeDifference(composed, a_camera.viewProjUnjittered);  // P^T x V^T
+			Multiply4x4(viewT, projT, composed);
+			stats.cameraCheckVariants[3] = relativeDifference(composed, a_camera.viewProjUnjittered);  // V^T x P^T
+			// The raw matrices, as captured (16 floats each, memory order), for the dump.
+			std::memcpy(stats.cameraMatrices[0].data(), a_camera.view, sizeof(float) * 16);
+			std::memcpy(stats.cameraMatrices[1].data(), a_camera.projUnjittered, sizeof(float) * 16);
+			std::memcpy(stats.cameraMatrices[2].data(), a_camera.viewProjUnjittered, sizeof(float) * 16);
+			std::memcpy(stats.cameraMatrices[3].data(), a_camera.viewProj, sizeof(float) * 16);
+			std::memcpy(stats.cameraMatrices[4].data(), a_camera.viewInverse, sizeof(float) * 16);
+			std::memcpy(stats.cameraMatrices[5].data(), a_camera.prevViewProjUnjittered, sizeof(float) * 16);
+			stats.cameraPosAdjust = a_camera.posAdjust;
+			stats.cameraPrevPosAdjust = a_camera.prevPosAdjust;
+			if (historyValid) {
+				const RE::NiPoint3 delta{ a_camera.posAdjust.x - prevPosAdjust.x, a_camera.posAdjust.y - prevPosAdjust.y, a_camera.posAdjust.z - prevPosAdjust.z };
+				float prevViewHere[16], ours[16];
+				ViewTimesTranslation(prevView, delta, prevViewHere);
+				Multiply4x4(prevProj, prevViewHere, ours);
+				stats.cameraCheckPrevious = relativeDifference(ours, c->prevViewProj);
+			}
 		}
 
 		auto first = heap->GetCPUDescriptorHandleForHeapStart();
@@ -663,7 +719,7 @@ namespace RT
 		SetPassMarker(a_list, L"SkyrimRT: GI REBLUR");
 		nrd::CommonSettings common{};
 		nrd::ReblurSettings reblur{};
-		FillNrdSettings(a_camera, a_renderWidth, a_renderHeight, a_params, historyValid, everCleared, common, reblur);
+		FillNrdSettings(a_camera, a_renderWidth, a_renderHeight, a_params, historyValid, everCleared, false, common, reblur);
 		denoiser.Record(a_list, a_slot, common, reblur, { nrdMotionVectors.get(), normalRoughness.get(), viewZ.get(), noisy.get(), denoised.get() });
 		everCleared = true;
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 3);
@@ -671,7 +727,7 @@ namespace RT
 			SetPassMarker(a_list, L"SkyrimRT: reflection REBLUR");
 			nrd::CommonSettings specularCommon{};
 			nrd::ReblurSettings specularReblur{};
-			FillNrdSettings(a_camera, a_renderWidth, a_renderHeight, a_params, specularHistoryValid, specularEverCleared, specularCommon, specularReblur);
+			FillNrdSettings(a_camera, a_renderWidth, a_renderHeight, a_params, specularHistoryValid, specularEverCleared, true, specularCommon, specularReblur);
 			// Half resolution leaves three of four pixels without a sample (hit distance 0): NRD's probabilistic-sampling
 			// path, which needs hit-distance reconstruction and the pre-pass (on by default, specularPrepassBlurRadius).
 			if (a_params.reflectionHalfResolution)
@@ -806,6 +862,15 @@ namespace RT
 		stats.reflectionsLastSlot = slotReflections[a_slot];
 		if (slotReflections[a_slot]) {
 			stats.reflectionTraceMs.Add(Ms(t[1], t[2], timestampFrequency));
+			if (const uint32_t checked = stats.counters[kGIMotionChecked]) {
+				const auto mean = [&](uint32_t a_counter) { return 0.1f * stats.counters[a_counter] / checked; };
+				if (mean(kGIMotionGameSum) > 0.2f) {  // frames where the camera moves
+					stats.motionGamePx.Add(mean(kGIMotionGameSum));
+					stats.motionErrorPx.Add(mean(kGIMotionErrorSum));
+					stats.motionErrorFlipYPx.Add(mean(kGIMotionErrorFlipYSum));
+					stats.motionErrorNegatedPx.Add(mean(kGIMotionErrorNegatedSum));
+				}
+			}
 			stats.reflectionDenoiseMs.Add(Ms(t[3], t[4], timestampFrequency));
 			stats.reflectionDispatches = slotReflectionDispatches[a_slot];
 		}

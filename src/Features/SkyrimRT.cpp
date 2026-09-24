@@ -61,7 +61,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIReflections,
 	GIReflectionMaxRoughness,
 	GIReflectionHalfResolution,
-	WaterReflections)
+	WaterReflections,
+	WaterRoughness,
+	WaterDebugCoverage)
 
 namespace
 {
@@ -274,6 +276,7 @@ void SkyrimRT::Prepass()
 	auto matrix = [](const auto& a_matrix) { return reinterpret_cast<const float*>(&a_matrix); };
 	RT::CaptureCamera(matrix(frameBuffer.GetCameraViewProjInverse()), matrix(frameBuffer.GetCameraViewProj()), matrix(frameBuffer.GetCameraView()),
 		matrix(frameBuffer.GetCameraViewInverse()), matrix(frameBuffer.GetCameraProjUnjittered()), &frameBuffer.GetCameraPosAdjust().x, static_cast<uint32_t>(std::lround(renderSize.x)), static_cast<uint32_t>(std::lround(renderSize.y)), globals::state->frameCount);
+	RT::CaptureCameraMotion(matrix(frameBuffer.GetCameraViewProjUnjittered()), matrix(frameBuffer.GetCameraPreviousViewProjUnjittered()), &frameBuffer.GetCameraPreviousPosAdjust().x);
 
 	RT::SunShadowParams params;
 	const bool traceShadows = shadows && GetDirectionToSun(params.toSun);
@@ -358,6 +361,8 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.reflectionMaxRoughness = settings.GIReflectionMaxRoughness;
 	params.reflectionHalfResolution = settings.GIReflectionHalfResolution;
 	params.water = settings.WaterReflections;
+	params.waterRoughness = std::clamp(settings.WaterRoughness, 0.0f, 1.0f);
+	params.waterDebug = settings.WaterDebugCoverage;
 	a_outputs = RT::SubmitGI(params);
 	const bool traced = a_outputs.ao && a_outputs.y && a_outputs.coCg;
 	// The flag SRV tells the composite the GI carries the sky: any bound view works, only its presence is read.
@@ -557,6 +562,12 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("water_reflections"), "Ray-traced water reflections"), &settings.WaterReflections);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("water_reflections_tooltip"), "Rivers and lakes reflect the traced scene (and distant land) instead of the game's cubemap and screen-space reflections. Needs ray-traced reflections."));
+	ImGui::SliderFloat(T(TKEY("water_roughness"), "Water reflection roughness"), &settings.WaterRoughness, 0.0f, 0.5f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("water_roughness_tooltip"), "How glossy the traced water reflection is. Higher values let the denoiser smooth it more (less shimmer) but blur it."));
+	ImGui::Checkbox(T(TKEY("water_debug_coverage"), "Show traced water (magenta)"), &settings.WaterDebugCoverage);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("water_debug_coverage_tooltip"), "Diagnostic: water that uses the ray-traced reflection turns magenta; water that falls back to the game's reflection keeps its normal look."));
 
 	const char* giViewNames[] = { T(TKEY("shadow_view_off"), "Off"), T(TKEY("gi_view_noisy"), "Bounce light, noisy"), T(TKEY("gi_view_denoised"), "Bounce light, denoised"), T(TKEY("gi_view_ao"), "Ambient occlusion"),
 		T(TKEY("gi_view_reflections_noisy"), "Reflections, noisy"), T(TKEY("gi_view_reflections_denoised"), "Reflections, denoised") };

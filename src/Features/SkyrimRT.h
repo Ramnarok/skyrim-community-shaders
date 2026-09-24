@@ -80,6 +80,8 @@ struct SkyrimRT : OverlayFeature
 		float GIReflectionMaxRoughness = 1.0f;  ///< rougher surfaces keep the cubemap reflection
 		bool GIReflectionHalfResolution = true;  ///< one reflection ray per 2x2 block (measured +1.2-1.5 ms at full resolution in rain)
 		bool WaterReflections = false;  ///< M8: water planes reflect the traced scene (Water.hlsl t47; needs GIReflections)
+		float WaterRoughness = 0.05f;      ///< M8: the traced water lobe (the waves are Water.hlsl's normal maps)
+		bool WaterDebugCoverage = false;  ///< M8 diagnostic: traced water pixels turn magenta
 	};
 
 	Settings settings;

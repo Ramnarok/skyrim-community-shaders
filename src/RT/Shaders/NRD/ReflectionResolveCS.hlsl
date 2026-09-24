@@ -40,7 +40,7 @@ float3 ToneMap(float3 a_color)
 	const float3 radiance = max(REBLUR_BackEnd_UnpackRadianceAndNormHitDist(Denoised[pixel]).rgb, 0.0);
 	if (waterViewZ != 0.0) {
 		OutReflections[pixel] = 0.0;
-		OutWater[pixel] = float4(radiance, waterViewZ);
+		OutWater[pixel] = float4(C.WaterDebug ? float3(4.0, 0.0, 4.0) : radiance, waterViewZ);
 	} else {
 		OutReflections[pixel] = float4(radiance, 1.0);
 	}

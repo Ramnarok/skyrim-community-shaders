@@ -29,6 +29,13 @@ namespace RT
 		kGIReflectionDeeperHits,  ///< ... hits of the reflected surfaces' continuation rays
 		kGIReflectionRays,        ///< ... reflection rays traced (one per 2x2 block at half resolution)
 		kGIWaterPixels,           ///< M8 water: pixels whose reflecting surface is a water plane (counted in kGIReflectionTraced too)
+		// M8 water diagnostic: StaticMotionVector (the water's) against the game's kMOTION_VECTOR on the G-buffer (non-water
+		// pixels with depth): sums in 1/10 pixel, each pixel clamped to 100 pixels.
+		kGIMotionChecked,
+		kGIMotionGameSum,        ///< |game MV|
+		kGIMotionErrorSum,       ///< |ours - game|
+		kGIMotionErrorFlipYSum,  ///< |ours with y negated - game|
+		kGIMotionErrorNegatedSum,  ///< |-ours - game|
 		kGICounterCount
 	};
 
@@ -62,6 +69,13 @@ namespace RT
 		uint32_t reflectionDispatches = 0;
 		TimingSeries reflectionTraceMs;
 		TimingSeries reflectionDenoiseMs;
+		// M8 water diagnostic: mean StaticMotionVector error vs the game's motion vectors (pixels), over frames with camera motion.
+		TimingSeries motionGamePx, motionErrorPx, motionErrorFlipYPx, motionErrorNegatedPx;
+		// ... and whether projUnjittered x view (either order) and our previous matrix (NRD's) match the game's (relative).
+		float cameraCheckProjTimesView = 0.0f, cameraCheckViewTimesProj = 0.0f, cameraCheckPrevious = 0.0f;
+		std::array<float, 4> cameraCheckVariants{};  ///< P^T x V, P x V^T, P^T x V^T, V^T x P^T against the game's
+		std::array<std::array<float, 16>, 6> cameraMatrices{};  ///< view, projUnjittered, viewProjUnjittered, viewProj, viewInverse, prevViewProjUnjittered
+		RE::NiPoint3 cameraPosAdjust, cameraPrevPosAdjust;
 
 		float HitPercent() const { return counters[kGITraced] ? 100.0f * counters[kGIHits] / counters[kGITraced] : 0.0f; }
 		float ReflectionHitPercent() const { return counters[kGIReflectionRays] ? 100.0f * counters[kGIReflectionHits] / counters[kGIReflectionRays] : 0.0f; }
@@ -92,6 +106,7 @@ namespace RT
 		static constexpr uint32_t kFramesInFlight = 3;
 		static constexpr uint32_t kMeshPageSlots = 64;
 		static constexpr float kUnitsPerMeter = 70.0f;           ///< Skyrim units; NRD's defaults are in meters
+		static constexpr float kReflectionHitDistanceA = 50000.0f;  ///< reflections' hit-distance normalization: their rays' reach, so no real hit saturates
 		static constexpr float kDenoisingRange = 400000.0f;     ///< game units; farther pixels (and sky) are ignored
 		static constexpr float kSkyViewZ = 10000000.0f;
 		static constexpr uint32_t kMaxPointLights = 1024;  ///< LightLimitFix::MAX_LIGHTS
@@ -138,7 +153,7 @@ namespace RT
 		bool InitReflections();
 		void WriteDescriptors();
 		void FillNrdSettings(const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const GIParams& a_params,
-			bool a_historyValid, bool a_everCleared, nrd::CommonSettings& a_common, nrd::ReblurSettings& a_reblur) const;
+			bool a_historyValid, bool a_everCleared, bool a_specular, nrd::CommonSettings& a_common, nrd::ReblurSettings& a_reblur) const;
 
 		ID3D12Device5* device = nullptr;
 		ID3D11Device5* d3d11Device = nullptr;

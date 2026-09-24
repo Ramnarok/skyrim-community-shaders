@@ -854,7 +854,8 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	uint rtWaterWidth, rtWaterHeight;
 	SkyrimRTWaterReflections.GetDimensions(rtWaterWidth, rtWaterHeight);
 	if (rtWaterWidth > 0) {
-		const float2 rtWaterSize = float2(rtWaterWidth, rtWaterHeight);
+		// The texture is allocated at full size; with dynamic resolution (DLSS, FSR) only the render region is written.
+		const float2 rtWaterSize = max(floor(float2(rtWaterWidth, rtWaterHeight) * FrameBuffer::DynamicResolutionParams1.xy), 1.0);
 		const int2 rtWaterPixel = int2(clamp(input.HPosition.xy, 0.0, rtWaterSize - 1.0));
 		const float4 rtWater = SkyrimRTWaterReflections.Load(int3(rtWaterPixel, 0));
 		const float fragmentViewZ = mul(FrameBuffer::CameraView, float4(input.WPosition.xyz, 1.0)).z;

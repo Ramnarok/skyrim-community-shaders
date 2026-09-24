@@ -185,6 +185,7 @@ namespace RT
 		/// GIOutputs::waterReflections for Water.hlsl instead of the composite's t17.
 		bool water = false;
 		float waterRoughness = 0.05f;  ///< the traced lobe; the waves come from Water.hlsl's normal maps
+		bool waterDebug = false;  ///< diagnostic: water pixels get magenta instead of their reflection
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 extras. */
@@ -241,6 +242,14 @@ namespace RT
 	 */
 	void CaptureCamera(const float* a_viewProjInverse, const float* a_viewProj, const float* a_view, const float* a_viewInverse, const float* a_projUnjittered,
 		const float* a_posAdjust, uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_gameFrame);
+
+	/**
+	 * @brief M8 water: the matrices the game builds its motion vectors with, captured with CaptureCamera (same frame).
+	 * @param a_viewProjUnjittered FrameBuffer::CameraViewProjUnjittered
+	 * @param a_prevViewProjUnjittered FrameBuffer::CameraPreviousViewProjUnjittered
+	 * @param a_prevPosAdjust FrameBuffer::CameraPreviousPosAdjust.xyz
+	 */
+	void CaptureCameraMotion(const float* a_viewProjUnjittered, const float* a_prevViewProjUnjittered, const float* a_prevPosAdjust);
 
 	/**
 	 * @brief Runs this frame's round trip before the opaque pass (from Feature::Prepass, after CaptureCamera): scene

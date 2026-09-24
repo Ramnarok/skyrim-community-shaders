@@ -420,6 +420,18 @@ namespace RT
 						// M8 water: pixels whose reflecting surface is a water plane (part of pixels_traced), for Water.hlsl t47.
 						{ "water", { { "enabled", p.water }, { "roughness", p.waterRoughness }, { "pixels", g.counters[kGIWaterPixels] },
 									   { "percent_of_render", g.renderWidth && g.renderHeight ? 100.0 * g.counters[kGIWaterPixels] / (static_cast<double>(g.renderWidth) * g.renderHeight) : 0.0 } } },
+						// M8 water diagnostic: StaticMotionVector against the game's motion vectors on the G-buffer, frames with camera motion only.
+						{ "motion_vector_check_px", { { "game_mean", TimingJson(g.motionGamePx) }, { "error", TimingJson(g.motionErrorPx) },
+													  { "error_if_y_flipped", TimingJson(g.motionErrorFlipYPx) }, { "error_if_negated", TimingJson(g.motionErrorNegatedPx) } } },
+						{ "camera_matrix_check_relative", { { "proj_times_view_vs_game", g.cameraCheckProjTimesView }, { "view_times_proj_vs_game", g.cameraCheckViewTimesProj },
+															{ "our_previous_vs_game", g.cameraCheckPrevious },
+															{ "projT_times_view", g.cameraCheckVariants[0] }, { "proj_times_viewT", g.cameraCheckVariants[1] },
+															{ "projT_times_viewT", g.cameraCheckVariants[2] }, { "viewT_times_projT", g.cameraCheckVariants[3] } } },
+						// The raw camera matrices of the last traced frame, 16 floats in memory order (row by row as CS stores them).
+						{ "camera_matrices", { { "view", g.cameraMatrices[0] }, { "proj_unjittered", g.cameraMatrices[1] }, { "view_proj_unjittered", g.cameraMatrices[2] },
+												 { "view_proj", g.cameraMatrices[3] }, { "view_inverse", g.cameraMatrices[4] }, { "prev_view_proj_unjittered", g.cameraMatrices[5] },
+												 { "pos_adjust", { g.cameraPosAdjust.x, g.cameraPosAdjust.y, g.cameraPosAdjust.z } },
+												 { "prev_pos_adjust", { g.cameraPrevPosAdjust.x, g.cameraPrevPosAdjust.y, g.cameraPrevPosAdjust.z } } } },
 						{ "frames_traced", g.reflectionFramesTraced },
 						{ "history_resets", g.reflectionHistoryResets },
 						{ "nrd_dispatches", g.reflectionDispatches } } },

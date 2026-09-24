@@ -39,8 +39,10 @@ struct GIConstants
 	uint ReflectionHalfResolution; // ... one ray per 2x2 block (ReflectionTraceCS)
 	uint Water;                    // M8 water: water planes (kMaskWater) in front of the G-buffer reflect too (Water.hlsl t47)
 	float WaterRoughness;          // ... with this roughness (the waves are Water.hlsl's normal maps)
+	uint WaterDebug;               // ... diagnostic: the resolve writes magenta instead of the reflection (shows which water fragments use it)
 	row_major float4x4 ViewProjUnjittered;  // M8 water: camera-relative world -> this frame's unjittered clip
 	row_major float4x4 PrevViewProj;        // ... -> the previous frame's (its view folded into this origin)
+	float4 SpecularHitDistParams;          // M8 reflections: REBLUR_SPECULAR's hit-distance normalization (xyz; A = the rays' reach)
 };
 
 // Counter slots, mirrored in GlobalIllumination.h
@@ -60,6 +62,11 @@ static const uint kGIReflectionHits = 12;    // ... rays that hit geometry (the 
 static const uint kGIReflectionDeeperHits = 13;  // ... hits of the reflected surface's continuation rays
 static const uint kGIReflectionRays = 14;        // ... reflection rays traced (a quarter or so at half resolution)
 static const uint kGIWaterPixels = 15;            // M8 water: pixels whose reflecting surface is a water plane (in kGIReflectionTraced too)
+static const uint kGIMotionChecked = 16;          // M8 water diagnostic: StaticMotionVector vs the game's motion vectors (see GlobalIllumination.h)
+static const uint kGIMotionGameSum = 17;
+static const uint kGIMotionErrorSum = 18;
+static const uint kGIMotionErrorFlipYSum = 19;
+static const uint kGIMotionErrorNegatedSum = 20;
 
 ConstantBuffer<GIConstants> C : register(b0);
 
