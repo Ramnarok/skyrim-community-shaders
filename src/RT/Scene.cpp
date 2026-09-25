@@ -146,8 +146,19 @@ namespace RT
 			const auto& geometryData = a_geometryData;
 			a_candidate.windAnimated = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kTreeAnim);
 			a_candidate.decal = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kDecal, RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal);
+			// M9 phase 4: the emissive colour Lighting.hlsl gets as EmitColor (read as CS's TruePBR / Linear Lighting do).
+			a_candidate.ownEmit = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kOwnEmit);
+			if (const auto* emissive = lightingProperty->emissiveColor) {
+				a_candidate.emissive[0] = emissive->red * lightingProperty->emissiveMult;
+				a_candidate.emissive[1] = emissive->green * lightingProperty->emissiveMult;
+				a_candidate.emissive[2] = emissive->blue * lightingProperty->emissiveMult;
+			}
 			// Same test CS uses for landscape (TruePBR.cpp): the lighting material's feature.
 			if (auto* material = lightingProperty->material) {
+				if (auto* glow = skyrim_cast<RE::BSLightingShaderMaterialGlowmap*>(material)) {
+					a_candidate.glowMap = true;
+					a_candidate.glowTexture = glow->glowTexture.get();
+				}
 				const auto feature = material->GetFeature();
 				a_candidate.terrain = feature == Feature::kMultiTexLand || feature == Feature::kMultiTexLandLODBlend;
 
@@ -1346,6 +1357,59 @@ namespace RT
 				a_partition.candidateIndex = newIndex[a_partition.candidateIndex];
 				return a_partition.candidateIndex == UINT32_MAX;
 			});
+		}
+
+		// M9 phase 4 census: which traced static / terrain instances glow, and the brightest by luminance x bound radius².
+		{
+			auto& census = a_stats.emissive;
+			const RE::NiPoint3 player = RE::PlayerCharacter::GetSingleton()->GetPosition();
+			ankerl::unordered_dense::set<const void*> meshes;
+			struct Ranked
+			{
+				const GeometryCandidate* candidate;
+				float rank;
+			};
+			std::vector<Ranked> ranked;
+			for (const auto& candidate : a_out) {
+				if (candidate.skinned || candidate.water || candidate.distantLOD)
+					continue;
+				const float luminance = 0.2126f * candidate.emissive[0] + 0.7152f * candidate.emissive[1] + 0.0722f * candidate.emissive[2];
+				if (candidate.glowMap && !(luminance > 0.0f))
+					census.glowMapBlack++;
+				if (!(luminance > 0.0f))
+					continue;
+				census.instances++;
+				census.ownEmit += candidate.ownEmit;
+				census.glowMapped += candidate.glowMap;
+				census.maxLuminance = std::max(census.maxLuminance, luminance);
+				census.byLuminance[luminance < 0.05f ? 0 : luminance < 0.25f ? 1 : luminance < 1.0f ? 2 : 3]++;
+				meshes.insert(candidate.rendererData);
+				const float radius = candidate.geometry ? candidate.geometry->worldBound.radius : 0.0f;
+				ranked.push_back({ &candidate, luminance * radius * radius });
+			}
+			census.uniqueMeshes = static_cast<uint32_t>(meshes.size());
+			const size_t keep = std::min<size_t>(ranked.size(), 12);
+			std::partial_sort(ranked.begin(), ranked.begin() + keep, ranked.end(), [](const Ranked& a_a, const Ranked& a_b) { return a_a.rank > a_b.rank; });
+			for (size_t i = 0; i < keep; i++) {
+				const auto& candidate = *ranked[i].candidate;
+				SceneStats::EmissiveSample sample;
+				if (const auto* geometry = candidate.geometry) {
+					sample.shapeName = geometry->name.c_str() ? geometry->name.c_str() : "";
+					sample.boundRadius = geometry->worldBound.radius;
+					sample.distance = geometry->worldBound.center.GetDistance(player);
+					if (const auto* property = netimmerse_cast<RE::BSLightingShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get()))
+						sample.emissiveMult = property->emissiveMult;
+				}
+				if (candidate.objectRoot && candidate.objectRoot->name.c_str())
+					sample.objectName = candidate.objectRoot->name.c_str();
+				if (candidate.glowTexture && candidate.glowTexture->name.c_str())
+					sample.glowTexture = candidate.glowTexture->name.c_str();
+				std::copy(std::begin(candidate.emissive), std::end(candidate.emissive), sample.emissive);
+				sample.luminance = 0.2126f * candidate.emissive[0] + 0.7152f * candidate.emissive[1] + 0.0722f * candidate.emissive[2];
+				sample.ownEmit = candidate.ownEmit;
+				sample.glowMap = candidate.glowMap;
+				census.brightest.push_back(std::move(sample));
+			}
 		}
 
 		// Unique meshes: instances of the same mesh share rendererData.

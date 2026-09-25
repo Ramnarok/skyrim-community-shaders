@@ -107,6 +107,21 @@ namespace RT
 				{ "lod_water", { { "shapes", a_water.lodWaterShapes }, { "visible", a_water.lodWaterVisible } } }, { "samples", samples } };
 		}
 
+		// M9 phase 4: the traced instances whose material glows (diagnostic, before emissives light anything).
+		json EmissiveJson(const SceneStats::Emissive& a_emissive)
+		{
+			json brightest = json::array();
+			for (const auto& s : a_emissive.brightest)
+				brightest.push_back({ { "shape", s.shapeName }, { "object", s.objectName }, { "emissive", { s.emissive[0], s.emissive[1], s.emissive[2] } },
+					{ "emissive_mult", s.emissiveMult }, { "luminance", s.luminance }, { "own_emit", s.ownEmit }, { "glow_map", s.glowMap },
+					{ "glow_texture", s.glowTexture }, { "bound_radius", s.boundRadius }, { "distance_from_player", s.distance } });
+			return { { "instances", a_emissive.instances }, { "own_emit", a_emissive.ownEmit }, { "glow_mapped", a_emissive.glowMapped },
+				{ "glow_mapped_but_black", a_emissive.glowMapBlack }, { "unique_meshes", a_emissive.uniqueMeshes }, { "max_luminance", a_emissive.maxLuminance },
+				{ "by_luminance", { { "under_0_05", a_emissive.byLuminance[0] }, { "under_0_25", a_emissive.byLuminance[1] }, { "under_1", a_emissive.byLuminance[2] },
+									  { "1_and_over", a_emissive.byLuminance[3] } } },
+				{ "brightest", brightest } };
+		}
+
 		json SceneJson(const DebugDumpData& a_data)
 		{
 			const auto& s = a_data.scene;
@@ -139,6 +154,7 @@ namespace RT
 				{ "distant_lod", DistantLODJson(s.lod) },
 				{ "tree_lod_census", TreeLODJson(s.treeLOD) },
 				{ "water_census", WaterJson(s.water) },
+				{ "emissive_census", EmissiveJson(s.emissive) },
 				{ "traversal_ms", TimingJson(a_data.sceneTraversalMs) },
 			};
 		}

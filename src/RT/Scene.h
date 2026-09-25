@@ -80,6 +80,12 @@ namespace RT
 		// M8 water: a loaded cell's BSWaterShaderProperty plane (whole-cell, under the land too). Own mask (0x80), in no
 		// trace but the water queries: water doesn't shadow or occlude.
 		bool water = false;
+		// M9 phase 4: what Lighting.hlsl's EmitColor holds for this shape (emissiveColor x emissiveMult), added to the
+		// diffuse light before the albedo; glow-mapped materials also scale it by their glow texture.
+		float emissive[3]{};
+		bool ownEmit = false;  // kOwnEmit
+		bool glowMap = false;  // a BSLightingShaderMaterialGlowmap
+		const RE::NiSourceTexture* glowTexture = nullptr;  // valid this frame only
 	};
 
 	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
@@ -289,6 +295,28 @@ namespace RT
 			uint32_t lodWaterShapes = 0, lodWaterVisible = 0;  ///< under TES::objLODWaterRoot
 			std::vector<WaterSample> samples;  // first water objects with a shape, up to 12
 		} water;
+		// M9 phase 4 census (diagnostic, before emissives light anything): the traced static / terrain instances whose
+		// material glows, and the brightest of them.
+		struct EmissiveSample
+		{
+			std::string shapeName, objectName, glowTexture;
+			float emissive[3]{};  // emissiveColor x emissiveMult
+			float emissiveMult = 0.0f;
+			float luminance = 0.0f;
+			bool ownEmit = false, glowMap = false;
+			float boundRadius = 0.0f, distance = 0.0f;  // game units; distance from the camera to the bound's centre
+		};
+		struct Emissive
+		{
+			uint32_t instances = 0;      ///< traced static / terrain instances with a non-black emissive colour
+			uint32_t ownEmit = 0;        ///< ... flagged kOwnEmit
+			uint32_t glowMapped = 0;     ///< ... with a glow map
+			uint32_t glowMapBlack = 0;   ///< glow-mapped instances whose emissive colour is black (they don't glow)
+			uint32_t uniqueMeshes = 0;
+			float maxLuminance = 0.0f;
+			std::array<uint32_t, 4> byLuminance{};  ///< < 0.05, < 0.25, < 1, >= 1
+			std::vector<EmissiveSample> brightest;  ///< up to 12, by luminance x bound radius²
+		} emissive;
 		float traversalMs = 0.0f;
 	};
 
