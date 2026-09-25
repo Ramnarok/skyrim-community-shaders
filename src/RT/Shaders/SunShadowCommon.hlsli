@@ -26,8 +26,12 @@ struct ShadowConstants
 	uint InverseSquare;    // M8: Inverse Square Lighting loaded
 	uint RoomTest;         // M8: some traced light is portal-strict: find each pixel's room with a primary ray
 	float PointLightSourceFraction;  // M9: a point light's source disc radius, as a fraction of its light radius (0 = point)
-	float3 PointLightPad;
+	uint3 HeroLights;                // M9 phase 2: PointLights indices of the (up to) three lights with their own mask channel; ~0 = none
+	uint HeroResetMask;              // ... bit k: channel k's light changed this frame (the temporal pass restarts the history)
+	uint3 HeroPad;
 };
+
+static const uint kNoHeroLight = 0xFFFFFFFFu;
 
 static const uint kFlagCompareShadowMap = 1;
 
@@ -57,6 +61,9 @@ static const uint kPointCandidates2to3 = 12;
 static const uint kPointCandidates4to7 = 13;
 static const uint kPointCandidates8Plus = 14;
 static const uint kPointCandidateMax = 15;    // most such lights at any pixel (InterlockedMax)
+// M9 phase 2: per hero light k (channel k), the pixels it reaches (in range, facing, in room) and those where it's blocked.
+static const uint kPointHeroReached0 = 16;
+static const uint kPointHeroOccluded0 = 19;
 
 ConstantBuffer<ShadowConstants> C : register(b0);
 

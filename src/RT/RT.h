@@ -320,8 +320,12 @@ namespace RT
 	/** @brief True when the sidecar can trace M8 point-light shadows. */
 	bool CanTracePointLightShadows();
 
-	/** @brief SRV of the M8 point-light shadow mask for this frame (R8, 1 = lit), cleared to lit if stale; nullptr if unavailable. */
+	/** @brief SRV of the point-light shadow mask for this frame (RGBA8, 1 = lit: xyz the hero lights, w the rest; M9 phase 2),
+	 * cleared to lit if stale; nullptr if unavailable. */
 	ID3D11ShaderResourceView* AcquirePointLightShadowMask();
+
+	/** @brief M9 phase 2: the hero lights' positions (4x1 RGBA32F, w = 1 when set), bound with the mask at PS t48. */
+	ID3D11ShaderResourceView* GetPointLightHeroesSRV();
 
 	/** @brief SRV of the point-light shadow debug view (RGBA8) when PointShadowParams::viewMode is set, or nullptr. */
 	ID3D11ShaderResourceView* GetPointLightShadowViewSRV();

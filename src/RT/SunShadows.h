@@ -43,10 +43,13 @@ namespace RT
 		kPointCandidates4to7,
 		kPointCandidates8Plus,
 		kPointCandidateMax,     ///< most such lights at any pixel
-		kPointCounterCount
+		kPointHeroReached0 = 16,  ///< M9 phase 2: pixels hero light k (channel k) reaches (in range, facing, in room); 16-18
+		kPointHeroOccluded0 = 19,  ///< ... of those, where it's blocked; 19-21
+		kPointHeroSlotsEnd = 22,
+		kPointCounterCount = kPointHeroSlotsEnd
 	};
-	/** @brief Counter slots every SunShadows instance reads back (the 64-byte counter buffer); both variants fit. */
-	inline constexpr uint32_t kShadowCounterSlots = 16;
+	/** @brief Counter slots every SunShadows instance reads back (the 128-byte counter buffer); both variants fit. */
+	inline constexpr uint32_t kShadowCounterSlots = 32;
 	static_assert(static_cast<uint32_t>(kPointCounterCount) <= kShadowCounterSlots && static_cast<uint32_t>(kShadowCounterCount) <= kShadowCounterSlots);
 
 	/** @brief What a SunShadows instance traces: the M5 sun, or the M8 unshadowed point lights (same denoise passes). */
@@ -71,6 +74,18 @@ namespace RT
 		uint32_t pointLightsPortalStrict = 0;  ///< ... of the traced, room-limited (portal-strict): traced where their rooms are
 		uint32_t pointLightsTraced = 0;        ///< ... all but disabled ones: the lights the mask covers
 		float pointLightSourceFraction = 0.0f;  ///< M9: source disc radius / light radius this frame
+		/// M9 phase 2: the hero lights (their own mask channel), as chosen for the last traced frame.
+		struct HeroLight
+		{
+			bool valid = false;
+			uint32_t index = 0;   ///< into this frame's point lights
+			float position[3]{};  ///< camera-relative
+			float radius = 0.0f;
+			float score = 0.0f;   ///< the importance it was chosen by
+			uint32_t flags = 0;
+		};
+		std::array<HeroLight, 3> heroLights{};
+		uint64_t heroChanges = 0;  ///< channel reassignments so far (each restarts the denoiser history)
 		uint32_t textureWidth = 0;
 		uint32_t textureHeight = 0;
 		uint32_t renderWidth = 0;  ///< region of the mask written by the last traced frame
@@ -147,6 +162,8 @@ namespace RT
 
 		ID3D11ShaderResourceView* GetMaskSRV() const { return mask.srv11.get(); }
 		ID3D11ShaderResourceView* GetViewSRV() const { return view.srv11.get(); }
+		/** @brief M9 phase 2 (point lights): 4x1 RGBA32F, texel k = hero light k's camera-relative position, w = 1 when set (PS t48). */
+		ID3D11ShaderResourceView* GetHeroLightsSRV() const { return heroLightsSRV.get(); }
 		const SunShadowStats& GetStats() const { return stats; }
 
 		ShadowKind GetKind() const { return kind; }
@@ -167,6 +184,8 @@ namespace RT
 			bool inverseSquare = false;
 			bool roomTest = false;  // some traced light is portal-strict: the trace finds each pixel's room
 			float pointLightSourceFraction = 0.0f;  // M9: source disc radius / light radius (0 = point light)
+			uint32_t heroLights[3]{ ~0u, ~0u, ~0u };  // M9 phase 2: point-light indices with their own mask channel
+			uint32_t heroResetMask = 0;               // ... channels whose light changed this frame
 		};
 
 		void RecordPasses(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
@@ -176,6 +195,8 @@ namespace RT
 		bool CreateTexture(DXGI_FORMAT a_format, const wchar_t* a_name, winrt::com_ptr<ID3D12Resource>& a_out);
 		bool CreatePipelines();
 		bool CreateDescriptors();
+		/** @brief M9 phase 2: picks this frame's hero lights (kept across frames unless clearly outshone) and uploads their positions. */
+		void ChooseHeroLights(std::span<const PointLight> a_lights, const FrameCamera& a_camera, PassSettings& a_settings);
 		bool Fail(std::string a_reason);
 
 		ShadowKind kind = ShadowKind::kSun;
@@ -193,7 +214,11 @@ namespace RT
 		SharedTexture gameShadowMask;   // R8 copy of the game's kSHADOW_MASK (comparison frames only)
 		winrt::com_ptr<ID3D12Resource> rawVisibility;  // R8, D3D12 only
 		winrt::com_ptr<ID3D12Resource> geometry;       // RGBA16F reconstructed normal, D3D12 only
-		winrt::com_ptr<ID3D12Resource> history[2];     // RGBA16F (mean, length, view depth), ping-pong
+		winrt::com_ptr<ID3D12Resource> history[2];     // ping-pong: RGBA16F (mean, length, view depth); M9 point lights: packed R32G32B32A32_UINT
+		winrt::com_ptr<ID3D11Texture2D> heroLightsTexture;  // M9 phase 2, point lights: hero positions for Lighting.hlsl (dynamic, CPU-written)
+		winrt::com_ptr<ID3D11ShaderResourceView> heroLightsSRV;
+		RE::NiPoint3 heroWorld[3];  // absolute positions of the current heroes, to recognise them next frame
+		bool heroSet[3]{};
 
 		winrt::com_ptr<ID3D12RootSignature> rootSignature;
 		winrt::com_ptr<ID3D12PipelineState> tracePipeline;

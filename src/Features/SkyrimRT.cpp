@@ -249,11 +249,17 @@ void SkyrimRT::Prepass()
 {
 	// PS t46 is read by every deferred Lighting permutation (SKYRIM_RT); an unbound slot reads as lit, so it is
 	// unbound whenever this frame doesn't provide the mask, never left holding a stale one.
+	// M9 phase 2: the hero lights' positions (PS t48) go with it: they say which mask channel each light uses.
 	ID3D11ShaderResourceView* pointMask = nullptr;
 	struct BindPointMask
 	{
 		ID3D11ShaderResourceView*& srv;
-		~BindPointMask() { globals::d3d::context->PSSetShaderResources(46, 1, &srv); }
+		~BindPointMask()
+		{
+			ID3D11ShaderResourceView* heroes = srv ? RT::GetPointLightHeroesSRV() : nullptr;
+			globals::d3d::context->PSSetShaderResources(46, 1, &srv);
+			globals::d3d::context->PSSetShaderResources(48, 1, &heroes);
+		}
 	} bindPointMask{ pointMask };
 	// M8 water: Water.hlsl reads t47 when it's bound; DrawGlobalIllumination binds it once this frame's trace is done.
 	{

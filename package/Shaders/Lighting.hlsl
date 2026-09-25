@@ -2374,7 +2374,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Skyrim RT: ray-traced visibility of every point light, in place of the game's point-light shadow maps (M9); when not
 	// tracing (or in a reflection) the vanilla path.
 	const bool skyrimRTPointLights = !inReflection && SkyrimRT::IsPointLightShadowBound();
-	const float skyrimRTPointLightShadow = skyrimRTPointLights ? SkyrimRT::GetPointLightShadow(input.Position) : 1.0;
+	const SkyrimRT::PointLightShadows skyrimRTPointLightShadows = SkyrimRT::LoadPointLightShadows(input.Position, skyrimRTPointLights);
 #			endif
 
 	uint numClusteredLights = 0;
@@ -2431,7 +2431,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			}
 		}
 #			if defined(SKYRIM_RT) && defined(DEFERRED)
-		lightShadow *= skyrimRTPointLightShadow;
+		lightShadow *= SkyrimRT::GetPointLightShadow(skyrimRTPointLightShadows, light.positionWS.xyz);  // M9: the light's own channel if it's a hero
 #			endif
 
 		float3 normalizedLightDirection = normalize(lightDirection);

@@ -37,9 +37,11 @@ namespace RT
 			uint32_t inverseSquare;
 			uint32_t roomTest;
 			float pointLightSourceFraction;  // M9: source disc radius / light radius (0 = point light)
-			float pointLightPad[3];
+			uint32_t heroLights[3];  // M9 phase 2: point-light indices with their own mask channel (~0 = none)
+			uint32_t heroResetMask;  // ... channels whose light changed this frame
+			uint32_t heroPad[3];
 		};
-		static_assert(sizeof(ShadowConstants) == 320);
+		static_assert(sizeof(ShadowConstants) == 336);
 
 		constexpr uint32_t kFlagCompareShadowMap = 1;
 
@@ -54,7 +56,8 @@ namespace RT
 		constexpr uint64_t kZeroOffset = 512;
 		constexpr uint64_t kPointLightsOffset = 1024;  // M8: this frame's lights (root SRV t6)
 		constexpr uint64_t kUploadBytes = kPointLightsOffset + sizeof(PointLight) * SunShadows::kMaxPointLights;
-		constexpr uint64_t kCounterBytes = 64;
+		constexpr uint64_t kCounterBytes = 128;
+		static_assert(kShadowCounterSlots * sizeof(uint32_t) == kCounterBytes && kZeroOffset + kCounterBytes <= kPointLightsOffset);
 		constexpr uint32_t kTimestampsPerSlot = 4;
 
 		// Descriptor tables: t1..t4 then u0..u1 (unused entries hold null descriptors).
@@ -185,8 +188,8 @@ namespace RT
 			return true;
 		};
 		return create(kind == ShadowKind::kSun ? "SunShadowTraceCS.cso" : "PointLightShadowTraceCS.cso", ResourceName(L"TracePSO"), tracePipeline) &&
-		       create("SunShadowTemporalCS.cso", ResourceName(L"TemporalPSO"), temporalPipeline) &&
-		       create("SunShadowSpatialCS.cso", ResourceName(L"SpatialPSO"), spatialPipeline);
+		       create(kind == ShadowKind::kSun ? "SunShadowTemporalCS.cso" : "PointShadowTemporalCS.cso", ResourceName(L"TemporalPSO"), temporalPipeline) &&
+		       create(kind == ShadowKind::kSun ? "SunShadowSpatialCS.cso" : "PointShadowSpatialCS.cso", ResourceName(L"SpatialPSO"), spatialPipeline);
 	}
 
 	bool SunShadows::CreateDescriptors()
@@ -220,6 +223,10 @@ namespace RT
 		constexpr auto kR32 = DXGI_FORMAT_R32_FLOAT;
 		constexpr auto kRGBA16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
 		constexpr auto kRGBA8 = DXGI_FORMAT_R8G8B8A8_UNORM;
+		// M9 phase 2: the point-light variant carries four channels (three hero lights and the rest) through raw, history and mask.
+		const bool sun = kind == ShadowKind::kSun;
+		const DXGI_FORMAT visibilityFormat = sun ? kR8 : kRGBA8;
+		const DXGI_FORMAT historyFormat = sun ? kRGBA16 : DXGI_FORMAT_R32G32B32A32_UINT;
 
 		// Null descriptors first, so every table entry is valid even where a pass doesn't declare the register.
 		for (uint32_t table = 0; table < kTableCount; table++) {
@@ -232,23 +239,23 @@ namespace RT
 		// Trace: t1 depth, t2 game shadow mask (sun only; null for point lights); u0 raw visibility, u1 geometry.
 		srv(kTraceTable, 1, rasterDepth, kR32);
 		srv(kTraceTable, 2, gameShadowMask.resource12.get(), kR8);
-		uav(kTraceTable, 0, rawVisibility.get(), kR8);
+		uav(kTraceTable, 0, rawVisibility.get(), visibilityFormat);
 		uav(kTraceTable, 1, geometry.get(), kRGBA16);
 
 		for (uint32_t p = 0; p < 2; p++) {
 			// Temporal: t1 depth, t2 raw, t3 geometry, t4 previous history; u0 current history.
 			srv(kTemporalTable + p, 1, rasterDepth, kR32);
-			srv(kTemporalTable + p, 2, rawVisibility.get(), kR8);
+			srv(kTemporalTable + p, 2, rawVisibility.get(), visibilityFormat);
 			srv(kTemporalTable + p, 3, geometry.get(), kRGBA16);
-			srv(kTemporalTable + p, 4, history[1 - p].get(), kRGBA16);
-			uav(kTemporalTable + p, 0, history[p].get(), kRGBA16);
+			srv(kTemporalTable + p, 4, history[1 - p].get(), historyFormat);
+			uav(kTemporalTable + p, 0, history[p].get(), historyFormat);
 
 			// Spatial: t1 depth, t2 current history, t3 geometry, t4 raw; u0 mask, u1 debug view.
 			srv(kSpatialTable + p, 1, rasterDepth, kR32);
-			srv(kSpatialTable + p, 2, history[p].get(), kRGBA16);
+			srv(kSpatialTable + p, 2, history[p].get(), historyFormat);
 			srv(kSpatialTable + p, 3, geometry.get(), kRGBA16);
-			srv(kSpatialTable + p, 4, rawVisibility.get(), kR8);
-			uav(kSpatialTable + p, 0, mask.resource12.get(), kR8);
+			srv(kSpatialTable + p, 4, rawVisibility.get(), visibilityFormat);
+			uav(kSpatialTable + p, 0, mask.resource12.get(), visibilityFormat);
 			uav(kSpatialTable + p, 1, view.resource12.get(), kRGBA8);
 		}
 
@@ -283,17 +290,32 @@ namespace RT
 
 		const bool sun = kind == ShadowKind::kSun;
 		std::string error;
-		if (!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R8_UNORM, sun ? "SunShadowMask" : "PointLightShadowMask", mask, error) ||
+		// M9 phase 2: the point-light mask is RGBA8 (xyz the three hero lights, w the rest).
+		const DXGI_FORMAT visibilityFormat = sun ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+		if (!CreateSharedTexture(d3d11Device, device, width, height, visibilityFormat, sun ? "SunShadowMask" : "PointLightShadowMask", mask, error) ||
 			!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, sun ? "SunShadowView" : "PointLightShadowView", view, error) ||
 			(sun && !CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R8_UNORM, "GameShadowMaskCopy", gameShadowMask, error)))
 			return Fail(std::move(error));
 		ClearMask();
 
-		if (!CreateTexture(DXGI_FORMAT_R8_UNORM, ResourceName(L"Raw").c_str(), rawVisibility) ||
+		const DXGI_FORMAT historyFormat = sun ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R32G32B32A32_UINT;
+		if (!CreateTexture(visibilityFormat, ResourceName(L"Raw").c_str(), rawVisibility) ||
 			!CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, ResourceName(L"Geometry").c_str(), geometry) ||
-			!CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, ResourceName(L"History0").c_str(), history[0]) ||
-			!CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, ResourceName(L"History1").c_str(), history[1]))
+			!CreateTexture(historyFormat, ResourceName(L"History0").c_str(), history[0]) ||
+			!CreateTexture(historyFormat, ResourceName(L"History1").c_str(), history[1]))
 			return false;
+
+		// M9 phase 2: the hero lights' positions for Lighting.hlsl (4x1, CPU-written every traced frame; w = 0 until set).
+		if (!sun) {
+			D3D11_TEXTURE2D_DESC heroDesc{ .Width = 4, .Height = 1, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 },
+				.Usage = D3D11_USAGE_DYNAMIC, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = D3D11_CPU_ACCESS_WRITE };
+			const float none[16]{};
+			D3D11_SUBRESOURCE_DATA initial{ .pSysMem = none, .SysMemPitch = sizeof(none) };
+			if (HRESULT hr = d3d11Device->CreateTexture2D(&heroDesc, &initial, heroLightsTexture.put()); FAILED(hr) ||
+				FAILED(hr = d3d11Device->CreateShaderResourceView(heroLightsTexture.get(), nullptr, heroLightsSRV.put())))
+				return Fail(std::format("creating the hero light texture failed ({})", FormatHResult(hr)));
+			Util::SetResourceName(heroLightsTexture.get(), "SkyrimRT::PointLightHeroes");
+		}
 
 		if (!CreatePipelines() || !CreateDescriptors())
 			return false;
@@ -415,12 +437,125 @@ namespace RT
 		settings.maxHistory = a_params.maxHistory;
 		settings.spatialRadius = a_params.spatialRadius;
 		settings.viewMode = a_params.viewMode;
+		ChooseHeroLights(a_params.lights.first(settings.pointLightCount), a_camera, settings);
 		RecordPasses(a_list, a_slot, a_tlas, a_instances, a_meshPool, a_camera, a_renderWidth, a_renderHeight, settings, false, a_captureDump);
 		stats.pointLights = settings.pointLightCount;
 		stats.pointLightsShadowMapped = shadowMapped;
 		stats.pointLightsPortalStrict = portalStrict;
 		stats.pointLightsTraced = settings.pointLightCount - disabled;
 		stats.pointLightSourceFraction = settings.pointLightSourceFraction;
+	}
+
+	void SunShadows::ChooseHeroLights(std::span<const PointLight> a_lights, const FrameCamera& a_camera, PassSettings& a_settings)
+	{
+		// Importance at the camera: brightness x reach, falling off with the distance beyond a quarter of the light's radius.
+		// Lights too far from the camera to light anything near the view are left out.
+		constexpr uint32_t kDisabled = 1u << 9;  // LightLimitFix::LightFlags
+		constexpr float kHeroReach = 1500.0f;    // game units beyond a light's radius that it can still matter to the view
+		constexpr float kKeepFactor = 1.5f;      // a newcomer must outscore a current hero by this much to take its channel
+		constexpr float kSameLight = 32.0f;      // a hero may move this much between frames (flickering lights do) and stay itself
+		struct Candidate
+		{
+			uint32_t index;
+			float score;
+		};
+		static std::vector<Candidate> candidates;
+		candidates.clear();
+		for (uint32_t i = 0; i < a_lights.size(); i++) {
+			const auto& light = a_lights[i];
+			if ((light.flags & kDisabled) || !(light.radius > 0.0f))
+				continue;
+			const float distance = std::sqrt(light.position[0] * light.position[0] + light.position[1] * light.position[1] + light.position[2] * light.position[2]);
+			if (distance > light.radius + kHeroReach)
+				continue;
+			const float luminance = 0.2126f * light.color[0] + 0.7152f * light.color[1] + 0.0722f * light.color[2];
+			if (!(luminance > 0.0f))
+				continue;
+			const float nearest = std::max(distance, 0.25f * light.radius);
+			candidates.push_back({ i, luminance * light.radius * light.radius / (nearest * nearest) });
+		}
+		std::sort(candidates.begin(), candidates.end(), [](const Candidate& a_a, const Candidate& a_b) { return a_a.score > a_b.score; });
+
+		const auto world = [&](uint32_t a_index) {
+			const auto& p = a_lights[a_index].position;
+			return RE::NiPoint3{ p[0] + a_camera.posAdjust.x, p[1] + a_camera.posAdjust.y, p[2] + a_camera.posAdjust.z };
+		};
+		const auto sameLight = [&](uint32_t a_slot, uint32_t a_index) {
+			return heroSet[a_slot] && world(a_index).GetDistance(heroWorld[a_slot]) <= kSameLight;
+		};
+
+		// Current heroes that are still candidates keep their channel.
+		uint32_t chosen[3] = { ~0u, ~0u, ~0u };
+		float chosenScore[3]{};
+		for (uint32_t k = 0; k < 3; k++) {
+			for (const auto& candidate : candidates) {
+				if (sameLight(k, candidate.index) && candidate.index != chosen[0] && candidate.index != chosen[1] && candidate.index != chosen[2]) {
+					chosen[k] = candidate.index;
+					chosenScore[k] = candidate.score;
+					break;
+				}
+			}
+		}
+		// Free channels take the best of the rest; a taken one goes to a newcomer only when it clearly outshines its light.
+		for (const auto& candidate : candidates) {
+			if (candidate.index == chosen[0] || candidate.index == chosen[1] || candidate.index == chosen[2])
+				continue;
+			uint32_t slot = ~0u;
+			for (uint32_t k = 0; k < 3 && slot == ~0u; k++) {
+				if (chosen[k] == ~0u)
+					slot = k;
+			}
+			if (slot == ~0u) {
+				uint32_t weakest = 0;
+				for (uint32_t k = 1; k < 3; k++) {
+					if (chosenScore[k] < chosenScore[weakest])
+						weakest = k;
+				}
+				if (!(candidate.score > kKeepFactor * chosenScore[weakest]))
+					break;  // sorted: nothing later outscores it either
+				slot = weakest;
+			}
+			chosen[slot] = candidate.index;
+			chosenScore[slot] = candidate.score;
+		}
+
+		// A channel whose light changed restarts the denoiser history (it described another light until now).
+		uint32_t resetMask = 0;
+		for (uint32_t k = 0; k < 3; k++) {
+			const bool now = chosen[k] != ~0u;
+			if (now != heroSet[k] || (now && !sameLight(k, chosen[k])))
+				resetMask |= 1u << k;
+			heroSet[k] = now;
+			if (now)
+				heroWorld[k] = world(chosen[k]);
+			auto& hero = stats.heroLights[k];
+			hero.valid = now;
+			hero.index = chosen[k];
+			hero.score = chosenScore[k];
+			hero.radius = now ? a_lights[chosen[k]].radius : 0.0f;
+			hero.flags = now ? a_lights[chosen[k]].flags : 0u;
+			for (uint32_t c = 0; c < 3; c++)
+				hero.position[c] = now ? a_lights[chosen[k]].position[c] : 0.0f;
+			a_settings.heroLights[k] = chosen[k];
+		}
+		a_settings.heroResetMask = resetMask;
+		stats.heroChanges += std::popcount(resetMask);
+
+		// Lighting.hlsl finds each light's channel by its position (exactly Light Limit Fix's positionWS, which the
+		// point lights were copied from).
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		if (heroLightsTexture && SUCCEEDED(d3d11Context->Map(heroLightsTexture.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+			float texels[16]{};
+			for (uint32_t k = 0; k < 3; k++) {
+				if (chosen[k] == ~0u)
+					continue;
+				for (uint32_t c = 0; c < 3; c++)
+					texels[k * 4 + c] = a_lights[chosen[k]].position[c];
+				texels[k * 4 + 3] = 1.0f;
+			}
+			std::memcpy(mapped.pData, texels, sizeof(texels));
+			d3d11Context->Unmap(heroLightsTexture.get(), 0);
+		}
 	}
 
 	void SunShadows::RecordPasses(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
@@ -466,6 +601,8 @@ namespace RT
 		constants->inverseSquare = a_settings.inverseSquare ? 1u : 0u;
 		constants->roomTest = a_settings.roomTest ? 1u : 0u;
 		constants->pointLightSourceFraction = a_settings.pointLightSourceFraction;
+		std::memcpy(constants->heroLights, a_settings.heroLights, sizeof(constants->heroLights));
+		constants->heroResetMask = a_settings.heroResetMask;
 
 		const D3D12_GPU_VIRTUAL_ADDRESS uploadVA = uploads[a_slot]->GetGPUVirtualAddress();
 		auto table = [&](uint32_t a_table) {
@@ -644,19 +781,41 @@ namespace RT
 		constexpr const char* kPointNames[] = { "point_shadow_raw", "point_shadow_mask", "" };
 		const auto& kNames = kind == ShadowKind::kSun ? kSunNames : kPointNames;
 		const uint32_t imageCount = dumpHasComparison ? 3 : 2;
+		const size_t pixelCount = static_cast<size_t>(dumpWidth) * dumpHeight;
 		for (uint32_t i = 0; i < imageCount; i++) {
-			// R8 -> grey RGBA8, cropped to the render region.
-			DumpImage image{ kNames[i], dumpWidth, dumpHeight, DXGI_FORMAT_R8G8B8A8_UNORM, std::vector<uint8_t>(static_cast<size_t>(dumpWidth) * dumpHeight * 4) };
 			const auto* source = static_cast<const uint8_t*>(mapped) + dumpImageBytes * i;
+			if (kind == ShadowKind::kSun) {
+				// R8 -> grey RGBA8, cropped to the render region.
+				DumpImage image{ kNames[i], dumpWidth, dumpHeight, DXGI_FORMAT_R8G8B8A8_UNORM, std::vector<uint8_t>(pixelCount * 4) };
+				for (uint32_t y = 0; y < dumpHeight; y++) {
+					const uint8_t* row = source + static_cast<size_t>(y) * dumpRowPitch;
+					uint8_t* out = image.pixels.data() + static_cast<size_t>(y) * dumpWidth * 4;
+					for (uint32_t x = 0; x < dumpWidth; x++) {
+						out[x * 4 + 0] = out[x * 4 + 1] = out[x * 4 + 2] = row[x];
+						out[x * 4 + 3] = 255;
+					}
+				}
+				a_out.push_back(std::move(image));
+				continue;
+			}
+			// M9 phase 2, RGBA8: the hero lights' channels as red, green and blue, and the rest's as a grey image of its own.
+			DumpImage heroes{ kNames[i], dumpWidth, dumpHeight, DXGI_FORMAT_R8G8B8A8_UNORM, std::vector<uint8_t>(pixelCount * 4) };
+			DumpImage rest{ std::string(kNames[i]) + "_rest", dumpWidth, dumpHeight, DXGI_FORMAT_R8G8B8A8_UNORM, std::vector<uint8_t>(pixelCount * 4) };
 			for (uint32_t y = 0; y < dumpHeight; y++) {
 				const uint8_t* row = source + static_cast<size_t>(y) * dumpRowPitch;
-				uint8_t* out = image.pixels.data() + static_cast<size_t>(y) * dumpWidth * 4;
+				uint8_t* outHeroes = heroes.pixels.data() + static_cast<size_t>(y) * dumpWidth * 4;
+				uint8_t* outRest = rest.pixels.data() + static_cast<size_t>(y) * dumpWidth * 4;
 				for (uint32_t x = 0; x < dumpWidth; x++) {
-					out[x * 4 + 0] = out[x * 4 + 1] = out[x * 4 + 2] = row[x];
-					out[x * 4 + 3] = 255;
+					outHeroes[x * 4 + 0] = row[x * 4 + 0];
+					outHeroes[x * 4 + 1] = row[x * 4 + 1];
+					outHeroes[x * 4 + 2] = row[x * 4 + 2];
+					outHeroes[x * 4 + 3] = 255;
+					outRest[x * 4 + 0] = outRest[x * 4 + 1] = outRest[x * 4 + 2] = row[x * 4 + 3];
+					outRest[x * 4 + 3] = 255;
 				}
 			}
-			a_out.push_back(std::move(image));
+			a_out.push_back(std::move(heroes));
+			a_out.push_back(std::move(rest));
 		}
 		D3D12_RANGE noWrite{ 0, 0 };
 		dumpReadback->Unmap(0, &noWrite);

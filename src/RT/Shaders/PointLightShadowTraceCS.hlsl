@@ -12,7 +12,7 @@ RaytracingAccelerationStructure Scene : register(t0);
 Texture2D<float> RasterDepth : register(t1);
 StructuredBuffer<InstanceData> Instances : register(t5);  // root SRV, M7c alpha test
 StructuredBuffer<PointLight> PointLights : register(t6);  // root SRV: Light Limit Fix's lights this frame
-RWTexture2D<unorm float> RawVisibility : register(u0);
+RWTexture2D<unorm float4> RawVisibility : register(u0);  // M9 phase 2: xyz the hero lights' visibility, w the rest's
 RWTexture2D<float4> Geometry : register(u1);  // xyz: reconstructed normal (camera-relative world space)
 RWByteAddressBuffer Counters : register(u4);
 
@@ -76,6 +76,40 @@ float Random1(uint2 a_pixel, uint a_frame)
 	return float(Hash(Hash(a_pixel.x | (a_pixel.y << 16)) ^ (a_frame * 0x9E3779B9u)) >> 8) / 16777216.0;
 }
 
+// One visibility ray from a_origin towards a light (a_toLight: origin to its centre), stopping a_clearance short of it.
+// M9: the light is a small disc facing the surface, not a point: a random point on it per pixel and frame, so the
+// denoised ratio has soft shadows that widen with the distance from the blocker (as the sun's cone).
+bool LightOccluded(float3 a_origin, float3 a_toLight, float a_lightRadius, float a_clearance, uint2 a_pixel, out float a_occluderToLight)
+{
+	a_occluderToLight = -1.0;
+	float3 toLight = a_toLight;
+	const float sourceRadius = C.PointLightSourceFraction * a_lightRadius;
+	if (sourceRadius > 0.0) {
+		const float3 axis = normalize(toLight);
+		const float3 tangent = normalize(cross(axis, abs(axis.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0)));
+		const float3 bitangent = cross(axis, tangent);
+		const float2 disk = ConcentricDisk(Random2(a_pixel, C.FrameIndex)) * sourceRadius;
+		toLight += tangent * disk.x + bitangent * disk.y;
+	}
+	const float lightDistance = length(toLight);
+	const float rayLength = lightDistance - a_clearance;
+	if (!(rayLength > 0.0))
+		return false;
+	RayDesc ray;
+	ray.Origin = a_origin;
+	ray.Direction = toLight / lightDistance;
+	ray.TMin = 0.0;
+	ray.TMax = rayLength;
+	// No cull flags (open-backed meshes); alpha-tested casters let light through their holes (M7c).
+	RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+	query.TraceRayInline(Scene, RAY_FLAG_NONE, C.CasterMask, ray);
+	PROCEED_ALPHA_TESTED(query);
+	if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+		return false;
+	a_occluderToLight = lightDistance - query.CommittedRayT();
+	return true;
+}
+
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID)
 {
 	if (any(dispatchID.xy >= C.RenderSize))
@@ -87,6 +121,8 @@ float Random1(uint2 a_pixel, uint a_frame)
 
 	bool sampled = false;
 	bool occluded = false;
+	float4 visibility = 1.0;  // M9 phase 2: xyz the hero lights, w the rest
+	bool heroReached[3] = { false, false, false };
 	float occluderToLight = -1.0;
 	int room = -1;
 	bool anyInRange = false, anyFacing = false, anyInRoom = false;
@@ -118,44 +154,37 @@ float Random1(uint2 a_pixel, uint a_frame)
 				candidates++;
 			}
 		}
+		const float3 origin = position + normal * (C.NormalBias + distance * C.DistanceBias);
+		// M9 phase 2: the hero lights (the frame's brightest, chosen on the CPU) each get their own visibility ray and mask
+		// channel wherever they reach the pixel, so Lighting.hlsl shadows each of them separately.
+		[unroll] for (uint k = 0; k < 3; k++)
+		{
+			const uint heroIndex = C.HeroLights[k];
+			if (heroIndex >= C.PointLightCount)
+				continue;
+			const PointLight hero = PointLights[heroIndex];
+			if ((hero.Flags & kSkippedLights) || !PointLightAppliesInRoom(hero, room))
+				continue;
+			const float3 toHero = hero.Position - position;
+			if (dot(toHero, toHero) >= hero.Radius * hero.Radius || dot(normal, toHero) <= 0.0)
+				continue;
+			heroReached[k] = true;
+			float heroOccluderToLight;
+			if (LightOccluded(origin, hero.Position - origin, hero.Radius, PointLightClearance(hero.Radius), dispatchID.xy, heroOccluderToLight))
+				visibility[k] = 0.0;
+		}
+		// The rest: one light picked in proportion to its unshadowed contribution, as before phase 2.
 		const PointLightSample light = SamplePointLight(PointLights, C.PointLightCount, kSkippedLights, C.InverseSquare != 0, position, normal,
-			Random1(dispatchID.xy, C.FrameIndex), room);
+			Random1(dispatchID.xy, C.FrameIndex), room, C.HeroLights);
 		if (light.Valid) {
 			sampled = true;
-			const float3 origin = position + normal * (C.NormalBias + distance * C.DistanceBias);
-			float3 toLight = light.ToLight + position - origin;
-			// M9: the light is a small disc facing the surface, not a point: a random point on it per pixel and frame, so the
-			// denoised ratio has soft shadows that widen with the distance from the blocker (as the sun's cone).
-			const float sourceRadius = C.PointLightSourceFraction * light.LightRadius;
-			if (sourceRadius > 0.0) {
-				const float3 axis = normalize(toLight);
-				const float3 tangent = normalize(cross(axis, abs(axis.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0)));
-				const float3 bitangent = cross(axis, tangent);
-				const float2 disk = ConcentricDisk(Random2(dispatchID.xy, C.FrameIndex)) * sourceRadius;
-				toLight += tangent * disk.x + bitangent * disk.y;
-			}
-			const float lightDistance = length(toLight);
-			const float rayLength = lightDistance - light.Clearance;
-			if (rayLength > 0.0) {
-				RayDesc ray;
-				ray.Origin = origin;
-				ray.Direction = toLight / lightDistance;
-				ray.TMin = 0.0;
-				ray.TMax = rayLength;
-				// No cull flags (open-backed meshes); alpha-tested casters let light through their holes (M7c).
-				RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-				query.TraceRayInline(Scene, RAY_FLAG_NONE, C.CasterMask, ray);
-				PROCEED_ALPHA_TESTED(query);
-				if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-					occluded = true;
-					occluderToLight = lightDistance - query.CommittedRayT();
-				}
-			}
+			occluded = LightOccluded(origin, light.ToLight + position - origin, light.LightRadius, light.Clearance, dispatchID.xy, occluderToLight);
 		}
 	}
 
-	// No RT-shadowed light in range: nothing to shadow, and the ratio is 1.
-	RawVisibility[pixel] = occluded ? 0.0 : 1.0;
+	// A channel whose light doesn't reach the pixel stays 1 (nothing to shadow).
+	visibility.w = occluded ? 0.0 : 1.0;
+	RawVisibility[pixel] = visibility;
 	Geometry[pixel] = float4(normal, 0.0);
 
 	Count(kPointTraced, !sky);
@@ -172,6 +201,11 @@ float Random1(uint2 a_pixel, uint a_frame)
 	Count(kPointCandidates2to3, candidates >= 2 && candidates <= 3);
 	Count(kPointCandidates4to7, candidates >= 4 && candidates <= 7);
 	Count(kPointCandidates8Plus, candidates >= 8);
+	[unroll] for (uint h = 0; h < 3; h++)
+	{
+		Count(kPointHeroReached0 + h, heroReached[h]);
+		Count(kPointHeroOccluded0 + h, heroReached[h] && visibility[h] < 0.5);
+	}
 	const uint candidateSum = WaveActiveSum(candidates);
 	const uint candidateMax = WaveActiveMax(candidates);
 	if (WaveIsFirstLane() && candidateSum > 0) {

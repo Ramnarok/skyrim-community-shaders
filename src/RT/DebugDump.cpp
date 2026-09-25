@@ -301,6 +301,24 @@ namespace RT
 				{ "lights_uploaded", s.pointLights },
 			{ "lights_by_kind", { { "traced", s.pointLightsTraced }, { "traced_room_limited", s.pointLightsPortalStrict }, { "shadow_mapped_traced", s.pointLightsShadowMapped } } },
 				{ "source_disc_fraction_of_radius", s.pointLightSourceFraction },
+				// M9 phase 2: the three hero lights with their own mask channel (red, green, blue in the mask image), and how
+				// many pixels each reached / was blocked at; the "rest" ratio (alpha, *_rest image) covers every other light.
+				{ "hero_lights",
+					[&] {
+						json heroes = json::array();
+						for (uint32_t k = 0; k < s.heroLights.size(); k++) {
+							const auto& hero = s.heroLights[k];
+							const uint32_t reached = s.counters[kPointHeroReached0 + k];
+							const uint32_t occludedPixels = s.counters[kPointHeroOccluded0 + k];
+							heroes.push_back({ { "channel", k }, { "valid", hero.valid }, { "light_index", hero.valid ? static_cast<int64_t>(hero.index) : -1 },
+								{ "position", { hero.position[0], hero.position[1], hero.position[2] } }, { "radius", hero.radius }, { "score", hero.score },
+								{ "shadow_mapped", (hero.flags & 2u) != 0 }, { "portal_strict", (hero.flags & 1u) != 0 },
+								{ "pixels_reached", reached }, { "pixels_occluded", occludedPixels },
+								{ "occluded_percent", reached ? 100.0 * occludedPixels / reached : 0.0 } });
+						}
+						return heroes;
+					}() },
+				{ "hero_channel_changes", s.heroChanges },
 				{ "note", "every light but disabled ones is ray-traced (M9: the shadow-mapped ones too, in place of the game's shadow map), portal-strict ones only for pixels in their rooms (primary-ray instance); raw = visibility of one light picked by unshadowed contribution" },
 				{ "pixels", { { "traced", c[kPointTraced] }, { "sampled_light", c[kPointSampled] }, { "occluded", c[kPointOccluded] }, { "in_a_lit_room", c[kPointRoomKnown] } } },
 				{ "light_filters", { { "note", "pixels with a traced light: within its radius / and facing / and applying in the pixel's room" }, { "in_range", c[kPointAnyInRange] }, { "facing", c[kPointAnyFacing] }, { "in_room", c[kPointAnyInRoom] } } },

@@ -329,6 +329,12 @@ namespace RT
 		return sidecar ? sidecar->AcquirePointLightShadowMask(globals::state->frameCount) : nullptr;
 	}
 
+	ID3D11ShaderResourceView* GetPointLightHeroesSRV()
+	{
+		const auto* shadows = sidecar ? sidecar->GetPointShadows() : nullptr;
+		return shadows ? shadows->GetHeroLightsSRV() : nullptr;
+	}
+
 	ID3D11ShaderResourceView* GetPointLightShadowViewSRV()
 	{
 		const auto* shadows = sidecar ? sidecar->GetPointShadows() : nullptr;

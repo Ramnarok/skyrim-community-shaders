@@ -71,10 +71,11 @@ struct PointLightSample
 
 // Picks one light in proportion to its unshadowed contribution (luminance of colour x attenuation x N.L) in a single
 // streaming pass (weighted reservoir with one random number), skipping lights with any of a_skipFlags and portal-strict
-// lights of other rooms (a_room: the surface's Light Limit Fix room, -1 if none). With the estimate Irradiance x V, the
-// result is exact wherever every light is visible; visibility is the only noise.
+// lights of other rooms (a_room: the surface's Light Limit Fix room, -1 if none), and a_skipIndices by index (M9: the
+// hero lights, which have their own mask channel). With the estimate Irradiance x V, the result is exact wherever every
+// light is visible; visibility is the only noise.
 PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_count, uint a_skipFlags, bool a_inverseSquare,
-	float3 a_position, float3 a_normal, float a_u, int a_room)
+	float3 a_position, float3 a_normal, float a_u, int a_room, uint3 a_skipIndices = uint3(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu))
 {
 	PointLightSample result;
 	result.Valid = false;
@@ -88,6 +89,8 @@ PointLightSample SamplePointLight(StructuredBuffer<PointLight> a_lights, uint a_
 	[loop] for (uint i = 0; i < a_count; i++)
 	{
 		const PointLight light = a_lights[i];
+		if (any(i == a_skipIndices))  // M9: hero lights, traced on their own
+			continue;
 		if ((light.Flags & a_skipFlags) || !PointLightAppliesInRoom(light, a_room))
 			continue;
 		const float3 toLight = light.Position - a_position;
