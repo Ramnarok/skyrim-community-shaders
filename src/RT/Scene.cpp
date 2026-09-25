@@ -148,6 +148,9 @@ namespace RT
 			a_candidate.decal = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kDecal, RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal);
 			// M9 phase 4: the emissive colour Lighting.hlsl gets as EmitColor (read as CS's TruePBR / Linear Lighting do).
 			a_candidate.ownEmit = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kOwnEmit);
+			// CS's True PBR marks its shapes with kVertexLighting (TruePBR.cpp).
+			a_candidate.truePBR = lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting);
+			a_candidate.emissiveMult = lightingProperty->emissiveMult;
 			if (const auto* emissive = lightingProperty->emissiveColor) {
 				a_candidate.emissive[0] = emissive->red * lightingProperty->emissiveMult;
 				a_candidate.emissive[1] = emissive->green * lightingProperty->emissiveMult;
@@ -158,6 +161,9 @@ namespace RT
 				if (auto* glow = skyrim_cast<RE::BSLightingShaderMaterialGlowmap*>(material)) {
 					a_candidate.glowMap = true;
 					a_candidate.glowTexture = glow->glowTexture.get();
+					// Most glow maps have no name (census); the renderer texture is what Lighting.hlsl samples at t6.
+					if (a_candidate.glowTexture && a_candidate.glowTexture->rendererTexture)
+						a_candidate.glowSRV = a_candidate.glowTexture->rendererTexture->resourceView;
 				}
 				const auto feature = material->GetFeature();
 				a_candidate.terrain = feature == Feature::kMultiTexLand || feature == Feature::kMultiTexLandLODBlend;
@@ -1371,6 +1377,8 @@ namespace RT
 			};
 			std::vector<Ranked> ranked;
 			for (const auto& candidate : a_out) {
+				if (candidate.skinned)
+					census.skinnedLighting += EmitsLight(candidate);
 				if (candidate.skinned || candidate.water || candidate.distantLOD)
 					continue;
 				const float luminance = 0.2126f * candidate.emissive[0] + 0.7152f * candidate.emissive[1] + 0.0722f * candidate.emissive[2];
@@ -1381,6 +1389,8 @@ namespace RT
 				census.instances++;
 				census.ownEmit += candidate.ownEmit;
 				census.glowMapped += candidate.glowMap;
+				census.lighting += EmitsLight(candidate);
+				census.truePBR += candidate.truePBR;
 				census.maxLuminance = std::max(census.maxLuminance, luminance);
 				census.byLuminance[luminance < 0.05f ? 0 : luminance < 0.25f ? 1 : luminance < 1.0f ? 2 : 3]++;
 				meshes.insert(candidate.rendererData);

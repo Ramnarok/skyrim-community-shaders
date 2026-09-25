@@ -190,6 +190,13 @@ namespace RT
 		bool water = false;
 		float waterRoughness = 0.05f;  ///< the traced lobe; the waves come from Water.hlsl's normal maps
 		bool waterDebug = false;  ///< diagnostic: water pixels get magenta instead of their reflection
+		/// M9 phase 4: GI and reflection hits on glowing surfaces (kOwnEmit, not True PBR) add their emission x albedo, as
+		/// Lighting.hlsl adds EmitColor; glow-mapped ones through their glow map (albedo atlas), so they need textured bounce light.
+		bool emissives = false;
+		float emitColorGamma = 1.8f;  ///< Linear Lighting (used only when linearLighting is set)
+		float emitColorMult = 1.0f;
+		float glowmapGamma = 1.8f;
+		float glowmapMult = 0.66f;
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 extras. */

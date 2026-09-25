@@ -83,10 +83,24 @@ namespace RT
 		// M9 phase 4: what Lighting.hlsl's EmitColor holds for this shape (emissiveColor x emissiveMult), added to the
 		// diffuse light before the albedo; glow-mapped materials also scale it by their glow texture.
 		float emissive[3]{};
+		float emissiveMult = 0.0f;  // Linear Lighting's EmitColor divides it out before its gamma
 		bool ownEmit = false;  // kOwnEmit
 		bool glowMap = false;  // a BSLightingShaderMaterialGlowmap
 		const RE::NiSourceTexture* glowTexture = nullptr;  // valid this frame only
+		ID3D11ShaderResourceView* glowSRV = nullptr;       // game-owned, valid this frame only
+		bool truePBR = false;  // CS True PBR (kVertexLighting): its emission isn't x albedo and has its own texture; not traced yet
+		uint32_t glowWord = 0;  // M9 phase 4 step 2: albedo-atlas tile + 1 of the glow texture, by AlbedoAtlas; 0 = none
 	};
+
+	/**
+	 * @brief M9 phase 4: whether the shape's emission lights the traced scene. The game keeps a NIF's emissive colour only
+	 * with kOwnEmit (as CS's True PBR loader does), and every glowing shape in the census had it. True PBR emission isn't
+	 * handled yet.
+	 */
+	inline bool EmitsLight(const GeometryCandidate& a_candidate)
+	{
+		return a_candidate.ownEmit && !a_candidate.truePBR && (a_candidate.emissive[0] > 0.0f || a_candidate.emissive[1] > 0.0f || a_candidate.emissive[2] > 0.0f);
+	}
 
 	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
 	struct NearbyObject
@@ -295,8 +309,7 @@ namespace RT
 			uint32_t lodWaterShapes = 0, lodWaterVisible = 0;  ///< under TES::objLODWaterRoot
 			std::vector<WaterSample> samples;  // first water objects with a shape, up to 12
 		} water;
-		// M9 phase 4 census (diagnostic, before emissives light anything): the traced static / terrain instances whose
-		// material glows, and the brightest of them.
+		// M9 phase 4 census: the traced static / terrain instances whose material glows, and the brightest of them.
 		struct EmissiveSample
 		{
 			std::string shapeName, objectName, glowTexture;
@@ -312,6 +325,9 @@ namespace RT
 			uint32_t ownEmit = 0;        ///< ... flagged kOwnEmit
 			uint32_t glowMapped = 0;     ///< ... with a glow map
 			uint32_t glowMapBlack = 0;   ///< glow-mapped instances whose emissive colour is black (they don't glow)
+			uint32_t lighting = 0;       ///< M9 step 2: ... that light the traced scene (EmitsLight)
+			uint32_t truePBR = 0;        ///< ... left out: True PBR (its emission isn't handled yet)
+			uint32_t skinnedLighting = 0;  ///< skinned partitions (actors, trees) that light the traced scene
 			uint32_t uniqueMeshes = 0;
 			float maxLuminance = 0.0f;
 			std::array<uint32_t, 4> byLuminance{};  ///< < 0.05, < 0.25, < 1, >= 1

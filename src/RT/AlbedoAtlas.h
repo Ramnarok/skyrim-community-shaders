@@ -23,13 +23,21 @@ namespace RT
 		uint32_t candidatesNoUV = 0;
 		uint32_t candidatesUnsupported = 0;
 		uint32_t candidatesWaiting = 0;  ///< fill budget used up or atlas full: the average albedo this frame
+		// M9 phase 4: textured candidates that light the traced scene through a glow map (EmitsLight); without a glow tile
+		// they stay dark this frame.
+		uint32_t glowCandidates = 0;
+		uint32_t glowTextured = 0;   ///< the glow map has a tile: GI and reflection hits sample it
+		uint32_t glowNoTexture = 0;  ///< no renderer texture behind the glow map
+		uint32_t glowUnsupported = 0;
+		uint32_t glowWaiting = 0;
 	};
 
 	/**
 	 * @brief M8 materials at GI hits (path-tracing step 2, ARCHITECTURE §6 v2): each traced diffuse texture's colour, as the
 	 * texture stores it, in one kTileSize² tile of an RGBA8 TextureAtlas. Candidates with a tile carry
 	 * GeometryCandidate::albedoWord (InstanceData.Flags bits 8-31); the GI trace samples it at the hit UV and multiplies
-	 * the vertex colour, as Lighting.hlsl builds the G-buffer albedo. Without a tile the average albedo (M6) stays.
+	 * the vertex colour, as Lighting.hlsl builds the G-buffer albedo. Without a tile the average albedo (M6) stays. M9 phase
+	 * 4: the glow maps of textured glowing candidates get tiles too (GeometryCandidate::glowWord), sampled at the same UV.
 	 */
 	class AlbedoAtlas
 	{

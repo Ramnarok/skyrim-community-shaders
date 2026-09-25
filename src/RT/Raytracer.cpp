@@ -11,9 +11,9 @@ namespace RT
 	{
 		// Per-slot upload buffer layout.
 		constexpr uint64_t kInstanceDescOffset = 0;                         // kMaxInstances * 64 B
-		constexpr uint64_t kInstanceDataOffset = 4ull << 20;                // kMaxInstances * 48 B
-		constexpr uint64_t kAabbOffset = 7ull << 20;                        // kMaxExclusions * 24 B
-		constexpr uint64_t kConstantsOffset = 8ull << 20;                   // TraceConstants
+		constexpr uint64_t kInstanceDataOffset = 4ull << 20;                // kMaxInstances * 64 B
+		constexpr uint64_t kAabbOffset = 8ull << 20;                        // kMaxExclusions * 24 B
+		constexpr uint64_t kConstantsOffset = 9ull << 20;                   // TraceConstants
 		constexpr uint64_t kZeroOffset = kConstantsOffset + 256;            // zeros for the counter clear
 		constexpr uint64_t kCounterBytes = 128;                             // 32 uints, kCounterCount used
 		static_assert(kCounterCount * sizeof(uint32_t) <= kCounterBytes);
@@ -59,14 +59,16 @@ namespace RT
 		};
 		static_assert(sizeof(TraceConstants) == 128);
 
-		// Must match InstanceData in RayQueryDebugCS.hlsl.
+		// Must match InstanceData in MeshData.hlsli.
 		struct InstanceGpu
 		{
 			uint32_t vertexPage, vertexOffset, indexPage, indexOffset;
 			uint32_t stride, flags, albedo, alpha;  // albedo: RGBA8 average diffuse (M6 material table); alpha: M7c alpha test
 			uint32_t uvPage, uvOffset, uvStride, room;  // M7c: texture-coordinate source (bind pose for skinned); M8 room index + 1
+			float emission[3];      // M9 phase 4: Lighting.hlsl's EmitColor, 0 = doesn't light the traced scene
+			uint32_t emissionWord;  // ... glow texture's albedo-atlas tile + 1 (bits 0-11), emissiveMult as a half (16-31)
 		};
-		static_assert(sizeof(InstanceGpu) == 48);
+		static_assert(sizeof(InstanceGpu) == 64);
 		static_assert(kInstanceDataOffset + Raytracer::kMaxInstances * sizeof(InstanceGpu) <= kAabbOffset);
 		static_assert(kAabbOffset + Raytracer::kMaxExclusions * sizeof(D3D12_RAYTRACING_AABB) <= kConstantsOffset);
 		static_assert(kZeroOffset + kCounterBytes <= Raytracer::kUploadSlotBytes);
@@ -404,7 +406,7 @@ namespace RT
 			desc.AccelerationStructure = record.blas;
 			descs[i] = desc;
 			data[i] = { record.vertexPage, record.vertexOffset, record.indexPage, record.indexOffset, record.stride, flags, record.albedo, alpha,
-				record.uvPage, record.uvOffset, record.uvStride, room };
+				record.uvPage, record.uvOffset, record.uvStride, room, { record.emission[0], record.emission[1], record.emission[2] }, record.emissionWord };
 		}
 		// M8: the LOD clip record, one past the last instance (instanceCount < kMaxInstances): the loaded cells' rectangle,
 		// camera-relative, as float bits in its first four words. No TLAS instance refers to it.

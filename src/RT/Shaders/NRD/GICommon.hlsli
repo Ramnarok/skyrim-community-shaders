@@ -43,6 +43,12 @@ struct GIConstants
 	row_major float4x4 ViewProjUnjittered;  // M8 water: camera-relative world -> this frame's unjittered clip
 	row_major float4x4 PrevViewProj;        // ... -> the previous frame's (its view folded into this origin)
 	float4 SpecularHitDistParams;          // M8 reflections: REBLUR_SPECULAR's hit-distance normalization (xyz; A = the rays' reach)
+	uint Emissives;        // M9 phase 4: GI and reflection hits on glowing surfaces add their emission
+	float EmitColorGamma;  // ... Linear Lighting conversions of EmitColor and the glow map (used only when LinearLighting != 0)
+	float EmitColorMult;
+	float GlowmapGamma;
+	float GlowmapMult;
+	float3 Pad0;
 };
 
 // Counter slots, mirrored in GlobalIllumination.h
@@ -67,6 +73,7 @@ static const uint kGIMotionGameSum = 17;
 static const uint kGIMotionErrorSum = 18;
 static const uint kGIMotionErrorFlipYSum = 19;
 static const uint kGIMotionErrorNegatedSum = 20;
+static const uint kGIEmissiveVertices = 21;       // M9 phase 4: path vertices (GI and reflection, any bounce) on glowing surfaces
 
 ConstantBuffer<GIConstants> C : register(b0);
 

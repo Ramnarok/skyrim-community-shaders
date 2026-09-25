@@ -432,6 +432,7 @@ namespace RT
 			record.alphaBlended = candidate.alphaBlended;
 			record.actor = true;
 			record.windAnimated = candidate.windAnimated;
+			SetEmission(record, candidate);  // M9 phase 4
 			a_out.push_back(record);
 			count++;
 		}

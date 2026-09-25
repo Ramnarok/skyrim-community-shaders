@@ -31,8 +31,13 @@ namespace RT
 		stats.candidatesNoUV = 0;
 		stats.candidatesUnsupported = 0;
 		stats.candidatesWaiting = 0;
+		stats.glowCandidates = 0;
+		stats.glowTextured = 0;
+		stats.glowNoTexture = 0;
+		stats.glowUnsupported = 0;
+		stats.glowWaiting = 0;
 		if (!a_enabled || !stats.available)
-			return;  // albedoWord stays 0: the average albedo
+			return;  // albedoWord stays 0: the average albedo (and glowWord 0: glow-mapped shapes don't light the scene)
 
 		atlas.BeginFrame();
 		ID3D11ShaderResourceView* lastSRV = nullptr;
@@ -79,6 +84,27 @@ namespace RT
 			candidate.albedoWord = (tile + 1) | (std::min(uvOffset, 0xFFu) << 12) | (std::min(colorWords, 0xFu) << 20);
 			stats.candidatesTextured++;
 			stats.candidatesVertexColors += colorWords > 0;
+
+			// M9 phase 4: the glow map, sampled with the same texture coordinates (Lighting.hlsl reads both at uv).
+			if (!candidate.glowMap || !EmitsLight(candidate))
+				continue;
+			stats.glowCandidates++;
+			if (!candidate.glowSRV) {
+				stats.glowNoTexture++;
+				continue;
+			}
+			uint32_t glowTile = 0;
+			const auto glowResult = atlas.Acquire(candidate.glowSRV, a_frame, glowTile);
+			if (glowResult == TextureAtlas::Result::kUnsupported) {
+				stats.glowUnsupported++;
+				continue;
+			}
+			if (glowResult == TextureAtlas::Result::kWaiting) {
+				stats.glowWaiting++;
+				continue;
+			}
+			candidate.glowWord = glowTile + 1;
+			stats.glowTextured++;
 		}
 		atlas.EndFrame();
 

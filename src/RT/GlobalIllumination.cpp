@@ -53,8 +53,14 @@ namespace RT
 			float viewProjUnjittered[16];  // M8 water: camera-relative world -> this frame's unjittered clip
 			float prevViewProj[16];        // ... -> the previous frame's unjittered clip (its view folded into this origin)
 			float specularHitDistParams[4];  // M8 reflections: REBLUR_SPECULAR's hit-distance normalization (xyz), w unused
+			uint32_t emissives;  // M9 phase 4: hits on glowing surfaces add their emission
+			float emitColorGamma;  // ... Linear Lighting conversions
+			float emitColorMult;
+			float glowmapGamma;
+			float glowmapMult;
+			float pad0[3];
 		};
-		static_assert(sizeof(GIConstants) == 544);
+		static_assert(sizeof(GIConstants) == 576);
 
 		constexpr uint32_t kMaskStatic = 0x01;  // InstanceMask bits, as Raytracer::Record assigns them
 		constexpr uint32_t kMaskTerrain = 0x02;
@@ -574,6 +580,11 @@ namespace RT
 		c->water = traceReflections && a_params.water ? 1u : 0u;
 		c->waterRoughness = a_params.waterRoughness;
 		c->waterDebug = a_params.waterDebug ? 1u : 0u;
+		c->emissives = a_params.emissives ? 1u : 0u;
+		c->emitColorGamma = a_params.emitColorGamma;
+		c->emitColorMult = a_params.emitColorMult;
+		c->glowmapGamma = a_params.glowmapGamma;
+		c->glowmapMult = a_params.glowmapMult;
 		{
 			// Water pixels' motion vectors, reprojected from the water surface (GI's follow the riverbed below it), with the
 			// matrices the game builds kMOTION_VECTOR with (MotionBlur::GetSSMotionVector). Composing them from the view and

@@ -107,7 +107,7 @@ namespace RT
 				{ "lod_water", { { "shapes", a_water.lodWaterShapes }, { "visible", a_water.lodWaterVisible } } }, { "samples", samples } };
 		}
 
-		// M9 phase 4: the traced instances whose material glows (diagnostic, before emissives light anything).
+		// M9 phase 4: the traced instances whose material glows, and which of them light the traced scene.
 		json EmissiveJson(const SceneStats::Emissive& a_emissive)
 		{
 			json brightest = json::array();
@@ -116,7 +116,8 @@ namespace RT
 					{ "emissive_mult", s.emissiveMult }, { "luminance", s.luminance }, { "own_emit", s.ownEmit }, { "glow_map", s.glowMap },
 					{ "glow_texture", s.glowTexture }, { "bound_radius", s.boundRadius }, { "distance_from_player", s.distance } });
 			return { { "instances", a_emissive.instances }, { "own_emit", a_emissive.ownEmit }, { "glow_mapped", a_emissive.glowMapped },
-				{ "glow_mapped_but_black", a_emissive.glowMapBlack }, { "unique_meshes", a_emissive.uniqueMeshes }, { "max_luminance", a_emissive.maxLuminance },
+				{ "glow_mapped_but_black", a_emissive.glowMapBlack }, { "lighting_the_scene", a_emissive.lighting }, { "true_pbr_left_out", a_emissive.truePBR },
+				{ "skinned_lighting_the_scene", a_emissive.skinnedLighting }, { "unique_meshes", a_emissive.uniqueMeshes }, { "max_luminance", a_emissive.maxLuminance },
 				{ "by_luminance", { { "under_0_05", a_emissive.byLuminance[0] }, { "under_0_25", a_emissive.byLuminance[1] }, { "under_1", a_emissive.byLuminance[2] },
 									  { "1_and_over", a_emissive.byLuminance[3] } } },
 				{ "brightest", brightest } };
@@ -441,6 +442,9 @@ namespace RT
 										  { { "under_32", g.counters[kGIOccluderNear32] }, { "32_to_64", g.counters[kGIOccluderNear64] }, { "64_to_128", g.counters[kGIOccluderNear128] },
 											  { "128_and_over", g.counters[kGILightOccluded] - g.counters[kGIOccluderNear32] - g.counters[kGIOccluderNear64] - g.counters[kGIOccluderNear128] } } },
 									  { "lights_camera_relative", std::move(lights) } } },
+				// M9 phase 4: path vertices (GI and reflection hits, any bounce) on glowing surfaces, which added their emission.
+				{ "emissives", { { "enabled", p.emissives }, { "vertices", g.counters[kGIEmissiveVertices] },
+								   { "percent_of_gi_hits", g.counters[kGIHits] ? 100.0 * g.counters[kGIEmissiveVertices] / g.counters[kGIHits] : 0.0 } } },
 				// M8 reflections: one glossy ray per pixel with a reflection term (Dynamic Cubemaps' REFLECTANCE), replacing
 				// the composite's cubemap reflection there. Counters are the last collected frame's.
 				{ "reflections",
@@ -526,6 +530,9 @@ namespace RT
 					{ { "total", a.candidates }, { "textured", a.candidatesTextured }, { "with_vertex_colors", a.candidatesVertexColors },
 						{ "average_no_texture", a.candidatesNoTexture }, { "average_no_uv", a.candidatesNoUV }, { "average_unsupported_texture", a.candidatesUnsupported },
 						{ "average_waiting_for_tile", a.candidatesWaiting } } },
+				// M9 phase 4: glow-mapped candidates that light the traced scene, and whether their glow map has a tile.
+				{ "glow_maps", { { "candidates", a.glowCandidates }, { "textured", a.glowTextured }, { "no_texture", a.glowNoTexture },
+								   { "unsupported", a.glowUnsupported }, { "waiting_for_tile", a.glowWaiting } } },
 				{ "gi_hits_textured_percent", g.counters[kGIHits] ? 100.0 * g.counters[kGITexturedHits] / g.counters[kGIHits] : 0.0 },
 				{ "images", images },
 			};

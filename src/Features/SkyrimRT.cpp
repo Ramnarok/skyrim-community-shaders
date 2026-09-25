@@ -56,6 +56,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIPointLightShadows,
 	GIAlbedoTextures,
 	GISkyLight,
+	GIEmissives,
 	GIHistory,
 	GIBouncesInterior,
 	GIBouncesExterior,
@@ -140,6 +141,10 @@ namespace
 		a_params.ambientGamma = linearLighting.settings.ambientGamma;
 		a_params.ambientMult = linearLighting.settings.ambientMult;
 		a_params.directionalLightMult = linearLighting.settings.directionalLightMult;
+		a_params.emitColorGamma = linearLighting.settings.emitColorGamma;
+		a_params.emitColorMult = linearLighting.settings.emitColorMult;
+		a_params.glowmapGamma = linearLighting.settings.glowmapGamma;
+		a_params.glowmapMult = linearLighting.settings.glowmapMult;
 		return true;
 	}
 
@@ -366,6 +371,7 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.pointLightShadows = settings.GIPointLightShadows;
 	params.inverseSquare = globals::features::inverseSquareLighting.loaded;
 	params.skyLight = settings.GISkyLight && !params.interior;
+	params.emissives = settings.GIEmissives;
 	// The composite has a reflection term (REFLECTANCE, t5) only with Dynamic Cubemaps.
 	params.reflections = settings.GIReflections && globals::features::dynamicCubemaps.loaded;
 	params.reflectionMaxRoughness = settings.GIReflectionMaxRoughness;
@@ -540,6 +546,10 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("gi_sky_light"), "Ray-traced sky light"), &settings.GISkyLight);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_sky_light_tooltip"), "Outdoors, rays that reach the open sky carry the sky's light, and the game's ambient light is scaled by what the rays find: unchanged under open sky, darker under overhangs, in alleys or facing a cliff, and tinted by nearby sunlit surfaces."));
+
+	ImGui::Checkbox(T(TKEY("gi_emissives"), "Glowing surfaces light the scene"), &settings.GIEmissives);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_emissives_tooltip"), "Glowing surfaces (mushrooms, embers, lit windows, Dwemer lights) cast their glow on their surroundings through bounce light and reflections. Glow-mapped surfaces need Textured bounce light."));
 
 	ImGui::Checkbox(T(TKEY("gi_interiors"), "Ray-traced GI in interiors"), &settings.GIInteriors);
 	if (auto _tt = Util::HoverTooltipWrapper())

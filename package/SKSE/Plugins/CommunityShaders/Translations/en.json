@@ -1414,6 +1414,8 @@
     "feature.skyrim_rt.gi_bounces_exterior_tooltip": "The same outdoors. Under the open sky, sky light already covers what extra bounces would add, so one is usually enough.",
     "feature.skyrim_rt.gi_bounces_interior": "Bounces (interiors)",
     "feature.skyrim_rt.gi_bounces_interior_tooltip": "How many times light bounces indoors before the game's ambient light stands in for the rest. A second bounce carries firelight to the far walls; a third adds little. Each extra bounce costs about as much again as the first.",
+    "feature.skyrim_rt.gi_emissives": "Glowing surfaces light the scene",
+    "feature.skyrim_rt.gi_emissives_tooltip": "Glowing surfaces (mushrooms, embers, lit windows, Dwemer lights) cast their glow on their surroundings through bounce light and reflections. Glow-mapped surfaces need Textured bounce light.",
     "feature.skyrim_rt.gi_frame_cost": "Frame cost (GI hand-off)",
     "feature.skyrim_rt.gi_history": "Denoiser history (frames)",
     "feature.skyrim_rt.gi_history_tooltip": "How many frames the denoiser blends. Higher is smoother but reacts more slowly to change.",

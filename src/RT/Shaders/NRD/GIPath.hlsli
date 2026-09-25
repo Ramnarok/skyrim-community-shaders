@@ -1,9 +1,10 @@
 // SkyrimRT M8: path tracing from a hit, shared by the GI trace (GITraceCS) and the reflection trace (ReflectionTraceCS).
 // A path vertex is shaded by the rule CS's deferred lighting uses for the surfaces Screen-Space GI gathers: albedo x (sun x
-// N.L x sun visibility + point lights + the game's directional ambient), in Skyrim gamma, then Color::RadianceToLinear. The
-// albedo is the hit's texture x vertex colour from the M8 albedo atlas, or the texture's average (M6) until its tile is
-// filled. Multi-bounce continues the path from each hit up to a number of vertices and scales each vertex's ambient by the
-// light its continuation brought in. The including shader defines SKYRIMRT_ALBEDO_ATLAS before including this.
+// N.L x sun visibility + point lights + (M9) emission + the game's directional ambient), in Skyrim gamma, then
+// Color::RadianceToLinear. The albedo is the hit's texture x vertex colour from the M8 albedo atlas, or the texture's
+// average (M6) until its tile is filled. Multi-bounce continues the path from each hit up to a number of vertices and
+// scales each vertex's ambient by the light its continuation brought in. The including shader defines
+// SKYRIMRT_ALBEDO_ATLAS before including this.
 
 #include "GICommon.hlsli"
 #include "MeshData.hlsli"
@@ -186,8 +187,28 @@ float RandomLight(uint2 a_pixel, uint a_frame, uint a_bounce)
 	return a_bounce == 0 ? Random1(a_pixel, a_frame) : float(Hash(Hash(a_pixel.x | (a_pixel.y << 16)) ^ Hash(a_frame * 0xC2B2AE35u + a_bounce)) >> 8) / 16777216.0;
 }
 
+// M9 phase 4: the light a glowing surface adds before its albedo, as Lighting.hlsl's emitColor (diffuseColor += emitColor,
+// then x baseColor x vertexColor), in the space of PathVertex::direct. a_glow is the hit's glow map (HitAlbedo).
+float3 HitEmission(InstanceData a_instance, float3 a_glow)
+{
+	float3 emission = a_instance.Emission;
+	const bool glowMapped = (a_instance.EmissionWord & 0xFFFu) != 0;
+	if (C.LinearLighting) {
+		// Color::EmitColor and Color::Glowmap with Linear Lighting on.
+		const float mult = f16tof32(a_instance.EmissionWord >> 16);
+		emission = pow(abs(emission / max(mult, 1e-5)), C.EmitColorGamma) * mult * C.EmitColorMult;
+		if (glowMapped)
+			emission *= pow(abs(a_glow), C.GlowmapGamma) * C.GlowmapMult;
+	} else if (glowMapped) {
+		// LinearToSrgb(SrgbToLinear(emit) x SrgbToLinear(glow)): with CS's pow 2.2 pair that is emit x glow.
+		emission *= a_glow;
+	}
+	return emission;
+}
+
 // Shades a committed hit into a path vertex: albedo (texture x vertex colour), sun with a visibility ray, one sampled
-// point light with its visibility ray, and the game's ambient. The out parameters are the per-hit diagnostics.
+// point light with its visibility ray, (M9) the surface's own emission, and the game's ambient. The out parameters are
+// the per-hit diagnostics.
 PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycentrics, float3x4 a_objectToWorld, float3 a_rayOrigin,
 	float3 a_direction, float a_t, uint2 a_pixel, uint a_bounce, out bool a_sunLit, out bool a_lightSampled, out bool a_lightOccluded, out float a_occluderToLight)
 {
@@ -207,7 +228,8 @@ PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycent
 	const float3 pointLights = SamplePointLights(position, normal, vertex.origin, RandomLight(a_pixel, C.FrameIndex, a_bounce), InstanceRoom(a_instance),
 		a_lightSampled, a_lightOccluded, a_occluderToLight);
 	const float sun = saturate(dot(normal, C.ToSun.xyz)) * (a_sunLit ? 1.0 : 0.0);
-	const float3 albedo = HitAlbedo(a_instance, a_primitive, a_barycentrics);
+	float3 glow;
+	const float3 albedo = HitAlbedo(a_instance, a_primitive, a_barycentrics, glow);
 	if (C.LinearLighting) {
 		// Color::DirectionalLight's pi cancels Color::VanillaNormalization's 1/pi in the diffuse term.
 		vertex.albedo = pow(albedo, C.ColorGamma);
@@ -218,6 +240,11 @@ PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycent
 		vertex.direct = C.SunColor.rgb * sun + pointLights;
 		vertex.ambient = GetAmbient(normal);
 	}
+	// M9 phase 4: emission joins the direct term, so the continuation's ambient scaling (TracePath) leaves it alone.
+	const bool emissive = C.Emissives && any(a_instance.Emission > 0.0);
+	if (emissive)
+		vertex.direct += HitEmission(a_instance, glow);
+	Count(kGIEmissiveVertices, emissive);
 	vertex.openSky = OpenSkyRadiance(normal);
 	return vertex;
 }

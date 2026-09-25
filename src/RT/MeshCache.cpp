@@ -1,7 +1,18 @@
 #include "MeshCache.h"
 
+#include <DirectXPackedVector.h>
+
 namespace RT
 {
+	void SetEmission(InstanceRecord& a_record, const GeometryCandidate& a_candidate)
+	{
+		if (!EmitsLight(a_candidate) || (a_candidate.glowMap && a_candidate.glowWord == 0))
+			return;
+		std::copy(std::begin(a_candidate.emissive), std::end(a_candidate.emissive), a_record.emission);
+		const uint32_t mult = DirectX::PackedVector::XMConvertFloatToHalf(a_candidate.emissiveMult);
+		a_record.emissionWord = (a_candidate.glowWord & 0xFFFu) | (mult << 16);
+	}
+
 	namespace
 	{
 		constexpr uint64_t kRingAlignment = 16;
@@ -586,7 +597,7 @@ namespace RT
 			if (!previous || !previous->blasAllocation.IsValid())
 				continue;
 			const auto& entry = *previous;
-			a_out.push_back({ .blas = asPool.GetAddress(entry.blasAllocation),
+			auto& record = a_out.emplace_back(InstanceRecord{ .blas = asPool.GetAddress(entry.blasAllocation),
 				.world = candidate.world,
 				.vertexPage = entry.vertexAllocation.page,
 				.vertexOffset = static_cast<uint32_t>(entry.vertexAllocation.offset),
@@ -608,6 +619,7 @@ namespace RT
 				.distantLOD = candidate.distantLOD,
 				.lodClip = candidate.lodClip,
 				.water = candidate.water });
+			SetEmission(record, candidate);
 		}
 	}
 }

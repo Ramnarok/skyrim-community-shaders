@@ -16,6 +16,9 @@ struct InstanceData  // mirrors InstanceGpu in Raytracer.cpp
 	uint UVOffset;
 	uint UVStride;
 	uint Room;  // M8: Light Limit Fix room index + 1 of the instance (0 = none), as Lighting.hlsl's RoomIndex
+	// M9 phase 4: what Lighting.hlsl's EmitColor holds (emissiveColor x emissiveMult); 0 = doesn't light the traced scene.
+	float3 Emission;
+	uint EmissionWord;  // bits 0-11: the glow texture's albedo-atlas tile + 1 (0 = not glow-mapped), 16-31: emissiveMult (half)
 };
 
 // InstanceData.Flags bits, mirrored in Raytracer.cpp
@@ -152,10 +155,24 @@ Texture2D<float4> AlbedoAtlas : register(t1, space2);
 static const uint kAlbedoAtlasTilesPerRow = 32;  // mirrored in AlbedoAtlas.h
 static const float kAlbedoAtlasTileSize = 128.0;
 
-// The albedo Lighting.hlsl writes to the G-buffer (texture x vertex colour, as the texture stores it, Skyrim gamma) at a
-// committed hit, or the instance's average albedo (M6) while its texture has no tile.
-float3 HitAlbedo(InstanceData a_data, uint a_primitive, float2 a_barycentrics)
+// Tile a_tile + 1 of the albedo atlas at a_uv: wrap addressing, then half a texel inside the tile so bilinear filtering
+// never reads a neighbour.
+float3 SampleAlbedoAtlas(uint a_tile, float2 a_uv)
 {
+	const uint index = a_tile - 1;
+	const float2 origin = float2(index % kAlbedoAtlasTilesPerRow, index / kAlbedoAtlasTilesPerRow) * kAlbedoAtlasTileSize;
+	const float2 texel = origin + clamp(frac(a_uv) * kAlbedoAtlasTileSize, 0.5, kAlbedoAtlasTileSize - 0.5);
+	return AlbedoAtlas.SampleLevel(AlphaAtlasSampler, texel / (kAlbedoAtlasTileSize * kAlbedoAtlasTilesPerRow), 0.0).rgb;
+}
+
+// The albedo Lighting.hlsl writes to the G-buffer (texture x vertex colour, as the texture stores it, Skyrim gamma) at a
+// committed hit, or the instance's average albedo (M6) while its texture has no tile. M9 phase 4: a_glow is the glow map
+// at the same texture coordinate, as Lighting.hlsl samples it: 1 when the instance isn't glow-mapped, 0 when it is but its
+// texture coordinates can't be read.
+float3 HitAlbedo(InstanceData a_data, uint a_primitive, float2 a_barycentrics, out float3 a_glow)
+{
+	const uint glowTile = a_data.EmissionWord & 0xFFFu;
+	a_glow = glowTile != 0 ? 0.0 : 1.0;  // a glow-mapped instance stays dark unless its glow map is sampled below
 	const uint word = a_data.Flags >> 8;
 	const uint tile = word & 0xFFFu;
 	if (tile == 0 || a_data.UVPage >= 64 || a_data.IndexPage >= 64)
@@ -173,11 +190,9 @@ float3 HitAlbedo(InstanceData a_data, uint a_primitive, float2 a_barycentrics)
 	const float2 uv = LoadUV(vertices, a_data, i0, uvOffset) * weights.x + LoadUV(vertices, a_data, i1, uvOffset) * weights.y +
 	                  LoadUV(vertices, a_data, i2, uvOffset) * weights.z;
 
-	// Wrap addressing, then half a texel inside the tile so bilinear filtering never reads a neighbour.
-	const uint index = tile - 1;
-	const float2 origin = float2(index % kAlbedoAtlasTilesPerRow, index / kAlbedoAtlasTilesPerRow) * kAlbedoAtlasTileSize;
-	const float2 texel = origin + clamp(frac(uv) * kAlbedoAtlasTileSize, 0.5, kAlbedoAtlasTileSize - 0.5);
-	float3 albedo = AlbedoAtlas.SampleLevel(AlphaAtlasSampler, texel / (kAlbedoAtlasTileSize * kAlbedoAtlasTilesPerRow), 0.0).rgb;
+	float3 albedo = SampleAlbedoAtlas(tile, uv);
+	if (glowTile != 0)
+		a_glow = SampleAlbedoAtlas(glowTile, uv);
 
 	if (colorOffset != 0) {
 		const uint stride = a_data.UVStride;
