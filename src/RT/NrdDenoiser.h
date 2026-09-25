@@ -10,7 +10,8 @@
 namespace RT
 {
 	/**
-	 * @brief Drives one NVIDIA NRD denoiser (REBLUR_DIFFUSE for GI, M8 REBLUR_SPECULAR for reflections) directly on the
+	 * @brief Drives one NVIDIA NRD denoiser (REBLUR_DIFFUSE for GI, M8 REBLUR_SPECULAR for reflections, M9 REBLUR_DIFFUSE_OCCLUSION
+	 * for the outdoor sky signal) directly on the
 	 * sidecar's D3D12 device (no NRI): one shared root signature, NRD's texture pools, a per-frame-slot descriptor and
 	 * constant ring, and resource-state tracking. One instance per denoiser, so each keeps its own history and can be
 	 * skipped on frames it isn't needed. Built only with SKYRIMRT_NRD (NVIDIA RTX SDKs License: private builds only, see
@@ -29,8 +30,8 @@ namespace RT
 			ID3D12Resource* motionVectors = nullptr;       // IN_MV
 			ID3D12Resource* normalRoughness = nullptr;     // IN_NORMAL_ROUGHNESS
 			ID3D12Resource* viewZ = nullptr;               // IN_VIEWZ
-			ID3D12Resource* radianceHitDist = nullptr;     // IN_DIFF_RADIANCE_HITDIST or IN_SPEC_RADIANCE_HITDIST
-			ID3D12Resource* outRadianceHitDist = nullptr;  // OUT_DIFF_RADIANCE_HITDIST or OUT_SPEC_RADIANCE_HITDIST
+			ID3D12Resource* radianceHitDist = nullptr;     // IN_DIFF_RADIANCE_HITDIST, IN_SPEC_RADIANCE_HITDIST or IN_DIFF_HITDIST
+			ID3D12Resource* outRadianceHitDist = nullptr;  // OUT_DIFF_RADIANCE_HITDIST, OUT_SPEC_RADIANCE_HITDIST or OUT_DIFF_HITDIST
 		};
 
 		NrdDenoiser() = default;
@@ -40,7 +41,7 @@ namespace RT
 
 		/**
 		 * @param a_width, a_height NRD's resource size (the full texture size; the render region may be smaller).
-		 * @param a_denoiser REBLUR_DIFFUSE or REBLUR_SPECULAR.
+		 * @param a_denoiser REBLUR_DIFFUSE, REBLUR_SPECULAR or REBLUR_DIFFUSE_OCCLUSION.
 		 */
 		bool Init(ID3D12Device* a_device, uint32_t a_width, uint32_t a_height, nrd::Denoiser a_denoiser);
 		bool IsReady() const { return ready; }

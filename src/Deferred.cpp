@@ -358,7 +358,7 @@ void Deferred::DeferredPasses()
 	{
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
-		ID3D11ShaderResourceView* srvs[18]{
+		ID3D11ShaderResourceView* srvs[19]{
 			specular.SRV,                                                                                    // t0  SpecularTexture
 			albedo.SRV,                                                                                      // t1  AlbedoTexture
 			normalRoughness.SRV,                                                                             // t2  NormalRoughnessTexture
@@ -377,6 +377,7 @@ void Deferred::DeferredPasses()
 			ibl.loaded ? ibl.skyIBLTexture->srv.get() : nullptr,                                             // t15 SkyIBLTexture
 			useRTGI && !interior ? rtGI.skyLight : nullptr,                                                  // t16 SkyrimRTSkyLight (presence only)
 			useRTGI && dynamicCubemaps.loaded ? rtGI.reflections : nullptr,                                  // t17 SkyrimRTReflections
+			useRTGI && !interior ? rtGI.skyVisibility : nullptr,                                             // t18 SkyrimRTSkyRatio (M9 outdoor bounce)
 		};
 
 		if (dynamicCubemaps.loaded)
@@ -400,7 +401,7 @@ void Deferred::DeferredPasses()
 
 	// Clear
 	{
-		ID3D11ShaderResourceView* views[18]{};
+		ID3D11ShaderResourceView* views[19]{};
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
 		ID3D11UnorderedAccessView* uavs[3]{ nullptr, nullptr, nullptr };
@@ -621,7 +622,7 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 			defines.push_back({ "TERRAIN_BLENDING", nullptr });
 
 		// Skyrim RT: t16 bound means the GI inputs carry the sky (the ambient is scaled by them); t17 bound holds its
-		// ray-traced reflections.
+		// ray-traced reflections; t18 bound (outdoor bounce) holds the sky's own ratio, the GI inputs the bounce.
 		if (globals::features::skyrimRT.loaded)
 			defines.push_back({ "SKYRIM_RT", nullptr });
 

@@ -61,8 +61,10 @@ namespace RT
 			float pbrVertexAOStrength;  // ... True PBR
 			float pbrEmissionScale;
 			float emissiveStrength;  // ... x the light glowing surfaces cast
+			uint32_t skySplit;  // M9 phase 5: sky to u5 (ratio), bounce only in the REBLUR signal
+			float pad1[3];
 		};
-		static_assert(sizeof(GIConstants) == 576);
+		static_assert(sizeof(GIConstants) == 592);
 
 		constexpr uint32_t kMaskStatic = 0x01;  // InstanceMask bits, as Raytracer::Record assigns them
 		constexpr uint32_t kMaskTerrain = 0x02;
@@ -276,7 +278,8 @@ namespace RT
 		};
 		auto formatOf = [](ID3D12Resource* a_resource, DXGI_FORMAT a_fallback) { return a_resource ? a_resource->GetDesc().Format : a_fallback; };
 
-		// Trace: t1 depth, t2 G-buffer normal, t3 game motion vectors, t4 unused; u0 viewZ, u1 normal, u2 MV, u3 noisy.
+		// Trace: t1 depth, t2 G-buffer normal, t3 game motion vectors, t4 unused; u0 viewZ, u1 normal, u2 MV, u3 noisy, (M9
+		// phase 5) u5 the sky signal, null until InitSkySplit creates it.
 		srv(kTraceTable, 1, rasterDepth, DXGI_FORMAT_R32_FLOAT);
 		srv(kTraceTable, 2, gbufferNormal.resource12.get(), formatOf(gbufferNormal.resource12.get(), DXGI_FORMAT_R10G10B10A2_UNORM));
 		srv(kTraceTable, 3, motionVectors.resource12.get(), formatOf(motionVectors.resource12.get(), DXGI_FORMAT_R16G16_FLOAT));
@@ -285,7 +288,7 @@ namespace RT
 		uav(kTraceTable, 1, normalRoughness.get(), DXGI_FORMAT_R10G10B10A2_UNORM);
 		uav(kTraceTable, 2, nrdMotionVectors.get(), DXGI_FORMAT_R16G16_FLOAT);
 		uav(kTraceTable, 3, noisy.get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
-		uav(kTraceTable, 5, nullptr, DXGI_FORMAT_R16G16_FLOAT);
+		uav(kTraceTable, 5, skyNoisy.get(), DXGI_FORMAT_R16_FLOAT);
 
 		// Resolve: t1 depth, t2 denoised, t3 normal, t4 noisy; u0 AO, u1 Y, u2 CoCg, u3 view.
 		srv(kResolveTable, 1, rasterDepth, DXGI_FORMAT_R32_FLOAT);
@@ -440,8 +443,31 @@ namespace RT
 		return true;
 	}
 
-	bool GlobalIllumination::CopyInputs(bool a_reflections)
+	bool GlobalIllumination::InitSkySplit()
 	{
+		skySplitInitTried = true;
+		std::string error;
+		if (!CreateSharedTexture(d3d11Device, device, width, height, DXGI_FORMAT_R16_FLOAT, "GISkyVisibility", skyVisibility, error) ||
+			!CreateTexture(DXGI_FORMAT_R16_FLOAT, L"SkyrimRT::GISkyNoisy", skyNoisy) ||
+			!skyDenoiser.Init(device, width, height, nrd::Denoiser::REBLUR_DIFFUSE_OCCLUSION)) {
+			stats.skySplitFailure = !error.empty() ? error : !failureReason.empty() ? failureReason : "NRD: " + skyDenoiser.GetFailureReason();
+			logger::error("[SkyrimRT] Outdoor bounce unavailable: {}", stats.skySplitFailure);
+			failureReason.clear();  // GI itself is fine
+			return false;
+		}
+		skySplitReady = true;
+		stats.skySplitAvailable = true;
+		WriteDescriptors();
+		logger::info("[SkyrimRT] Outdoor bounce ready: {}x{}, REBLUR_DIFFUSE_OCCLUSION for the sky", width, height);
+		return true;
+	}
+
+	bool GlobalIllumination::CopyInputs(bool a_reflections, bool a_skySplit)
+	{
+		// M9 phase 5: set up the first time it's wanted; a failure is logged once and outdoor bounce stays off.
+		if (a_skySplit && !skySplitInitTried)
+			InitSkySplit();
+
 		auto* renderer = globals::game::renderer;
 		if (!renderer)
 			return false;
@@ -590,6 +616,10 @@ namespace RT
 		c->pbrVertexAOStrength = a_params.pbrVertexAOStrength;
 		c->pbrEmissionScale = a_params.pbrEmissionScale;
 		c->emissiveStrength = std::max(a_params.emissiveStrength, 0.0f);
+		// M9 phase 5: only where sky light runs (exteriors), once set up.
+		const bool traceSkySplit = a_params.outdoorBounce && skySplitReady && c->skyLight != 0;
+		const bool skyHistoryValid = skyHaveHistory && a_camera.gameFrame == skyHistoryGameFrame + 1;
+		c->skySplit = traceSkySplit ? 1u : 0u;
 		{
 			// Water pixels' motion vectors, reprojected from the water surface (GI's follow the riverbed below it), with the
 			// matrices the game builds kMOTION_VECTOR with (MotionBlur::GetSSMotionVector). Composing them from the view and
@@ -693,6 +723,8 @@ namespace RT
 			Barriers(a_list, { TransitionBarrier(alphaAtlas, kCommon, kSRV) });  // M7c, filled on D3D11 at Prepass
 		if (albedoAtlas)
 			Barriers(a_list, { TransitionBarrier(albedoAtlas, kCommon, kSRV) });  // M8, likewise
+		if (traceSkySplit)
+			Barriers(a_list, { TransitionBarrier(skyNoisy.get(), kSRV, kUAV) });  // M9 phase 5
 		bind();
 		a_list->SetPipelineState(tracePipeline.get());
 		a_list->SetComputeRootDescriptorTable(4, table(kTraceTable));
@@ -701,6 +733,8 @@ namespace RT
 							 TransitionBarrier(normalRoughness.get(), kUAV, kSRV),
 							 TransitionBarrier(nrdMotionVectors.get(), kUAV, kSRV),
 							 TransitionBarrier(noisy.get(), kUAV, kSRV) });
+		if (traceSkySplit)
+			Barriers(a_list, { TransitionBarrier(skyNoisy.get(), kUAV, kSRV) });
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1);
 
 		// 2. M8 reflections: REBLUR_SPECULAR's noisy input and guides, from the pixels with a reflection term.
@@ -738,6 +772,17 @@ namespace RT
 		FillNrdSettings(a_camera, a_renderWidth, a_renderHeight, a_params, historyValid, everCleared, false, common, reblur);
 		denoiser.Record(a_list, a_slot, common, reblur, { nrdMotionVectors.get(), normalRoughness.get(), viewZ.get(), noisy.get(), denoised.get() });
 		everCleared = true;
+		// M9 phase 5: the sky signal, denoised straight into the composite's shared input (counted in the REBLUR time).
+		if (traceSkySplit) {
+			SetPassMarker(a_list, L"SkyrimRT: sky REBLUR");
+			nrd::CommonSettings skyCommon{};
+			nrd::ReblurSettings skyReblur{};
+			FillNrdSettings(a_camera, a_renderWidth, a_renderHeight, a_params, skyHistoryValid, skyEverCleared, false, skyCommon, skyReblur);
+			Barriers(a_list, { TransitionBarrier(skyVisibility.resource12.get(), kCommon, kSRV) });
+			skyDenoiser.Record(a_list, a_slot, skyCommon, skyReblur, { nrdMotionVectors.get(), normalRoughness.get(), viewZ.get(), skyNoisy.get(), skyVisibility.resource12.get() });
+			Barriers(a_list, { TransitionBarrier(skyVisibility.resource12.get(), kSRV, kCommon) });
+			skyEverCleared = true;
+		}
 		a_list->EndQuery(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 3);
 		if (traceReflections) {
 			SetPassMarker(a_list, L"SkyrimRT: reflection REBLUR");
@@ -793,11 +838,14 @@ namespace RT
 		a_list->ResolveQueryData(timestamps.get(), D3D12_QUERY_TYPE_TIMESTAMP, query, kTimestampsPerSlot, timestampReadback.get(), sizeof(uint64_t) * query);
 
 		if (a_captureDump) {
-			ID3D12Resource* sources[kDumpImages] = { noisy.get(), denoised.get(), ao.resource12.get(), specularNoisy.get(), reflections.resource12.get() };
-			const D3D12_RESOURCE_STATES rest[kDumpImages] = { kSRV, kSRV, kCommon, kSRV, kCommon };
-			const uint32_t count = traceReflections ? kDumpImages : 3;
+			ID3D12Resource* sources[kDumpImages] = { noisy.get(), denoised.get(), ao.resource12.get(), specularNoisy.get(), reflections.resource12.get(),
+				skyNoisy.get(), skyVisibility.resource12.get() };
+			const D3D12_RESOURCE_STATES rest[kDumpImages] = { kSRV, kSRV, kCommon, kSRV, kCommon, kSRV, kCommon };
+			const bool wanted[kDumpImages] = { true, true, true, traceReflections, traceReflections, traceSkySplit, traceSkySplit };
 			uint64_t total = 0;
-			for (uint32_t i = 0; i < count; i++) {
+			for (uint32_t i = 0; i < kDumpImages; i++) {
+				if (!wanted[i])
+					continue;
 				const auto desc = sources[i]->GetDesc();
 				UINT64 bytes = 0;
 				device->GetCopyableFootprints(&desc, 0, 1, total, &dumpFootprints[i], nullptr, nullptr, &bytes);
@@ -812,7 +860,10 @@ namespace RT
 			if (!dumpReadback) {
 				logger::error("[SkyrimRT] Debug dump: cannot create GI readback buffer");
 			} else {
-				for (uint32_t i = 0; i < count; i++) {
+				for (uint32_t i = 0; i < kDumpImages; i++) {
+					dumpHave[i] = wanted[i];
+					if (!wanted[i])
+						continue;
 					Barriers(a_list, { TransitionBarrier(sources[i], rest[i], kCopySource) });
 					D3D12_TEXTURE_COPY_LOCATION dst{ .pResource = dumpReadback.get(), .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
 					dst.PlacedFootprint = dumpFootprints[i];
@@ -821,7 +872,6 @@ namespace RT
 					a_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 					Barriers(a_list, { TransitionBarrier(sources[i], kCopySource, rest[i]) });
 				}
-				dumpImageCount = count;
 				dumpWidth = a_renderWidth;
 				dumpHeight = a_renderHeight;
 				dumpCaptured = true;
@@ -832,6 +882,7 @@ namespace RT
 		slotDispatches[a_slot] = denoiser.GetLastDispatchCount();
 		slotReflections[a_slot] = traceReflections;
 		slotReflectionDispatches[a_slot] = traceReflections ? specularDenoiser.GetLastDispatchCount() : 0;
+		slotSkySplit[a_slot] = traceSkySplit;
 		stats.params = a_params;
 		stats.params.pointLights = {};
 		stats.pointLights = pointLightCount;
@@ -852,6 +903,12 @@ namespace RT
 
 		reflectionsRecorded = traceReflections;
 		waterRecorded = traceReflections && a_params.water;
+		skySplitRecorded = traceSkySplit;
+		if (traceSkySplit) {
+			stats.skySplitFramesTraced++;
+			skyHaveHistory = true;
+			skyHistoryGameFrame = a_camera.gameFrame;
+		}
 		if (traceReflections) {
 			stats.reflectionFramesTraced++;
 			specularHaveHistory = true;
@@ -876,6 +933,7 @@ namespace RT
 		stats.totalMs.Add(Ms(t[0], t[5], timestampFrequency));
 		stats.nrdDispatches = slotDispatches[a_slot];
 		stats.reflectionsLastSlot = slotReflections[a_slot];
+		stats.skySplitLastSlot = slotSkySplit[a_slot];
 		if (slotReflections[a_slot]) {
 			stats.reflectionTraceMs.Add(Ms(t[1], t[2], timestampFrequency));
 			if (const uint32_t checked = stats.counters[kGIMotionChecked]) {
@@ -954,9 +1012,30 @@ namespace RT
 		}
 
 		// M8 reflections, when the dump frame traced them: REBLUR_SPECULAR's noisy input and the composite's input.
-		if (dumpImageCount >= kDumpImages) {
+		if (dumpHave[3] && dumpHave[4]) {
 			radianceImage("gi_reflections_noisy", 3, true, 1.0f);
 			radianceImage("gi_reflections", 4, false, 1.0f);
+		}
+
+		// M9 phase 5, when the dump frame split the sky: the sky light over the open sky's, as grey = ratio / 2 (open sky
+		// mid grey). Stored as 1 - ratio / 4 (R16F).
+		auto skyImage = [&](const char* a_name, uint32_t a_index) {
+			DumpImage image{ a_name, dumpWidth, dumpHeight, DXGI_FORMAT_R8G8B8A8_UNORM, std::vector<uint8_t>(static_cast<size_t>(dumpWidth) * dumpHeight * 4) };
+			const auto& fp = dumpFootprints[a_index];
+			for (uint32_t row = 0; row < dumpHeight; row++) {
+				const auto* halves = reinterpret_cast<const uint16_t*>(base + fp.Offset + static_cast<size_t>(row) * fp.Footprint.RowPitch);
+				uint8_t* out = image.pixels.data() + static_cast<size_t>(row) * dumpWidth * 4;
+				for (uint32_t x = 0; x < dumpWidth; x++) {
+					const float ratio = (1.0f - DirectX::PackedVector::XMConvertHalfToFloat(halves[x])) * 4.0f;
+					out[x * 4 + 0] = out[x * 4 + 1] = out[x * 4 + 2] = static_cast<uint8_t>(std::clamp(ratio * 0.5f, 0.0f, 1.0f) * 255.0f + 0.5f);
+					out[x * 4 + 3] = 255;
+				}
+			}
+			a_out.push_back(std::move(image));
+		};
+		if (dumpHave[5] && dumpHave[6]) {
+			skyImage("gi_sky_ratio_noisy", 5);
+			skyImage("gi_sky_ratio", 6);
 		}
 		D3D12_RANGE noWrite{ 0, 0 };
 		dumpReadback->Unmap(0, &noWrite);

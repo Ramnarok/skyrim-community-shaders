@@ -435,6 +435,9 @@ namespace RT
 				{ "multi_bounce", { { "bounces", p.bounces }, { "deeper_hits", g.counters[kGIDeeperHits] },
 									  { "deeper_hits_per_first_hit", g.counters[kGIHits] ? static_cast<double>(g.counters[kGIDeeperHits]) / g.counters[kGIHits] : 0.0 } } },
 				// M8 sky light: of all traced rays, those that missed and reached the sky (0 unless sky light is on).
+				// M9 phase 5: the sky split from the bounce outdoors (its own REBLUR_DIFFUSE_OCCLUSION, composite t18).
+				{ "outdoor_bounce", { { "enabled", p.outdoorBounce }, { "available", g.skySplitAvailable }, { "failure", g.skySplitFailure },
+									   { "split_last_frame", g.skySplitLastSlot }, { "frames_split", g.skySplitFramesTraced } } },
 				{ "sky_light", { { "enabled", p.skyLight }, { "rays_to_sky", g.counters[kGISkyVisible] },
 								   { "rays_to_sky_percent", g.counters[kGITraced] ? 100.0 * g.counters[kGISkyVisible] / g.counters[kGITraced] : 0.0 } } },
 				{ "point_lights", { { "count", g.pointLights }, { "dropped", g.pointLightsDropped }, { "sampled_hit_percent", g.LightSampledHitPercent() },

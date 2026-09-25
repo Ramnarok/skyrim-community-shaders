@@ -68,6 +68,11 @@ namespace RT
 		bool reflectionsLastSlot = false;  ///< the last collected frame traced reflections (counters and timings are theirs)
 		uint64_t reflectionFramesTraced = 0;
 		uint64_t reflectionHistoryResets = 0;
+		// M9 phase 5 outdoor bounce (set up the first time it's wanted).
+		bool skySplitAvailable = false;
+		std::string skySplitFailure;
+		bool skySplitLastSlot = false;  ///< the last collected frame split sky from bounce
+		uint64_t skySplitFramesTraced = 0;
 		uint32_t reflectionDispatches = 0;
 		TimingSeries reflectionTraceMs;
 		TimingSeries reflectionDenoiseMs;
@@ -123,9 +128,10 @@ namespace RT
 		 * @brief D3D11 side, before the fence signal: copies the G-buffer normals and motion vectors into shared
 		 * textures (created on first use with the game targets' formats). False if they aren't available.
 		 * With a_reflections, also sets reflections up the first time (textures, NRD REBLUR_SPECULAR, pipelines) and
-		 * copies Deferred's REFLECTANCE target; Record traces reflections only when that succeeded.
+		 * copies Deferred's REFLECTANCE target; Record traces reflections only when that succeeded. With a_skySplit (M9
+		 * phase 5), sets the sky signal up the first time (textures, NRD REBLUR_DIFFUSE_OCCLUSION).
 		 */
-		bool CopyInputs(bool a_reflections);
+		bool CopyInputs(bool a_reflections, bool a_skySplit);
 
 		/** @brief Records trace, REBLUR and resolve. The TLAS and instance data must be this frame's (Prepass round trip). */
 		void Record(ID3D12GraphicsCommandList4* a_list, uint32_t a_slot, D3D12_GPU_VIRTUAL_ADDRESS a_tlas, D3D12_GPU_VIRTUAL_ADDRESS a_instances,
@@ -141,6 +147,7 @@ namespace RT
 			GIOutputs outputs{ ao.srv11.get(), y.srv11.get(), coCg.srv11.get() };
 			outputs.reflections = reflectionsRecorded ? reflections.srv11.get() : nullptr;
 			outputs.waterReflections = reflectionsRecorded && waterRecorded ? waterReflections.srv11.get() : nullptr;
+			outputs.skyVisibility = skySplitRecorded ? skyVisibility.srv11.get() : nullptr;
 			return outputs;
 		}
 		ID3D11ShaderResourceView* GetViewSRV() const { return view.srv11.get(); }
@@ -153,6 +160,7 @@ namespace RT
 		bool CreatePipeline(const char* a_file, const wchar_t* a_name, winrt::com_ptr<ID3D12PipelineState>& a_out, std::string& a_error);
 		bool CreatePipelines();
 		bool InitReflections();
+		bool InitSkySplit();
 		void WriteDescriptors();
 		void FillNrdSettings(const FrameCamera& a_camera, uint32_t a_renderWidth, uint32_t a_renderHeight, const GIParams& a_params,
 			bool a_historyValid, bool a_everCleared, bool a_specular, nrd::CommonSettings& a_common, nrd::ReblurSettings& a_reblur) const;
@@ -206,6 +214,19 @@ namespace RT
 		bool specularEverCleared = false;
 		uint32_t specularHistoryGameFrame = 0;
 
+		// M9 phase 5 outdoor bounce, created the first time it's wanted (InitSkySplit): the trace's sky light over the open
+		// sky's per ray (u5, stored as 1 - ratio / 4 so occluded pixels keep REBLUR's widest blur), denoised by its own
+		// REBLUR_DIFFUSE_OCCLUSION straight into the composite's input (t18, resting in COMMON).
+		winrt::com_ptr<ID3D12Resource> skyNoisy;
+		SharedTexture skyVisibility;
+		NrdDenoiser skyDenoiser;
+		bool skySplitInitTried = false;
+		bool skySplitReady = false;
+		bool skySplitRecorded = false;  // this frame's Record split sky from bounce
+		bool skyHaveHistory = false;
+		bool skyEverCleared = false;
+		uint32_t skyHistoryGameFrame = 0;
+
 		winrt::com_ptr<ID3D12RootSignature> rootSignature;
 		winrt::com_ptr<ID3D12PipelineState> tracePipeline;
 		winrt::com_ptr<ID3D12PipelineState> resolvePipeline;
@@ -226,13 +247,14 @@ namespace RT
 		uint32_t slotDispatches[kFramesInFlight]{};
 		bool slotReflections[kFramesInFlight]{};
 		uint32_t slotReflectionDispatches[kFramesInFlight]{};
+		bool slotSkySplit[kFramesInFlight]{};
 
-		// Dump images: GI noisy, denoised, AO, then (M8) reflections noisy and resolved when traced.
-		static constexpr uint32_t kDumpImages = 5;
+		// Dump images: GI noisy, denoised, AO, then (M8) reflections noisy and resolved, (M9) sky noisy and denoised, when traced.
+		static constexpr uint32_t kDumpImages = 7;
 		winrt::com_ptr<ID3D12Resource> dumpReadback;
 		uint64_t dumpReadbackBytes = 0;
 		std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, kDumpImages> dumpFootprints{};
-		uint32_t dumpImageCount = 0;
+		std::array<bool, kDumpImages> dumpHave{};  // which of the images the dump frame copied
 		uint32_t dumpWidth = 0;
 		uint32_t dumpHeight = 0;
 		bool dumpCaptured = false;

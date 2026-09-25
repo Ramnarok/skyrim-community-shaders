@@ -51,6 +51,8 @@ struct GIConstants
 	float PBRVertexAOStrength;  // ... True PBR: SharedData::truePBRSettings.VertexAOStrength (its emission's vertex colour)
 	float PBREmissionScale;     // ... True PBR: Color::PBRLightingScale where Lighting.hlsl applies it (0.65 without IBL or Linear Lighting), else 1
 	float EmissiveStrength;     // ... x the light glowing surfaces cast (1 = the game's EmitColor); a reflection still shows them as drawn
+	uint SkySplit;  // M9 phase 5: rays that reach the sky write u5 (their light over the open sky's) instead of the REBLUR signal
+	float3 Pad1;
 };
 
 // Counter slots, mirrored in GlobalIllumination.h

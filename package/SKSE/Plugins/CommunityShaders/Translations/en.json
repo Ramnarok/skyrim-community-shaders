@@ -1429,6 +1429,8 @@
     "feature.skyrim_rt.gi_interiors_tooltip": "Use ray-traced GI inside buildings and dungeons too. Interiors are lit mostly by point lights, so keep Bounce point lights on. When off, interiors use Screen-Space GI.",
     "feature.skyrim_rt.gi_needs_ssgi": "Requires the Screen Space GI feature to be installed: the deferred composite reads the result through it.",
     "feature.skyrim_rt.gi_not_compiled": "Not in this build: ray-traced GI needs a private build with NVIDIA NRD (SKYRIMRT_NRD).",
+    "feature.skyrim_rt.gi_outdoor_bounce": "Bounce light outdoors (experimental)",
+    "feature.skyrim_rt.gi_outdoor_bounce_tooltip": "Outdoors, light bouncing off sunlit ground and walls (and glowing surfaces) is added as real light, as indoors, so shaded spots next to bright surfaces brighten and take their colour. The sky still only scales the game's ambient light. Needs Ray-traced sky light.",
     "feature.skyrim_rt.gi_point_light_count": "Point lights",
     "feature.skyrim_rt.gi_point_light_occluded": "occluded",
     "feature.skyrim_rt.gi_point_light_sampled": "hits in range",

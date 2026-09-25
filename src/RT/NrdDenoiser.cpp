@@ -267,9 +267,11 @@ namespace RT
 			return a_resources.viewZ;
 		case T::IN_DIFF_RADIANCE_HITDIST:
 		case T::IN_SPEC_RADIANCE_HITDIST:
+		case T::IN_DIFF_HITDIST:  // M9 phase 5: REBLUR_DIFFUSE_OCCLUSION
 			return a_resources.radianceHitDist;
 		case T::OUT_DIFF_RADIANCE_HITDIST:
 		case T::OUT_SPEC_RADIANCE_HITDIST:
+		case T::OUT_DIFF_HITDIST:
 			return a_resources.outRadianceHitDist;
 		default:
 			return nullptr;

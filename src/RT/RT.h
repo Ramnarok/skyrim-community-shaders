@@ -205,6 +205,10 @@ namespace RT
 		/// x the light glowing surfaces cast (1 = the game's EmitColor, physically matched). Skyrim's emissive colours are set for
 		/// how the surface looks, so at 1 they light their surroundings faintly; reflections still show the surfaces as drawn.
 		float emissiveStrength = 1.0f;
+		/// M9 phase 5: outdoors (with sky light), split the traced light. The sky alone still scales the game's ambient (its
+		/// ratio to the open sky, denoised by a REBLUR_DIFFUSE_OCCLUSION instance and read at composite t18), and the bounce
+		/// (sunlit and lamp-lit surfaces, glow) is added as light, as indoors, instead of riding in that ratio.
+		bool outdoorBounce = false;
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 extras. */
@@ -222,6 +226,9 @@ namespace RT
 		/// M8 water (RGBA16F), bound at Water.hlsl PS t47 when traced this frame: rgb the light along the water's mirror
 		/// direction (linear), a = the traced water surface's view Z (0 = not water).
 		ID3D11ShaderResourceView* waterReflections = nullptr;
+		/// M9 phase 5 (R16F), bound at composite t18 when outdoor bounce ran this frame: 1 - (traced sky light over the open
+		/// sky's, luminance) / 4, denoised. The composite scales the game's ambient by it and adds the GI inputs (bounce only).
+		ID3D11ShaderResourceView* skyVisibility = nullptr;
 	};
 
 	/** @brief Minimum tier we require: DXR 1.1 for inline RayQuery in compute shaders. */

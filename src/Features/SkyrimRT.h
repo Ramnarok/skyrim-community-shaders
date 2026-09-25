@@ -76,6 +76,7 @@ struct SkyrimRT : OverlayFeature
 		uint32_t GIBouncesExterior = 1;   ///< M8 multi-bounce outdoors (measured: no visible gain under the sky, +0.5 ms per bounce)
 		bool GIAlbedoTextures = true;     ///< M8: GI hits sample their diffuse texture x vertex colour (else the texture's average)
 		bool GISkyLight = true;           ///< M8: rays that reach the sky carry its light; the game's ambient is scaled by the traced / open-sky ratio (exteriors)
+		bool GIOutdoorBounce = false;     ///< M9 phase 5: outdoors, the sky alone scales the ambient and the bounce is added as light (needs GISkyLight)
 		bool GIEmissives = false;         ///< M9 phase 4: GI and reflection hits on glowing surfaces add their emission
 		float GIEmissiveStrength = 1.0f;  ///< M9 phase 4: x the light they cast (1 = the game's emissive colours)
 		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames

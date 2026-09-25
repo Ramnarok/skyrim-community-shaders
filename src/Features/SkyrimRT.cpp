@@ -58,6 +58,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIPointLightShadows,
 	GIAlbedoTextures,
 	GISkyLight,
+	GIOutdoorBounce,
 	GIEmissives,
 	GIEmissiveStrength,
 	GIHistory,
@@ -374,6 +375,7 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.pointLightShadows = settings.GIPointLightShadows;
 	params.inverseSquare = globals::features::inverseSquareLighting.loaded;
 	params.skyLight = settings.GISkyLight && !params.interior;
+	params.outdoorBounce = settings.GIOutdoorBounce;
 	params.emissives = settings.GIEmissives;
 	params.emissiveStrength = settings.GIEmissiveStrength;
 	params.pbrVertexAOStrength = globals::features::truePBR.settings.VertexAOStrength;
@@ -389,8 +391,11 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.waterDebug = settings.WaterDebugCoverage;
 	a_outputs = RT::SubmitGI(params);
 	const bool traced = a_outputs.ao && a_outputs.y && a_outputs.coCg;
-	// The flag SRV tells the composite the GI carries the sky: any bound view works, only its presence is read.
-	a_outputs.skyLight = traced && params.skyLight ? a_outputs.ao : nullptr;
+	// The flag SRV tells the composite the GI carries the sky: any bound view works, only its presence is read. With
+	// M9 outdoor bounce the sky has its own input (t18) instead and the GI carries the bounce only.
+	if (!traced)
+		a_outputs.skyVisibility = nullptr;
+	a_outputs.skyLight = traced && params.skyLight && !a_outputs.skyVisibility ? a_outputs.ao : nullptr;
 	if (!traced) {
 		a_outputs.reflections = nullptr;
 		a_outputs.waterReflections = nullptr;
@@ -554,6 +559,9 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("gi_sky_light"), "Ray-traced sky light"), &settings.GISkyLight);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_sky_light_tooltip"), "Outdoors, rays that reach the open sky carry the sky's light, and the game's ambient light is scaled by what the rays find: unchanged under open sky, darker under overhangs, in alleys or facing a cliff, and tinted by nearby sunlit surfaces."));
+	ImGui::Checkbox(T(TKEY("gi_outdoor_bounce"), "Bounce light outdoors (experimental)"), &settings.GIOutdoorBounce);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_outdoor_bounce_tooltip"), "Outdoors, light bouncing off sunlit ground and walls (and glowing surfaces) is added as real light, as indoors, so shaded spots next to bright surfaces brighten and take their colour. The sky still only scales the game's ambient light. Needs Ray-traced sky light."));
 
 	ImGui::Checkbox(T(TKEY("gi_emissives"), "Glowing surfaces light the scene"), &settings.GIEmissives);
 	if (auto _tt = Util::HoverTooltipWrapper())

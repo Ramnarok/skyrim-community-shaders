@@ -53,6 +53,11 @@ Texture2D<float4> SsgiSpecularTexture : register(t13);
 // Skyrim RT sky light: bound only when the GI inputs above carry the sky's light as well as the bounce; only its
 // presence is read. The game's ambient is then scaled by the traced light over the open-sky light (see below).
 Texture2D<unorm float> SkyrimRTSkyLight : register(t16);
+// Skyrim RT outdoor bounce (M9 phase 5): bound instead when the GI inputs above carry only the bounce. It holds
+// 1 - (traced sky light / open-sky light) / 4, denoised; the sky part alone scales the game's ambient, and the bounce is
+// added as light below (as indoors).
+Texture2D<float> SkyrimRTSkyRatio : register(t18);
+static const float kSkyrimRTSkyRatioScale = 4.0;  // mirrored in Skyrim RT's GITraceCS
 #	endif
 
 void SampleSSGI(uint2 pixCoord, float3 normalWS, out float ao, out float3 il)
@@ -194,7 +199,13 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 		// came out 15-20% darker than the game.
 		uint skyLightWidth, skyLightHeight;
 		SkyrimRTSkyLight.GetDimensions(skyLightWidth, skyLightHeight);
-		if (skyLightWidth > 0) {
+		uint skyRatioWidth, skyRatioHeight;
+		SkyrimRTSkyRatio.GetDimensions(skyRatioWidth, skyRatioHeight);
+		if (skyRatioWidth > 0) {
+			// Outdoor bounce: the traced sky over the open sky scales the ambient; skyrimRTSkyLight stays false, so
+			// ssgiIl (the bounce only) is added below.
+			ambientScale = clamp((1.0 - SkyrimRTSkyRatio[dispatchID.xy]) * kSkyrimRTSkyRatioScale, 0.0, 4.0);
+		} else if (skyLightWidth > 0) {
 			skyrimRTSkyLight = true;
 			const float3 openSky = Color::IrradianceToLinear(Color::Ambient(max(0, SharedData::GetAmbient(normalWS))) * Color::PBRLightingScale);
 			ambientScale = clamp(ssgiIl / max(openSky, 1e-4), 0.0, 4.0);

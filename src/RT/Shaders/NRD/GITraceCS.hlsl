@@ -14,6 +14,10 @@ RWTexture2D<float> OutViewZ : register(u0);
 RWTexture2D<float4> OutNormalRoughness : register(u1);
 RWTexture2D<float2> OutMotionVectors : register(u2);
 RWTexture2D<float4> OutRadianceHitDist : register(u3);
+// M9 phase 5 (C.SkySplit): the sky light a ray brings over the open-sky light at the pixel (luminance), as
+// 1 - ratio / kSkyRatioScale: REBLUR_DIFFUSE_OCCLUSION's input, read back by DeferredCompositeCS at t18.
+RWTexture2D<float> OutSkyRatio : register(u5);
+static const float kSkyRatioScale = 4.0;  // mirrored in DeferredCompositeCS and GlobalIllumination.cpp's dump
 
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID)
 {
@@ -28,6 +32,8 @@ RWTexture2D<float4> OutRadianceHitDist : register(u3);
 		OutViewZ[pixel] = C.SkyViewZ;
 		OutNormalRoughness[pixel] = NRD_FrontEnd_PackNormalAndRoughness(float3(0.0, 0.0, 1.0), 1.0, 0.0);
 		OutRadianceHitDist[pixel] = 0.0;
+		if (C.SkySplit)
+			OutSkyRatio[pixel] = 1.0;
 		Count(kGITraced, false);
 		return;
 	}
@@ -83,6 +89,15 @@ RWTexture2D<float4> OutRadianceHitDist : register(u3);
 		skyVisible = !Occluded(ray.Origin + direction * ray.TMax, direction, kSunRayLength);
 		if (skyVisible)
 			radiance = SkyRadiance(direction);
+	}
+	// M9 phase 5: the sky goes to its own signal, which scales the game's ambient; REBLUR keeps the bounce, which the
+	// composite adds as light. Ray by ray the ratio averages to the traced over the open-sky light (1 under open sky).
+	if (C.SkySplit) {
+		static const float3 kLuminance = float3(0.2126, 0.7152, 0.0722);
+		const float ratio = skyVisible ? dot(radiance, kLuminance) / max(dot(OpenSkyRadiance(normal), kLuminance), 1e-4) : 0.0;
+		OutSkyRatio[pixel] = 1.0 - saturate(ratio / kSkyRatioScale);
+		if (skyVisible)
+			radiance = 0.0;
 	}
 
 	OutViewZ[pixel] = viewZ;

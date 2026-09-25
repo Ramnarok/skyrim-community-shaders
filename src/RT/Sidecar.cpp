@@ -1058,7 +1058,7 @@ namespace RT
 		auto* ctx = d3d11Context.get();
 		// The copies are queued on D3D11 now (they also create the shared inputs on first use, which Record needs);
 		// the signal waits until the list is recorded, so CPU recording time isn't spent with the D3D11 GPU stalled.
-		if (!gi->CopyInputs(a_params.reflections))
+		if (!gi->CopyInputs(a_params.reflections, a_params.outdoorBounce && a_params.skyLight && !a_params.interior))
 			return {};
 
 		const bool captureDump = dumpStage == DumpStage::kCaptureOn && dumpGameFrame == a_gameFrame;
