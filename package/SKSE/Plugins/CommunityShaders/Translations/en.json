@@ -1473,6 +1473,8 @@
     "feature.skyrim_rt.overlay_title": "Skyrim RT: DirectX 12 interop test",
     "feature.skyrim_rt.partitions": "partitions",
     "feature.skyrim_rt.pending": "pending",
+    "feature.skyrim_rt.point_light_heroes": "Separate shadows for the brightest lights",
+    "feature.skyrim_rt.point_light_heroes_tooltip": "The three most important lights near the view each get their own shadow, so a spot one light can't reach keeps the others' light. Off: all lights share one shadow ratio per pixel, which darkens a spot for every light when only some are blocked.",
     "feature.skyrim_rt.point_light_source_size": "Point-light source size",
     "feature.skyrim_rt.point_light_source_size_tooltip": "How big a light's flame or glow is, as a fraction of its reach: shadows soften with the distance from what casts them. 0 gives hard shadows from a point.",
     "feature.skyrim_rt.point_shadow_lights": "Point lights",

@@ -61,6 +61,7 @@ struct SkyrimRT : OverlayFeature
 		float ShadowSpatialRadius = 3.0f;
 		uint32_t ShadowView = 0;  ///< overlay: 0 off, 1 raw, 2 denoised
 		bool PointLightShadows = true;  ///< M8: ray-traced shadows for the game's unshadowed point lights (PS t46)
+		bool PointLightHeroes = true;         ///< M9 phase 2: own shadow channel for the three brightest lights (off = one shared ratio)
 		float PointLightSourceSize = 0.05f;  ///< M9: a light's source disc radius as a fraction of its radius (soft shadows; 0 = point)
 		uint32_t PointShadowView = 0;   ///< overlay: 0 off, 1 raw, 2 denoised
 		bool GlobalIllumination = true;  ///< M6: ray-traced GI in place of Screen-Space GI (builds with NRD only)

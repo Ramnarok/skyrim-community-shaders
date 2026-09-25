@@ -64,6 +64,7 @@ static const uint kPointCandidateMax = 15;    // most such lights at any pixel (
 // M9 phase 2: per hero light k (channel k), the pixels it reaches (in range, facing, in room) and those where it's blocked.
 static const uint kPointHeroReached0 = 16;
 static const uint kPointHeroOccluded0 = 19;
+static const uint kPointMixedVisibility = 22;  // M9: some light reaching the pixel is blocked and another is visible
 
 ConstantBuffer<ShadowConstants> C : register(b0);
 

@@ -437,7 +437,7 @@ namespace RT
 		settings.maxHistory = a_params.maxHistory;
 		settings.spatialRadius = a_params.spatialRadius;
 		settings.viewMode = a_params.viewMode;
-		ChooseHeroLights(a_params.lights.first(settings.pointLightCount), a_camera, settings);
+		ChooseHeroLights(a_params.lights.first(settings.pointLightCount), a_camera, a_params.heroLights, settings);
 		RecordPasses(a_list, a_slot, a_tlas, a_instances, a_meshPool, a_camera, a_renderWidth, a_renderHeight, settings, false, a_captureDump);
 		stats.pointLights = settings.pointLightCount;
 		stats.pointLightsShadowMapped = shadowMapped;
@@ -446,7 +446,7 @@ namespace RT
 		stats.pointLightSourceFraction = settings.pointLightSourceFraction;
 	}
 
-	void SunShadows::ChooseHeroLights(std::span<const PointLight> a_lights, const FrameCamera& a_camera, PassSettings& a_settings)
+	void SunShadows::ChooseHeroLights(std::span<const PointLight> a_lights, const FrameCamera& a_camera, bool a_enabled, PassSettings& a_settings)
 	{
 		// Importance at the camera: brightness x reach, falling off with the distance beyond a quarter of the light's radius.
 		// Lights too far from the camera to light anything near the view are left out.
@@ -461,7 +461,8 @@ namespace RT
 		};
 		static std::vector<Candidate> candidates;
 		candidates.clear();
-		for (uint32_t i = 0; i < a_lights.size(); i++) {
+		stats.heroLightsEnabled = a_enabled;
+		for (uint32_t i = 0; a_enabled && i < a_lights.size(); i++) {
 			const auto& light = a_lights[i];
 			if ((light.flags & kDisabled) || !(light.radius > 0.0f))
 				continue;

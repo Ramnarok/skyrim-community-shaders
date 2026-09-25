@@ -45,7 +45,8 @@ namespace RT
 		kPointCandidateMax,     ///< most such lights at any pixel
 		kPointHeroReached0 = 16,  ///< M9 phase 2: pixels hero light k (channel k) reaches (in range, facing, in room); 16-18
 		kPointHeroOccluded0 = 19,  ///< ... of those, where it's blocked; 19-21
-		kPointHeroSlotsEnd = 22,
+		kPointMixedVisibility = 22,  ///< M9: pixels where some light reaching them is blocked and another visible (the single ratio of phase 1 darkened both)
+		kPointHeroSlotsEnd = 23,
 		kPointCounterCount = kPointHeroSlotsEnd
 	};
 	/** @brief Counter slots every SunShadows instance reads back (the 128-byte counter buffer); both variants fit. */
@@ -86,6 +87,7 @@ namespace RT
 		};
 		std::array<HeroLight, 3> heroLights{};
 		uint64_t heroChanges = 0;  ///< channel reassignments so far (each restarts the denoiser history)
+		bool heroLightsEnabled = true;  ///< the setting ("Separate shadows for the brightest lights") for the last traced frame
 		uint32_t textureWidth = 0;
 		uint32_t textureHeight = 0;
 		uint32_t renderWidth = 0;  ///< region of the mask written by the last traced frame
@@ -196,7 +198,7 @@ namespace RT
 		bool CreatePipelines();
 		bool CreateDescriptors();
 		/** @brief M9 phase 2: picks this frame's hero lights (kept across frames unless clearly outshone) and uploads their positions. */
-		void ChooseHeroLights(std::span<const PointLight> a_lights, const FrameCamera& a_camera, PassSettings& a_settings);
+		void ChooseHeroLights(std::span<const PointLight> a_lights, const FrameCamera& a_camera, bool a_enabled, PassSettings& a_settings);
 		bool Fail(std::string a_reason);
 
 		ShadowKind kind = ShadowKind::kSun;

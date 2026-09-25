@@ -206,6 +206,15 @@ bool LightOccluded(float3 a_origin, float3 a_toLight, float a_lightRadius, float
 		Count(kPointHeroReached0 + h, heroReached[h]);
 		Count(kPointHeroOccluded0 + h, heroReached[h] && visibility[h] < 0.5);
 	}
+	// Where one light reaching the pixel is blocked and another visible, phase 1's single ratio darkened both; the hero
+	// channels keep the visible one (the rest's one sample stands in for all the other lights).
+	bool anyBlocked = sampled && occluded, anyVisible = sampled && !occluded;
+	[unroll] for (uint m = 0; m < 3; m++)
+	{
+		anyBlocked = anyBlocked || (heroReached[m] && visibility[m] < 0.5);
+		anyVisible = anyVisible || (heroReached[m] && visibility[m] >= 0.5);
+	}
+	Count(kPointMixedVisibility, anyBlocked && anyVisible);
 	const uint candidateSum = WaveActiveSum(candidates);
 	const uint candidateMax = WaveActiveMax(candidates);
 	if (WaveIsFirstLane() && candidateSum > 0) {

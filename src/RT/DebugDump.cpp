@@ -319,6 +319,11 @@ namespace RT
 						return heroes;
 					}() },
 				{ "hero_channel_changes", s.heroChanges },
+				{ "hero_lights_enabled", s.heroLightsEnabled },
+				// Pixels where some light reaching them is blocked and another visible: the single shared ratio (heroes off,
+				// phase 1) darkens every light there; the hero channels keep the visible ones.
+				{ "mixed_visibility_pixels", s.counters[kPointMixedVisibility] },
+				{ "mixed_visibility_percent_of_traced", s.counters[kPointTraced] ? 100.0 * s.counters[kPointMixedVisibility] / s.counters[kPointTraced] : 0.0 },
 				{ "note", "every light but disabled ones is ray-traced (M9: the shadow-mapped ones too, in place of the game's shadow map), portal-strict ones only for pixels in their rooms (primary-ray instance); raw = visibility of one light picked by unshadowed contribution" },
 				{ "pixels", { { "traced", c[kPointTraced] }, { "sampled_light", c[kPointSampled] }, { "occluded", c[kPointOccluded] }, { "in_a_lit_room", c[kPointRoomKnown] } } },
 				{ "light_filters", { { "note", "pixels with a traced light: within its radius / and facing / and applying in the pixel's room" }, { "in_range", c[kPointAnyInRange] }, { "facing", c[kPointAnyFacing] }, { "in_room", c[kPointAnyInRoom] } } },

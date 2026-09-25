@@ -45,6 +45,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PointLightShadows,
 	PointShadowView,
 	PointLightSourceSize,
+	PointLightHeroes,
 	GlobalIllumination,
 	GIIntensity,
 	GIAOStrength,
@@ -306,6 +307,7 @@ void SkyrimRT::Prepass()
 		pointParams.spatialRadius = settings.ShadowSpatialRadius;
 		pointParams.viewMode = settings.PointShadowView;
 		pointParams.sourceFraction = settings.PointLightSourceSize;
+		pointParams.heroLights = settings.PointLightHeroes;
 	}
 	RT::SetAlphaTest(settings.AlphaTest);
 	RT::SetAlbedoTextures(settings.GIAlbedoTextures);
@@ -657,6 +659,9 @@ void SkyrimRT::DrawPointLightShadowSettings()
 	ImGui::Checkbox(T(TKEY("point_shadows"), "Ray-traced point-light shadows"), &settings.PointLightShadows);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("point_shadows_tooltip"), "Trace shadows for every torch, candle and fire, so their light no longer passes through walls, counters and floors. Replaces the game's point-light shadow maps too. Uses the sun-shadow filter settings."));
+	ImGui::Checkbox(T(TKEY("point_light_heroes"), "Separate shadows for the brightest lights"), &settings.PointLightHeroes);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("point_light_heroes_tooltip"), "The three most important lights near the view each get their own shadow, so a spot one light can't reach keeps the others' light. Off: all lights share one shadow ratio per pixel, which darkens a spot for every light when only some are blocked."));
 	ImGui::SliderFloat(T(TKEY("point_light_source_size"), "Point-light source size"), &settings.PointLightSourceSize, 0.0f, 0.1f, "%.3f");
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("point_light_source_size_tooltip"), "How big a light's flame or glow is, as a fraction of its reach: shadows soften with the distance from what casts them. 0 gives hard shadows from a point."));
