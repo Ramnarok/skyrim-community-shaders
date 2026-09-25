@@ -37,6 +37,7 @@ namespace RT
 		kGIMotionErrorFlipYSum,  ///< |ours with y negated - game|
 		kGIMotionErrorNegatedSum,  ///< |-ours - game|
 		kGIEmissiveVertices,  ///< M9 phase 4: path vertices (GI and reflection hits, any bounce) on glowing surfaces
+		kGIEmissivePBRVertices,  ///< ... of which True PBR
 		kGICounterCount
 	};
 

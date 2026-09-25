@@ -58,7 +58,9 @@ namespace RT
 			float emitColorMult;
 			float glowmapGamma;
 			float glowmapMult;
-			float pad0[3];
+			float pbrVertexAOStrength;  // ... True PBR
+			float pbrEmissionScale;
+			float pad0;
 		};
 		static_assert(sizeof(GIConstants) == 576);
 
@@ -585,6 +587,8 @@ namespace RT
 		c->emitColorMult = a_params.emitColorMult;
 		c->glowmapGamma = a_params.glowmapGamma;
 		c->glowmapMult = a_params.glowmapMult;
+		c->pbrVertexAOStrength = a_params.pbrVertexAOStrength;
+		c->pbrEmissionScale = a_params.pbrEmissionScale;
 		{
 			// Water pixels' motion vectors, reprojected from the water surface (GI's follow the riverbed below it), with the
 			// matrices the game builds kMOTION_VECTOR with (MotionBlur::GetSSMotionVector). Composing them from the view and

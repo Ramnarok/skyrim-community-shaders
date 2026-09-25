@@ -66,7 +66,7 @@ namespace RT
 			uint32_t stride, flags, albedo, alpha;  // albedo: RGBA8 average diffuse (M6 material table); alpha: M7c alpha test
 			uint32_t uvPage, uvOffset, uvStride, room;  // M7c: texture-coordinate source (bind pose for skinned); M8 room index + 1
 			float emission[3];      // M9 phase 4: Lighting.hlsl's EmitColor, 0 = doesn't light the traced scene
-			uint32_t emissionWord;  // ... glow texture's albedo-atlas tile + 1 (bits 0-11), emissiveMult as a half (16-31)
+			uint32_t emissionWord;  // ... glow texture's albedo-atlas tile + 1 (bits 0-11), True PBR (12), emissiveMult as a half (16-31)
 		};
 		static_assert(sizeof(InstanceGpu) == 64);
 		static_assert(kInstanceDataOffset + Raytracer::kMaxInstances * sizeof(InstanceGpu) <= kAabbOffset);

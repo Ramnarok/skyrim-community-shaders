@@ -85,21 +85,24 @@ namespace RT
 		float emissive[3]{};
 		float emissiveMult = 0.0f;  // Linear Lighting's EmitColor divides it out before its gamma
 		bool ownEmit = false;  // kOwnEmit
-		bool glowMap = false;  // a BSLightingShaderMaterialGlowmap
+		// Emission scaled by a texture: a BSLightingShaderMaterialGlowmap's glow map, or (True PBR) a real emissive texture.
+		bool glowMap = false;
 		const RE::NiSourceTexture* glowTexture = nullptr;  // valid this frame only
 		ID3D11ShaderResourceView* glowSRV = nullptr;       // game-owned, valid this frame only
-		bool truePBR = false;  // CS True PBR (kVertexLighting): its emission isn't x albedo and has its own texture; not traced yet
+		// CS True PBR (kVertexLighting): emits only through its emissive texture (HasEmissive), added after the albedo.
+		bool truePBR = false;
 		uint32_t glowWord = 0;  // M9 phase 4 step 2: albedo-atlas tile + 1 of the glow texture, by AlbedoAtlas; 0 = none
 	};
 
 	/**
 	 * @brief M9 phase 4: whether the shape's emission lights the traced scene. The game keeps a NIF's emissive colour only
-	 * with kOwnEmit (as CS's True PBR loader does), and every glowing shape in the census had it. True PBR emission isn't
-	 * handled yet.
+	 * with kOwnEmit (as CS's True PBR loader does), and every glowing shape in the census had it. True PBR shapes glow
+	 * only with an emissive texture (Lighting.hlsl's PBR::Flags::HasEmissive).
 	 */
 	inline bool EmitsLight(const GeometryCandidate& a_candidate)
 	{
-		return a_candidate.ownEmit && !a_candidate.truePBR && (a_candidate.emissive[0] > 0.0f || a_candidate.emissive[1] > 0.0f || a_candidate.emissive[2] > 0.0f);
+		return a_candidate.ownEmit && (!a_candidate.truePBR || a_candidate.glowMap) &&
+		       (a_candidate.emissive[0] > 0.0f || a_candidate.emissive[1] > 0.0f || a_candidate.emissive[2] > 0.0f);
 	}
 
 	/** @brief Debug dump: one TLAS candidate near the camera, described while its game pointers are valid. */
@@ -326,7 +329,8 @@ namespace RT
 			uint32_t glowMapped = 0;     ///< ... with a glow map
 			uint32_t glowMapBlack = 0;   ///< glow-mapped instances whose emissive colour is black (they don't glow)
 			uint32_t lighting = 0;       ///< M9 step 2: ... that light the traced scene (EmitsLight)
-			uint32_t truePBR = 0;        ///< ... left out: True PBR (its emission isn't handled yet)
+			uint32_t truePBR = 0;        ///< ... True PBR (lighting the scene when they have an emissive texture)
+			uint32_t truePBRNoTexture = 0;  ///< ... True PBR without an emissive texture: they don't glow in the raster either
 			uint32_t skinnedLighting = 0;  ///< skinned partitions (actors, trees) that light the traced scene
 			uint32_t uniqueMeshes = 0;
 			float maxLuminance = 0.0f;

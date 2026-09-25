@@ -104,7 +104,7 @@ namespace RT
 		uint32_t uvStride = 0;
 		uint32_t room = 0;  // M8: Light Limit Fix room index + 1 of the nearest room/portal ancestor (0 = none), see GeometryCandidate::roomWord
 		// M9 phase 4: Lighting.hlsl's EmitColor (0 = doesn't light the traced scene) and InstanceData::EmissionWord: bits 0-11
-		// the glow texture's albedo-atlas tile + 1, 16-31 emissiveMult as a half float. See SetEmission.
+		// the glow texture's albedo-atlas tile + 1, bit 12 kEmissionTruePBR, 16-31 emissiveMult as a half float. See SetEmission.
 		float emission[3]{};
 		uint32_t emissionWord = 0;
 		bool terrain = false;
@@ -117,6 +117,9 @@ namespace RT
 		bool lodClip = false;       // M8: see GeometryCandidate::lodClip
 		bool water = false;         // M8: see GeometryCandidate::water (mask 0x80)
 	};
+
+	/** @brief InstanceData::EmissionWord bit 12: True PBR emission, added after the albedo (mirrored in MeshData.hlsli). */
+	inline constexpr uint32_t kEmissionTruePBR = 1u << 12;
 
 	/**
 	 * @brief M9 phase 4: copies a_candidate's emission into a_record when it lights the traced scene (EmitsLight). A

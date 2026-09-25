@@ -116,7 +116,8 @@ namespace RT
 					{ "emissive_mult", s.emissiveMult }, { "luminance", s.luminance }, { "own_emit", s.ownEmit }, { "glow_map", s.glowMap },
 					{ "glow_texture", s.glowTexture }, { "bound_radius", s.boundRadius }, { "distance_from_player", s.distance } });
 			return { { "instances", a_emissive.instances }, { "own_emit", a_emissive.ownEmit }, { "glow_mapped", a_emissive.glowMapped },
-				{ "glow_mapped_but_black", a_emissive.glowMapBlack }, { "lighting_the_scene", a_emissive.lighting }, { "true_pbr_left_out", a_emissive.truePBR },
+				{ "glow_mapped_but_black", a_emissive.glowMapBlack }, { "lighting_the_scene", a_emissive.lighting }, { "true_pbr", a_emissive.truePBR },
+				{ "true_pbr_without_emissive_texture", a_emissive.truePBRNoTexture },
 				{ "skinned_lighting_the_scene", a_emissive.skinnedLighting }, { "unique_meshes", a_emissive.uniqueMeshes }, { "max_luminance", a_emissive.maxLuminance },
 				{ "by_luminance", { { "under_0_05", a_emissive.byLuminance[0] }, { "under_0_25", a_emissive.byLuminance[1] }, { "under_1", a_emissive.byLuminance[2] },
 									  { "1_and_over", a_emissive.byLuminance[3] } } },
@@ -443,7 +444,8 @@ namespace RT
 											  { "128_and_over", g.counters[kGILightOccluded] - g.counters[kGIOccluderNear32] - g.counters[kGIOccluderNear64] - g.counters[kGIOccluderNear128] } } },
 									  { "lights_camera_relative", std::move(lights) } } },
 				// M9 phase 4: path vertices (GI and reflection hits, any bounce) on glowing surfaces, which added their emission.
-				{ "emissives", { { "enabled", p.emissives }, { "vertices", g.counters[kGIEmissiveVertices] },
+				{ "emissives", { { "enabled", p.emissives }, { "vertices", g.counters[kGIEmissiveVertices] }, { "true_pbr_vertices", g.counters[kGIEmissivePBRVertices] },
+								   { "true_pbr_emission_scale", p.pbrEmissionScale }, { "true_pbr_vertex_ao_strength", p.pbrVertexAOStrength },
 								   { "percent_of_gi_hits", g.counters[kGIHits] ? 100.0 * g.counters[kGIEmissiveVertices] / g.counters[kGIHits] : 0.0 } } },
 				// M8 reflections: one glossy ray per pixel with a reflection term (Dynamic Cubemaps' REFLECTANCE), replacing
 				// the composite's cubemap reflection there. Counters are the last collected frame's.

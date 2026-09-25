@@ -123,6 +123,7 @@ struct PathVertex
 	float3 direct;   // sun x N.L x visibility + point lights
 	float3 ambient;  // the game's directional ambient at the normal
 	float3 openSky;  // linear light an unoccluded hemisphere returns at the normal (SkyRadiance integrated)
+	float3 emission;  // M9: True PBR emission, added after the albedo (Lighting.hlsl: color += emitColor), same colour space
 	float3 normal;   // geometric, facing the incoming ray
 	float3 origin;   // hit position offset along the normal: where continuation and visibility rays start
 };
@@ -132,8 +133,8 @@ struct PathVertex
 // a_vertex.openSky: the composite's sky-light ratio, applied at the hit.
 float3 PathVertexRadiance(PathVertex a_vertex, float3 a_ambientScale)
 {
-	const float3 sum = a_vertex.direct + a_vertex.ambient * a_ambientScale;
-	return C.LinearLighting ? a_vertex.albedo * sum : SkyrimGammaToLinear(a_vertex.albedo * sum);
+	const float3 color = a_vertex.albedo * (a_vertex.direct + a_vertex.ambient * a_ambientScale) + a_vertex.emission;
+	return C.LinearLighting ? color : SkyrimGammaToLinear(color);
 }
 
 // M8 sky light: radiance arriving from the sky in a_direction, such that its cosine-weighted mean over an unoccluded
@@ -187,18 +188,33 @@ float RandomLight(uint2 a_pixel, uint a_frame, uint a_bounce)
 	return a_bounce == 0 ? Random1(a_pixel, a_frame) : float(Hash(Hash(a_pixel.x | (a_pixel.y << 16)) ^ Hash(a_frame * 0xC2B2AE35u + a_bounce)) >> 8) / 16777216.0;
 }
 
-// M9 phase 4: the light a glowing surface adds before its albedo, as Lighting.hlsl's emitColor (diffuseColor += emitColor,
-// then x baseColor x vertexColor), in the space of PathVertex::direct. a_glow is the hit's glow map (HitAlbedo).
-float3 HitEmission(InstanceData a_instance, float3 a_glow)
+// M9 phase 4: Lighting.hlsl's emitColor for a glowing hit, in the colour space of the path vertex. Vanilla adds it to the
+// diffuse light before the albedo (diffuseColor += emitColor, then x baseColor x vertexColor): PathVertex::direct. True PBR
+// adds it after the albedo (color += emitColor, then x Color::PBRLightingScale): PathVertex::emission. a_glow is the glow
+// map or emissive texture at the hit, a_vertexColor the hit's vertex colour (HitAlbedo).
+float3 HitEmission(InstanceData a_instance, float3 a_glow, float3 a_vertexColor)
 {
 	float3 emission = a_instance.Emission;
 	const bool glowMapped = (a_instance.EmissionWord & 0xFFFu) != 0;
 	if (C.LinearLighting) {
-		// Color::EmitColor and Color::Glowmap with Linear Lighting on.
+		// Color::EmitColor with Linear Lighting on.
 		const float mult = f16tof32(a_instance.EmissionWord >> 16);
 		emission = pow(abs(emission / max(mult, 1e-5)), C.EmitColorGamma) * mult * C.EmitColorMult;
+	}
+	if (a_instance.EmissionWord & kEmissionTruePBR) {
+		// The vertex colour, linear, normalised by its largest channel as far as VertexAOStrength leaves it (emitVertexColor).
+		const float3 vertexColor = pow(abs(a_vertexColor), 2.2);
+		const float vertexAO = max(vertexColor.r, max(vertexColor.g, vertexColor.b));
+		const float3 tint = vertexAO == 0.0 ? 1.0 : vertexColor * lerp(1.0 / max(vertexAO, 1e-4), 1.0, C.PBRVertexAOStrength);
+		// Color::Glowmap is texture x glowmapMult with Linear Lighting, else LinearToSrgb(texture), which SrgbToLinear undoes:
+		// LinearToSrgb(SrgbToLinear(emit) x texture x tint) = emit x (texture x tint)^(1/2.2) with CS's pow 2.2 pair.
+		if (C.LinearLighting)
+			return emission * a_glow * C.GlowmapMult * tint;
+		return emission * pow(abs(a_glow * tint), 1.0 / 2.2) * C.PBREmissionScale;
+	}
+	if (C.LinearLighting) {
 		if (glowMapped)
-			emission *= pow(abs(a_glow), C.GlowmapGamma) * C.GlowmapMult;
+			emission *= pow(abs(a_glow), C.GlowmapGamma) * C.GlowmapMult;  // Color::Glowmap
 	} else if (glowMapped) {
 		// LinearToSrgb(SrgbToLinear(emit) x SrgbToLinear(glow)): with CS's pow 2.2 pair that is emit x glow.
 		emission *= a_glow;
@@ -228,8 +244,8 @@ PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycent
 	const float3 pointLights = SamplePointLights(position, normal, vertex.origin, RandomLight(a_pixel, C.FrameIndex, a_bounce), InstanceRoom(a_instance),
 		a_lightSampled, a_lightOccluded, a_occluderToLight);
 	const float sun = saturate(dot(normal, C.ToSun.xyz)) * (a_sunLit ? 1.0 : 0.0);
-	float3 glow;
-	const float3 albedo = HitAlbedo(a_instance, a_primitive, a_barycentrics, glow);
+	float3 glow, vertexColor;
+	const float3 albedo = HitAlbedo(a_instance, a_primitive, a_barycentrics, glow, vertexColor);
 	if (C.LinearLighting) {
 		// Color::DirectionalLight's pi cancels Color::VanillaNormalization's 1/pi in the diffuse term.
 		vertex.albedo = pow(albedo, C.ColorGamma);
@@ -240,11 +256,20 @@ PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycent
 		vertex.direct = C.SunColor.rgb * sun + pointLights;
 		vertex.ambient = GetAmbient(normal);
 	}
-	// M9 phase 4: emission joins the direct term, so the continuation's ambient scaling (TracePath) leaves it alone.
+	// M9 phase 4: emission joins the direct term (or, True PBR, follows the albedo), so the continuation's ambient scaling
+	// (TracePath) leaves it alone.
+	vertex.emission = 0.0;
 	const bool emissive = C.Emissives && any(a_instance.Emission > 0.0);
-	if (emissive)
-		vertex.direct += HitEmission(a_instance, glow);
+	const bool truePBR = (a_instance.EmissionWord & kEmissionTruePBR) != 0;
+	if (emissive) {
+		const float3 emission = HitEmission(a_instance, glow, vertexColor);
+		if (truePBR)
+			vertex.emission = emission;
+		else
+			vertex.direct += emission;
+	}
 	Count(kGIEmissiveVertices, emissive);
+	Count(kGIEmissivePBRVertices, emissive && truePBR);
 	vertex.openSky = OpenSkyRadiance(normal);
 	return vertex;
 }

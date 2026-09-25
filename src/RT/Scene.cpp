@@ -1,6 +1,7 @@
 #include "Scene.h"
 
 #include "Features/GrassOptimizations.h"
+#include "TruePBR/BSLightingShaderMaterialPBR.h"
 
 #include <DirectXPackedVector.h>
 
@@ -164,6 +165,17 @@ namespace RT
 					// Most glow maps have no name (census); the renderer texture is what Lighting.hlsl samples at t6.
 					if (a_candidate.glowTexture && a_candidate.glowTexture->rendererTexture)
 						a_candidate.glowSRV = a_candidate.glowTexture->rendererTexture->resourceView;
+				} else if (a_candidate.truePBR && material->GetFeature() == Feature::kDefault) {
+					// CS's own test for a BSLightingShaderMaterialPBR (TruePBR.cpp GetRenderPasses; the PBR landscape reports
+					// kMultiTexLandLODBlend). It binds the emissive texture at t6 and sets HasEmissive when the texture is real.
+					const auto* pbr = static_cast<const BSLightingShaderMaterialPBR*>(material);
+					const auto* emissiveTexture = pbr->emissiveTexture.get();
+					if (emissiveTexture && emissiveTexture != globals::game::graphicsState->GetRuntimeData().defaultTextureBlack.get()) {
+						a_candidate.glowMap = true;
+						a_candidate.glowTexture = emissiveTexture;
+						if (emissiveTexture->rendererTexture)
+							a_candidate.glowSRV = emissiveTexture->rendererTexture->resourceView;
+					}
 				}
 				const auto feature = material->GetFeature();
 				a_candidate.terrain = feature == Feature::kMultiTexLand || feature == Feature::kMultiTexLandLODBlend;
@@ -1391,6 +1403,7 @@ namespace RT
 				census.glowMapped += candidate.glowMap;
 				census.lighting += EmitsLight(candidate);
 				census.truePBR += candidate.truePBR;
+				census.truePBRNoTexture += candidate.truePBR && !candidate.glowMap;
 				census.maxLuminance = std::max(census.maxLuminance, luminance);
 				census.byLuminance[luminance < 0.05f ? 0 : luminance < 0.25f ? 1 : luminance < 1.0f ? 2 : 3]++;
 				meshes.insert(candidate.rendererData);

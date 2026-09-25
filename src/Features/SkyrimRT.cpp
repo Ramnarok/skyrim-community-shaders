@@ -1,6 +1,7 @@
 #include "SkyrimRT.h"
 
 #include "Features/DynamicCubemaps.h"
+#include "Features/IBL.h"
 #include "Features/InverseSquareLighting.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
@@ -19,6 +20,7 @@
 #include "RT/SkinnedMeshes.h"
 #include "RT/SunShadows.h"
 #include "State.h"
+#include "TruePBR.h"
 
 #define I18N_KEY_PREFIX "feature.skyrim_rt."
 
@@ -372,6 +374,10 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.inverseSquare = globals::features::inverseSquareLighting.loaded;
 	params.skyLight = settings.GISkyLight && !params.interior;
 	params.emissives = settings.GIEmissives;
+	params.pbrVertexAOStrength = globals::features::truePBR.settings.VertexAOStrength;
+	// Lighting.hlsl scales True PBR's colour, emission included, by Color::PBRLightingScale unless IBL is compiled in (it
+	// needs Dynamic Cubemaps); the scale is 1 with Linear Lighting.
+	params.pbrEmissionScale = params.linearLighting || (globals::features::ibl.loaded && globals::features::dynamicCubemaps.loaded) ? 1.0f : 0.65f;
 	// The composite has a reflection term (REFLECTANCE, t5) only with Dynamic Cubemaps.
 	params.reflections = settings.GIReflections && globals::features::dynamicCubemaps.loaded;
 	params.reflectionMaxRoughness = settings.GIReflectionMaxRoughness;
@@ -549,7 +555,7 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 
 	ImGui::Checkbox(T(TKEY("gi_emissives"), "Glowing surfaces light the scene"), &settings.GIEmissives);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::Text("%s", T(TKEY("gi_emissives_tooltip"), "Glowing surfaces (mushrooms, embers, lit windows, Dwemer lights) cast their glow on their surroundings through bounce light and reflections. Glow-mapped surfaces need Textured bounce light."));
+		ImGui::Text("%s", T(TKEY("gi_emissives_tooltip"), "Glowing surfaces (mushrooms, crystals, embers, lit windows, Dwemer lights) cast their glow on their surroundings through bounce light and reflections. Glow-mapped and True PBR surfaces need Textured bounce light."));
 
 	ImGui::Checkbox(T(TKEY("gi_interiors"), "Ray-traced GI in interiors"), &settings.GIInteriors);
 	if (auto _tt = Util::HoverTooltipWrapper())

@@ -48,7 +48,9 @@ struct GIConstants
 	float EmitColorMult;
 	float GlowmapGamma;
 	float GlowmapMult;
-	float3 Pad0;
+	float PBRVertexAOStrength;  // ... True PBR: SharedData::truePBRSettings.VertexAOStrength (its emission's vertex colour)
+	float PBREmissionScale;     // ... True PBR: Color::PBRLightingScale where Lighting.hlsl applies it (0.65 without IBL or Linear Lighting), else 1
+	float Pad0;
 };
 
 // Counter slots, mirrored in GlobalIllumination.h
@@ -74,6 +76,7 @@ static const uint kGIMotionErrorSum = 18;
 static const uint kGIMotionErrorFlipYSum = 19;
 static const uint kGIMotionErrorNegatedSum = 20;
 static const uint kGIEmissiveVertices = 21;       // M9 phase 4: path vertices (GI and reflection, any bounce) on glowing surfaces
+static const uint kGIEmissivePBRVertices = 22;    // ... of which True PBR
 
 ConstantBuffer<GIConstants> C : register(b0);
 

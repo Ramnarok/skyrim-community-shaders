@@ -10,7 +10,7 @@ namespace RT
 			return;
 		std::copy(std::begin(a_candidate.emissive), std::end(a_candidate.emissive), a_record.emission);
 		const uint32_t mult = DirectX::PackedVector::XMConvertFloatToHalf(a_candidate.emissiveMult);
-		a_record.emissionWord = (a_candidate.glowWord & 0xFFFu) | (mult << 16);
+		a_record.emissionWord = (a_candidate.glowWord & 0xFFFu) | (a_candidate.truePBR ? kEmissionTruePBR : 0u) | (mult << 16);
 	}
 
 	namespace

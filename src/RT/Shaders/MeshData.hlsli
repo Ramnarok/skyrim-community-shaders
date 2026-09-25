@@ -18,8 +18,10 @@ struct InstanceData  // mirrors InstanceGpu in Raytracer.cpp
 	uint Room;  // M8: Light Limit Fix room index + 1 of the instance (0 = none), as Lighting.hlsl's RoomIndex
 	// M9 phase 4: what Lighting.hlsl's EmitColor holds (emissiveColor x emissiveMult); 0 = doesn't light the traced scene.
 	float3 Emission;
-	uint EmissionWord;  // bits 0-11: the glow texture's albedo-atlas tile + 1 (0 = not glow-mapped), 16-31: emissiveMult (half)
+	uint EmissionWord;  // bits 0-11: the glow texture's albedo-atlas tile + 1 (0 = not glow-mapped), 12: kEmissionTruePBR, 16-31: emissiveMult (half)
 };
+
+static const uint kEmissionTruePBR = 1u << 12;  // M9: True PBR emission, added after the albedo (mirrored in MeshCache.h)
 
 // InstanceData.Flags bits, mirrored in Raytracer.cpp
 static const uint kInstanceTerrain = 1;
@@ -167,12 +169,14 @@ float3 SampleAlbedoAtlas(uint a_tile, float2 a_uv)
 
 // The albedo Lighting.hlsl writes to the G-buffer (texture x vertex colour, as the texture stores it, Skyrim gamma) at a
 // committed hit, or the instance's average albedo (M6) while its texture has no tile. M9 phase 4: a_glow is the glow map
-// at the same texture coordinate, as Lighting.hlsl samples it: 1 when the instance isn't glow-mapped, 0 when it is but its
-// texture coordinates can't be read.
-float3 HitAlbedo(InstanceData a_data, uint a_primitive, float2 a_barycentrics, out float3 a_glow)
+// (or True PBR emissive texture) at the same texture coordinate, as Lighting.hlsl samples it: 1 when the instance isn't
+// glow-mapped, 0 when it is but its texture coordinates can't be read. a_vertexColor is the interpolated vertex colour as
+// stored (1 without vertex colours), which True PBR emission uses on its own.
+float3 HitAlbedo(InstanceData a_data, uint a_primitive, float2 a_barycentrics, out float3 a_glow, out float3 a_vertexColor)
 {
 	const uint glowTile = a_data.EmissionWord & 0xFFFu;
 	a_glow = glowTile != 0 ? 0.0 : 1.0;  // a glow-mapped instance stays dark unless its glow map is sampled below
+	a_vertexColor = 1.0;
 	const uint word = a_data.Flags >> 8;
 	const uint tile = word & 0xFFFu;
 	if (tile == 0 || a_data.UVPage >= 64 || a_data.IndexPage >= 64)
@@ -199,7 +203,8 @@ float3 HitAlbedo(InstanceData a_data, uint a_primitive, float2 a_barycentrics, o
 		const float3 c0 = UnpackRGBA8(vertices.Load(a_data.UVOffset + i0 * stride + colorOffset)).rgb;
 		const float3 c1 = UnpackRGBA8(vertices.Load(a_data.UVOffset + i1 * stride + colorOffset)).rgb;
 		const float3 c2 = UnpackRGBA8(vertices.Load(a_data.UVOffset + i2 * stride + colorOffset)).rgb;
-		albedo *= c0 * weights.x + c1 * weights.y + c2 * weights.z;
+		a_vertexColor = c0 * weights.x + c1 * weights.y + c2 * weights.z;
+		albedo *= a_vertexColor;
 	}
 	return albedo;
 }
