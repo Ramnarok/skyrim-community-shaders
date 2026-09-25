@@ -77,6 +77,7 @@ struct SkyrimRT : OverlayFeature
 		bool GIAlbedoTextures = true;     ///< M8: GI hits sample their diffuse texture x vertex colour (else the texture's average)
 		bool GISkyLight = true;           ///< M8: rays that reach the sky carry its light; the game's ambient is scaled by the traced / open-sky ratio (exteriors)
 		bool GIEmissives = false;         ///< M9 phase 4: GI and reflection hits on glowing surfaces add their emission
+		float GIEmissiveStrength = 1.0f;  ///< M9 phase 4: x the light they cast (1 = the game's emissive colours)
 		uint32_t GIHistory = 30;  ///< REBLUR accumulated frames
 		uint32_t GIView = 0;      ///< overlay: 0 off, 1 noisy, 2 denoised, 3 ambient occlusion, 4/5 reflections noisy/denoised
 		bool GIReflections = true;              ///< M8: ray-traced reflections in place of the cubemaps (needs Dynamic Cubemaps)

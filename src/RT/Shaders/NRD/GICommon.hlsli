@@ -50,7 +50,7 @@ struct GIConstants
 	float GlowmapMult;
 	float PBRVertexAOStrength;  // ... True PBR: SharedData::truePBRSettings.VertexAOStrength (its emission's vertex colour)
 	float PBREmissionScale;     // ... True PBR: Color::PBRLightingScale where Lighting.hlsl applies it (0.65 without IBL or Linear Lighting), else 1
-	float Pad0;
+	float EmissiveStrength;     // ... x the light glowing surfaces cast (1 = the game's EmitColor); a reflection still shows them as drawn
 };
 
 // Counter slots, mirrored in GlobalIllumination.h

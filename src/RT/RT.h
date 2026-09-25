@@ -202,6 +202,9 @@ namespace RT
 		/// True PBR emission's Color::PBRLightingScale: Lighting.hlsl applies it (0.65) unless Linear Lighting is on or IBL is
 		/// compiled in (the IBL feature with Dynamic Cubemaps).
 		float pbrEmissionScale = 0.65f;
+		/// x the light glowing surfaces cast (1 = the game's EmitColor, physically matched). Skyrim's emissive colours are set for
+		/// how the surface looks, so at 1 they light their surroundings faintly; reflections still show the surfaces as drawn.
+		float emissiveStrength = 1.0f;
 	};
 
 	/** @brief The three textures Screen-Space GI normally provides to DeferredCompositeCS (t10-t12), plus the M8 extras. */

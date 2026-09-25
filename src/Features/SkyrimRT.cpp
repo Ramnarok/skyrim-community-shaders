@@ -59,6 +59,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GIAlbedoTextures,
 	GISkyLight,
 	GIEmissives,
+	GIEmissiveStrength,
 	GIHistory,
 	GIBouncesInterior,
 	GIBouncesExterior,
@@ -374,6 +375,7 @@ bool SkyrimRT::DrawGlobalIllumination(RT::GIOutputs& a_outputs)
 	params.inverseSquare = globals::features::inverseSquareLighting.loaded;
 	params.skyLight = settings.GISkyLight && !params.interior;
 	params.emissives = settings.GIEmissives;
+	params.emissiveStrength = settings.GIEmissiveStrength;
 	params.pbrVertexAOStrength = globals::features::truePBR.settings.VertexAOStrength;
 	// Lighting.hlsl scales True PBR's colour, emission included, by Color::PBRLightingScale unless IBL is compiled in (it
 	// needs Dynamic Cubemaps); the scale is 1 with Linear Lighting.
@@ -556,6 +558,9 @@ void SkyrimRT::DrawGlobalIlluminationSettings()
 	ImGui::Checkbox(T(TKEY("gi_emissives"), "Glowing surfaces light the scene"), &settings.GIEmissives);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("gi_emissives_tooltip"), "Glowing surfaces (mushrooms, crystals, embers, lit windows, Dwemer lights) cast their glow on their surroundings through bounce light and reflections. Glow-mapped and True PBR surfaces need Textured bounce light."));
+	ImGui::SliderFloat(T(TKEY("gi_emissive_strength"), "Glow light strength"), &settings.GIEmissiveStrength, 0.0f, 16.0f, "%.1f");
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::Text("%s", T(TKEY("gi_emissive_strength_tooltip"), "How strongly glowing surfaces light their surroundings. 1 matches the game's glow colours, which were made for how the surfaces look and light little around them; higher values make them light the scene like real light sources. Glowing surfaces seen in reflections keep their normal brightness."));
 
 	ImGui::Checkbox(T(TKEY("gi_interiors"), "Ray-traced GI in interiors"), &settings.GIInteriors);
 	if (auto _tt = Util::HoverTooltipWrapper())

@@ -262,7 +262,10 @@ PathVertex ShadeHit(InstanceData a_instance, uint a_primitive, float2 a_barycent
 	const bool emissive = C.Emissives && any(a_instance.Emission > 0.0);
 	const bool truePBR = (a_instance.EmissionWord & kEmissionTruePBR) != 0;
 	if (emissive) {
-		const float3 emission = HitEmission(a_instance, glow, vertexColor);
+		// The strength scales the light a glowing surface casts: every vertex but a reflection's first hit, which shows the
+		// surface itself (ReflectionTraceCS passes kReflectionStream as its bounce; deeper ones pass kReflectionStream + n).
+		const float strength = a_bounce == kReflectionStream ? 1.0 : C.EmissiveStrength;
+		const float3 emission = HitEmission(a_instance, glow, vertexColor) * strength;
 		if (truePBR)
 			vertex.emission = emission;
 		else
